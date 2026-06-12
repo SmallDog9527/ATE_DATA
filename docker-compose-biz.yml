@@ -1,0 +1,24 @@
+services:
+  # 业务数据库：存储芯片测试数据
+  chip-db:
+    image: ankane/pgvector:latest
+    container_name: chip-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: chip_data
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: "3344520Qq"
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+
+  # 可视化工具
+  grafana:
+    image: grafana/grafana:latest
+    container_name: chip-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana_data:/var/lib/grafana
+    depends_on:
+      - chip-db

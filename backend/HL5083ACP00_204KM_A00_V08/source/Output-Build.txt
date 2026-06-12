@@ -1,0 +1,166 @@
+﻿1>------ Build started: Project: HL5083CP00_102KM_A00_V01, Configuration: Debug Win32 ------
+1>  test.cpp
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(61): warning C4244: 'initializing' : conversion from 'double' to 'int', possible loss of data
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(366): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(367): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(369): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(370): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(371): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(372): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(373): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(383): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(384): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(386): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(387): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(388): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(389): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(482): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(483): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(355) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(587): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(588): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(589): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(591): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(592): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(594): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(595): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(596): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(597): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(605): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(606): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(607): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(609): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(611): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(612): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(613): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(614): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(615): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(684): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(685): warning C4258: 'i' : definition from the for loop is ignored; the definition from the enclosing scope is used
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(576) : definition of 'i' ignored
+1>          d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.h(25) : definition of 'i' used
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(1067): warning C4244: 'argument' : conversion from 'double' to 'DWORD', possible loss of data
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(1177): warning C4244: 'argument' : conversion from 'double' to 'DWORD', possible loss of data
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(1274): warning C4244: 'argument' : conversion from 'double' to 'DWORD', possible loss of data
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(1317): warning C4244: 'argument' : conversion from 'double' to 'DWORD', possible loss of data
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(1440): warning C4244: 'argument' : conversion from 'double' to 'DWORD', possible loss of data
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(1502): warning C4244: 'argument' : conversion from 'double' to 'DWORD', possible loss of data
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(1555): warning C4244: 'argument' : conversion from 'double' to 'DWORD', possible loss of data
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(1584): warning C4244: 'argument' : conversion from 'double' to 'DWORD', possible loss of data
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(1618): warning C4244: 'argument' : conversion from 'double' to 'DWORD', possible loss of data
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(1677): warning C4244: 'argument' : conversion from 'double' to 'DWORD', possible loss of data
+1>d:\debug\cs5a\hl5083a\bd\hl5083acp00_204km_a00_v05_ttr0420\source\test.cpp(1721): warning C4244: 'argument' : conversion from 'double' to 'DWORD', possible loss of data
+1>  HL5083CP00_102KM_A00_V01.vcxproj -> D:\Debug\CS5A\HL5083A\BD\HL5083ACP00_204KM_A00_V05_TTR0420\source\../HL5083CP00_102KM_A00_V01.dll
+BoardCheck.cpp(50):warning:This function is not called and unchecked.
+BoardCheck.cpp(70):warning:This function is not called and unchecked.
+BoardCheck.cpp(83):warning:This function is not called and unchecked.
+BoardCheck.cpp(96):warning:This function is not called and unchecked.
+BoardCheck.cpp(115):warning:This function is not called and unchecked.
+BoardCheck.cpp(573):warning:This function is not called and unchecked.
+BoardCheck.cpp(828):warning:This function is not called and unchecked.
+BoardCheck.cpp(1170):warning:This function is not called and unchecked.
+diags.cpp(10):warning:This function is not called and unchecked.
+diags.cpp(37):warning:This function is not called and unchecked.
+diags.cpp(413):warning:This function is not called and unchecked.
+inireader.cpp(556):warning:This function is not called and unchecked.
+inireader.cpp(594):warning:This function is not called and unchecked.
+inireader.cpp(622):warning:This function is not called and unchecked.
+inireader.cpp(770):warning:This function is not called and unchecked.
+inireader.cpp(776):warning:This function is not called and unchecked.
+inireader.cpp(782):warning:This function is not called and unchecked.
+inireader.cpp(788):warning:This function is not called and unchecked.
+inireader.cpp(794):warning:This function is not called and unchecked.
+inireader.cpp(800):warning:This function is not called and unchecked.
+inireader.cpp(806):warning:This function is not called and unchecked.
+inireader.cpp(812):warning:This function is not called and unchecked.
+sub.cpp(18):warning:This function is not called and unchecked.
+sub.cpp(97):warning:This function is not called and unchecked.
+sub.cpp(124):warning:This function is not called and unchecked.
+sub.cpp(440):warning:This function is not called and unchecked.
+sub.cpp(452):warning:This function is not called and unchecked.
+sub.cpp(480):warning:This function is not called and unchecked.
+sub.cpp(490):warning:This function is not called and unchecked.
+sub.cpp(512):warning:This function is not called and unchecked.
+sub.cpp(536):warning:This function is not called and unchecked.
+sub.cpp(542):warning:This function is not called and unchecked.
+sub.cpp(551):warning:This function is not called and unchecked.
+sub.cpp(566):warning:This function is not called and unchecked.
+sub.cpp(581):warning:This function is not called and unchecked.
+sub.cpp(594):warning:This function is not called and unchecked.
+treg.cpp(13):warning:This function is not called and unchecked.
+treg.cpp(72):warning:This function is not called and unchecked.
+treg.cpp(149):warning:This function is not called and unchecked.
+treg.cpp(163):warning:This function is not called and unchecked.
+treg.cpp(175):warning:This function is not called and unchecked.
+treg.cpp(190):warning:This function is not called and unchecked.
+treg.cpp(3987):warning:This function is not called and unchecked.
+treg.cpp(4004):warning:This function is not called and unchecked.
+0 error(s),91 warning(s)
+========== Build: 1 succeeded, 0 failed, 0 up-to-date, 0 skipped ==========

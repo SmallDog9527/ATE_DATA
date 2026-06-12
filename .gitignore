@@ -1,0 +1,39 @@
+# Python
+venv/
+backend/__pycache__/
+backend/.env
+**/__pycache__/
+*.pyc
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Data
+uploads/
+postgres_data/
+redis_data/
+grafana_data/
+
+# Environment & Secrets
+.env
+*.env
+!.env.example
+
+# IDE
+.vscode/
+*.swp
+dify/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Archives & Temp files
+*.zip
+*.log
+tmp/
+backend/tmp/
+frontend/type_check_log.txt
+frontend/src/New Text Document.txt
