@@ -22,7 +22,7 @@ from app.schemas.settings import (
     ManualLogItem, ManualLogPage,
 )
 from app.services.smtp_dynamic import encrypt_password, decrypt_password, send_test_email
-from sqlalchemy import literal, desc
+from sqlalchemy import literal, desc, cast, String
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -414,7 +414,7 @@ def get_manual_logs(
         Lot.id.label("id"),
         Lot.filename.label("filename"),
         Lot.upload_date.label("upload_date"),
-        Lot.status.label("status"),
+        cast(Lot.status, String).label("status"),
         literal("").label("error_msg"),
         Lot.file_size.label("file_size"),
         User.username.label("uploader_name"),
