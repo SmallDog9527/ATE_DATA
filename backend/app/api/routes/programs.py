@@ -1280,8 +1280,8 @@ def download_pgs_archive(
 ):
     """下载已上传的程序压缩包；旧 .pgs 记录会打包为 .zip。"""
     rec = db.query(PgsUpload).filter(PgsUpload.id == upload_id).first()
-    if not rec:
-        raise HTTPException(status_code=404, detail="记录不存在")
+    if not rec or rec.parse_status == "deleted":
+        raise HTTPException(status_code=404, detail="记录不存在或已删除")
     if not rec.storage_path or not os.path.exists(rec.storage_path):
         raise HTTPException(status_code=404, detail="文件不存在")
 
@@ -1312,9 +1312,9 @@ def delete_pgs_upload(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """删除 PGS 上传记录（同时删除本地文件）"""
+    """删除 PGS 上传记录（将状态改为删除，同时删除本地文件）"""
     rec = db.query(PgsUpload).filter(PgsUpload.id == upload_id).first()
-    if not rec:
+    if not rec or rec.parse_status == "deleted":
         raise HTTPException(status_code=404, detail="记录不存在")
     if rec.storage_path and os.path.exists(rec.storage_path):
         try:
@@ -1325,7 +1325,7 @@ def delete_pgs_upload(
     if os.path.isdir(cache_dir):
         shutil.rmtree(cache_dir, ignore_errors=True)
     CPP_RESPONSE_CACHE.pop(upload_id, None)
-    db.delete(rec)
+    rec.parse_status = "deleted"
     db.commit()
     return {"success": True}
 
@@ -1366,7 +1366,10 @@ def _build_pgs_list(db: Session, product_name: str) -> list:
     """返回该产品所有 PGS 上传记录，按程序版本号降序排列"""
     records = (
         db.query(PgsUpload)
-        .filter(PgsUpload.product_name == product_name)
+        .filter(
+            PgsUpload.product_name == product_name,
+            PgsUpload.parse_status != 'deleted'
+        )
         .order_by(PgsUpload.upload_date)
         .all()
     )

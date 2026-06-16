@@ -18,6 +18,7 @@ class ProcessStatus(str, enum.Enum):
     processing = "processing"
     processed = "processed"
     failed = "failed"
+    deleted = "deleted"
 
 class Lot(Base):
     __tablename__ = "lots"

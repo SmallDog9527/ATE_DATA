@@ -313,7 +313,7 @@
               📋 FTP 自动上传日志
             </button>
             <button :class="['preset-btn', activeLogSubTab === 'manual' ? 'active' : '']" @click="activeLogSubTab = 'manual'">
-              📤 ENG_上传日志
+              📤 ENG_日志
             </button>
           </div>
 
@@ -436,6 +436,22 @@
           <!-- ENG_上传日志 content (manual uploads) -->
           <template v-if="activeLogSubTab === 'manual' || (!authStore.isAdmin && !authStore.isEng)">
             <div class="log-filter-row">
+              <select v-model="manualLogFilterType" @change="loadManualLogs" class="filter-select-sm">
+                <option value="">全部类型</option>
+                <option value="data">📁 数据</option>
+                <option value="program">🚀 程序</option>
+              </select>
+              <select v-model="manualLogFilterStatus" @change="loadManualLogs" class="filter-select-sm">
+                <option value="">全部状态</option>
+                <option value="success">✅ 成功</option>
+                <option value="failed">❌ 失败</option>
+                <option value="processing">⏳ 处理中</option>
+                <option value="deleted">🗑 已删除</option>
+              </select>
+              <select v-if="authStore.isAdmin || authStore.isEng" v-model="manualLogFilterOperator" @change="loadManualLogs" class="filter-select-sm">
+                <option value="">全部 Operator</option>
+                <option v-for="op in manualOperators" :key="op" :value="op">{{ op }}</option>
+              </select>
               <button class="btn-sm" @click="loadManualLogs">🔄 刷新</button>
             </div>
 
@@ -457,7 +473,7 @@
                   <th>状态</th>
                   <th>大小</th>
                   <th>时间</th>
-                  <th v-if="authStore.isAdmin || authStore.isEng">上传者</th>
+                  <th v-if="authStore.isAdmin || authStore.isEng">Operator</th>
                 </tr>
               </thead>
               <tbody>
@@ -471,6 +487,7 @@
                   <td>
                     <span v-if="log.status === 'success'" class="badge green">✅ 成功</span>
                     <span v-else-if="log.status === 'failed'" class="badge red" :title="log.error_msg">❌ 失败</span>
+                    <span v-else-if="log.status === 'deleted'" class="badge gray">🗑 已删除</span>
                     <span v-else class="badge blue">⏳ 处理中</span>
                     <div v-if="log.status === 'failed' && log.error_msg" class="log-error" :title="log.error_msg" style="margin-top:4px">
                       {{ log.error_msg }}
@@ -1181,10 +1198,26 @@ const manualLogPageSize = ref(20)
 const manualLogTotal    = ref(0)
 const activeLogSubTab   = ref((authStore.isAdmin || authStore.isEng) ? 'ftp' : 'manual')
 
+const manualLogFilterType = ref('')
+const manualLogFilterStatus = ref('')
+const manualLogFilterOperator = ref('')
+const manualOperators = ref<string[]>([])
+
+async function loadManualOperators() {
+  try {
+    const data: any = await api.get('/settings/manual-operators')
+    manualOperators.value = data || []
+  } catch {}
+}
+
 async function loadManualLogs() {
   manualLogsLoading.value = true
   try {
     const params: any = { page: manualLogPage.value, page_size: manualLogPageSize.value }
+    if (manualLogFilterType.value) params.upload_type = manualLogFilterType.value
+    if (manualLogFilterStatus.value) params.status = manualLogFilterStatus.value
+    if (manualLogFilterOperator.value) params.operator = manualLogFilterOperator.value
+
     const data: any = await api.get('/settings/manual-logs', { params })
     manualLogs.value = data.items || []
     manualLogTotal.value = data.total || 0
@@ -1196,6 +1229,9 @@ async function loadManualLogs() {
 watch(activeTab, (newTab) => {
   if (newTab === 'admin') {
     loadManualLogs()
+    if (authStore.isAdmin || authStore.isEng) {
+      loadManualOperators()
+    }
   }
 })
 
@@ -1343,7 +1379,7 @@ onMounted(async () => {
   await loadShares()
   await loadManualLogs()
   if (authStore.isAdmin || authStore.isEng) {
-    await Promise.all([loadOsats(), loadFtpLogs(), loadSmtpConfig()])
+    await Promise.all([loadOsats(), loadFtpLogs(), loadSmtpConfig(), loadManualOperators()])
   }
   if (authStore.isAdmin) {
     await loadUsers()

@@ -783,6 +783,8 @@ def get_lots(
                     Lot.data_source == DataSource.ftp  # 所有人均可访问 OSAT (FTP) 数据
                 )
             )
+        
+        query = query.filter(Lot.status != 'deleted')
 
         if filename:
             query = query.filter(Lot.filename.ilike(f"%{filename}%"))
@@ -881,8 +883,11 @@ def delete_lots(
                     print(f"[delete_lots] 已清除 FTP 上传日志 ftp_path={lot.ftp_path!r}，"
                           f"下次扫描将重新抓取该文件")
 
-            # 4. 删除主记录
-            db.delete(lot)
+            # 4. 删除主记录或软删除
+            if lot.data_source == DataSource.manual:
+                lot.status = 'deleted'
+            else:
+                db.delete(lot)
             deleted_count += 1
     
     db.commit()

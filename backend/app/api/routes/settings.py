@@ -404,6 +404,9 @@ def get_failed_summary(
 def get_manual_logs(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    upload_type: Optional[str] = None,
+    status: Optional[str] = None,
+    operator: Optional[str] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
@@ -442,9 +445,27 @@ def get_manual_logs(
     union_q = q_lots.union_all(q_pgs)
     subq = union_q.subquery()
 
-    total = db.query(subq).count()
+    query = db.query(subq)
+
+    if upload_type:
+        query = query.filter(subq.c.upload_type == upload_type)
+
+    if status:
+        if status == "success":
+            query = query.filter(subq.c.status.in_(("processed", "ok")))
+        elif status == "failed":
+            query = query.filter(subq.c.status.in_(("failed", "error")))
+        elif status == "processing":
+            query = query.filter(subq.c.status.in_(("pending", "processing")))
+        elif status == "deleted":
+            query = query.filter(subq.c.status == "deleted")
+
+    if operator:
+        query = query.filter(subq.c.uploader_name.ilike(f"%{operator}%"))
+
+    total = query.count()
     rows = (
-        db.query(subq)
+        query
         .order_by(desc(subq.c.upload_date))
         .offset((page - 1) * page_size)
         .limit(page_size)
@@ -458,6 +479,8 @@ def get_manual_logs(
             mapped_status = "success"
         elif r.status in ("failed", "error"):
             mapped_status = "failed"
+        elif r.status == "deleted":
+            mapped_status = "deleted"
 
         items.append(ManualLogItem(
             upload_type=r.upload_type,
@@ -472,4 +495,22 @@ def get_manual_logs(
         ))
 
     return ManualLogPage(total=total, page=page, page_size=page_size, items=items)
+
+
+@router.get("/manual-operators", response_model=List[str])
+def get_manual_operators(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取所有手动上传过文件（程序或数据）的唯一 Operator 用户名列表"""
+    if not (current_user.role == 'admin' or current_user.role == 'eng'):
+        return [current_user.username]
+
+    lot_users = db.query(User.username).join(Lot, Lot.user_id == User.id).filter(Lot.data_source == 'manual')
+    pgs_users = db.query(User.username).join(PgsUpload, PgsUpload.uploader_id == User.id)
+
+    union_users = lot_users.union(pgs_users).all()
+    usernames = sorted(list(set(r[0] for r in union_users if r[0])))
+    return usernames
+
 
