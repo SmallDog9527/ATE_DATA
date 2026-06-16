@@ -27,10 +27,14 @@
         <button class="btn btn-download" :disabled="!selectedRows.length" @click="handleDownload">
           ⬇ 下载原数据 {{ selectedRows.length ? `(${selectedRows.length})` : '' }}
         </button>
-        <button class="btn btn-merge" :disabled="selectedRows.length < 2" @click="openMergeDialog">
+        <button class="btn btn-merge" :disabled="selectedRows.length < 2" @click="openMergeDialog"
+                @mouseover="hoverTip = '将一片的多次测试数据合并为完整数据。'"
+                @mouseleave="hoverTip = ''">
           🔗 合并数据 {{ selectedRows.length >= 2 ? `(${selectedRows.length})` : '' }}
         </button>
-        <button class="btn btn-merge-many" :disabled="selectedRows.length < 2" @click="openMergeManyDialog">
+        <button class="btn btn-merge-many" :disabled="selectedRows.length < 2" @click="openMergeManyDialog"
+                @mouseover="hoverTip = '将多片数据合并在一起显示，无坐标。'"
+                @mouseleave="hoverTip = ''">
           🧩 合多数据 {{ selectedRows.length >= 2 ? `(${selectedRows.length})` : '' }}
         </button>
         <button class="btn btn-multi-analysis" :disabled="selectedRows.length < 2" @click="handleMultiAnalysis">
@@ -69,6 +73,11 @@
           <option value="failed">失败</option>
         </select>
       </div>
+    </div>
+
+    <!-- 悬浮提示说明 -->
+    <div v-if="hoverTip" class="hover-tip-bar">
+      💡 {{ hoverTip }}
     </div>
 
     <!-- 表格 -->
@@ -362,6 +371,7 @@ const recalcChecking = ref(false)
 const reparsing = ref(false)
 
 const activeHomeTab = ref('ENG_DATA')
+const hoverTip = ref('')
 let gridFilterTimer: ReturnType<typeof setTimeout> | null = null
 
 const backendTotalPages = computed(() => Math.max(1, Math.ceil(backendTotal.value / backendPageSize.value)))
@@ -1976,5 +1986,18 @@ watch(activeHomeTab, () => {
 :deep(.select-floating-filter:focus) {
   border-color: #60a5fa;
   box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.25);
+}
+
+.hover-tip-bar {
+  padding: 6px 14px;
+  font-size: 12px;
+  color: #8b5cf6;
+  background: #f5f3ff;
+  border: 1px solid #ddd6fe;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: -4px;
 }
 </style>
