@@ -30,7 +30,7 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 @router.get("/smtp", response_model=SmtpConfigOut)
 def get_smtp_config(
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin_or_eng),
+    _: User = Depends(require_admin),
 ):
     """获取当前 SMTP 配置（密码脱敏）"""
     cfg = db.query(SystemSetting).first()
@@ -50,7 +50,7 @@ def get_smtp_config(
 def save_smtp_config(
     body: SmtpConfigIn,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin_or_eng),
+    _: User = Depends(require_admin),
 ):
     """保存 SMTP 配置（密码加密存储）"""
     cfg = db.query(SystemSetting).first()
@@ -74,7 +74,7 @@ def save_smtp_config(
 def test_smtp(
     body: SmtpTestRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin_or_eng),
+    _: User = Depends(require_admin),
 ):
     """发送测试邮件，验证 SMTP 配置是否正确"""
     result = send_test_email(db, body.to_email)

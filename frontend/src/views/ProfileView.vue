@@ -113,7 +113,7 @@
       <!-- ═══════════════════════════════════════ -->
       <!-- 时区设置卡片                             -->
       <!-- ═══════════════════════════════════════ -->
-      <div class="settings-card">
+      <div v-if="authStore.isAdmin" class="settings-card">
         <div class="settings-card-header" @click="tzExpanded = !tzExpanded">
           <div class="settings-card-title">
             <span class="settings-icon">🌐</span>
@@ -153,7 +153,7 @@
       <!-- ═══════════════════════════════════════ -->
       <!-- 邮箱配置卡片                             -->
       <!-- ═══════════════════════════════════════ -->
-      <div v-if="authStore.isAdmin || authStore.isEng" class="settings-card">
+      <div v-if="authStore.isAdmin" class="settings-card">
         <div class="settings-card-header" @click="smtpExpanded = !smtpExpanded">
           <div class="settings-card-title">
             <span class="settings-icon">📧</span>

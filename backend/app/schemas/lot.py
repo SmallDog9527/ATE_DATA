@@ -26,6 +26,7 @@ class LotResponse(BaseModel):
     finish_date: Optional[datetime]
     data_source: Optional[str]
     item_count: Optional[int]
+    user_id: Optional[int] = None
     osat_name: Optional[str] = None    # OSAT 来源（FTP上传时有值，手动上传为 None）
     mp_tester: Optional[str] = None    # 机台编号（后续通过 Summary 关联）
     probecard: Optional[str] = None    # 探针卡（后续通过 Summary 关联）
