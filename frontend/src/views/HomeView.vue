@@ -24,7 +24,10 @@
         <button class="btn btn-danger" :disabled="!selectedRows.length" @click="handleDelete">
           🗑 删除 {{ selectedRows.length ? `(${selectedRows.length})` : '' }}
         </button>
-        <button class="btn btn-download" :disabled="!selectedRows.length" @click="handleDownload">
+        <button class="btn btn-download" :disabled="!selectedRows.length" @click="handleDownload"
+                @mouseover="handleMouseOverDownload"
+                @mousemove="handleMouseMove"
+                @mouseleave="hoverTip = ''">
           ⬇ 下载原数据 {{ selectedRows.length ? `(${selectedRows.length})` : '' }}
         </button>
         <button class="btn btn-merge" :disabled="selectedRows.length < 2" @click="openMergeDialog"
@@ -39,16 +42,28 @@
                 @mouseleave="hoverTip = ''">
           🧩 合多数据 {{ selectedRows.length >= 2 ? `(${selectedRows.length})` : '' }}
         </button>
-        <button class="btn btn-multi-analysis" :disabled="selectedRows.length < 2" @click="handleMultiAnalysis">
+        <button class="btn btn-multi-analysis" :disabled="selectedRows.length < 2" @click="handleMultiAnalysis"
+                @mouseover="handleMouseOverMultiAnalysis"
+                @mousemove="handleMouseMove"
+                @mouseleave="hoverTip = ''">
           📊 分析数据 {{ selectedRows.length >= 2 ? `(${selectedRows.length})` : '' }}
         </button>
-        <button class="btn btn-multi-bin" :disabled="selectedRows.length < 2" @click="handleMultiBin">
+        <button class="btn btn-multi-bin" :disabled="selectedRows.length < 2" @click="handleMultiBin"
+                @mouseover="handleMouseOverMultiBin"
+                @mousemove="handleMouseMove"
+                @mouseleave="hoverTip = ''">
           🗂 分析Bin {{ selectedRows.length >= 2 ? `(${selectedRows.length})` : '' }}
         </button>
-        <button class="btn btn-check" @click="handleRecalcCheck" :disabled="!selectedRows.length || recalcChecking">
+        <button class="btn btn-check" @click="handleRecalcCheck" :disabled="!selectedRows.length || recalcChecking"
+                @mouseover="handleMouseOverCheck"
+                @mousemove="handleMouseMove"
+                @mouseleave="hoverTip = ''">
           ⚡ Check {{ recalcChecking ? '重算中...' : '' }}
         </button>
-        <button class="btn btn-reparse" @click="handleReparse" :disabled="!selectedRows.length || reparsing">
+        <button class="btn btn-reparse" @click="handleReparse" :disabled="!selectedRows.length || reparsing"
+                @mouseover="handleMouseOverReparse"
+                @mousemove="handleMouseMove"
+                @mouseleave="hoverTip = ''">
           重新解析 {{ reparsing ? '提交中...' : (selectedRows.length ? `(${selectedRows.length})` : '') }}
         </button>
         <span v-if="uploading" class="uploading-badge">⬆ 上传中...</span>
@@ -379,6 +394,11 @@ const mouseY = ref(0)
 
 const mergeShowCount = ref(0)
 const mergeManyShowCount = ref(0)
+const downloadShowCount = ref(0)
+const multiAnalysisShowCount = ref(0)
+const multiBinShowCount = ref(0)
+const checkShowCount = ref(0)
+const reparseShowCount = ref(0)
 
 function handleMouseMove(e: MouseEvent) {
   mouseX.value = e.clientX + 10
@@ -396,6 +416,41 @@ function handleMouseOverMergeMany() {
   if (mergeManyShowCount.value < 3) {
     hoverTip.value = '将多片数据合并在一起显示，无坐标。'
     mergeManyShowCount.value++
+  }
+}
+
+function handleMouseOverDownload() {
+  if (downloadShowCount.value < 3) {
+    hoverTip.value = '选择一个或多个数据进行原始数据下载。Combine的不可下载。'
+    downloadShowCount.value++
+  }
+}
+
+function handleMouseOverMultiAnalysis() {
+  if (multiAnalysisShowCount.value < 3) {
+    hoverTip.value = '分析多片数据的参数分析'
+    multiAnalysisShowCount.value++
+  }
+}
+
+function handleMouseOverMultiBin() {
+  if (multiBinShowCount.value < 3) {
+    hoverTip.value = '分析多片数据的Summary'
+    multiBinShowCount.value++
+  }
+}
+
+function handleMouseOverCheck() {
+  if (checkShowCount.value < 3) {
+    hoverTip.value = '添加OTP_trim后的参数，以防FT叠片'
+    checkShowCount.value++
+  }
+}
+
+function handleMouseOverReparse() {
+  if (reparseShowCount.value < 3) {
+    hoverTip.value = '选择一个或多个数据重新解析。'
+    reparseShowCount.value++
   }
 }
 
