@@ -377,26 +377,25 @@ const hoverTip = ref('')
 const mouseX = ref(0)
 const mouseY = ref(0)
 
+const mergeShowCount = ref(0)
+const mergeManyShowCount = ref(0)
+
 function handleMouseMove(e: MouseEvent) {
   mouseX.value = e.clientX + 10
   mouseY.value = e.clientY + 15
 }
 
 function handleMouseOverMerge() {
-  const today = new Date().toDateString()
-  const lastShown = localStorage.getItem('last_shown_merge')
-  if (lastShown !== today) {
+  if (mergeShowCount.value < 3) {
     hoverTip.value = '将一片的多次测试数据合并为完整数据。'
-    localStorage.setItem('last_shown_merge', today)
+    mergeShowCount.value++
   }
 }
 
 function handleMouseOverMergeMany() {
-  const today = new Date().toDateString()
-  const lastShown = localStorage.getItem('last_shown_merge_many')
-  if (lastShown !== today) {
+  if (mergeManyShowCount.value < 3) {
     hoverTip.value = '将多片数据合并在一起显示，无坐标。'
-    localStorage.setItem('last_shown_merge_many', today)
+    mergeManyShowCount.value++
   }
 }
 
