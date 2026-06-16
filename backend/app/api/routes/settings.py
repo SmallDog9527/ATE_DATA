@@ -8,17 +8,21 @@ from typing import List, Optional
 from datetime import datetime, timezone
 
 from app.core.database import get_db
-from app.api.deps import require_admin, require_admin_or_eng
+from app.api.deps import require_admin, require_admin_or_eng, get_current_user
 from app.models.user import User
 from app.models.system_setting import SystemSetting
 from app.models.osat_config import OsatConfig
 from app.models.ftp_upload_log import FtpUploadLog
+from app.models.lot import Lot
+from app.models.pgs_upload import PgsUpload
 from app.schemas.settings import (
     SmtpConfigIn, SmtpConfigOut, SmtpTestRequest,
     OsatConfigIn, OsatConfigOut,
     FtpLogItem, FtpLogPage,
+    ManualLogItem, ManualLogPage,
 )
 from app.services.smtp_dynamic import encrypt_password, decrypt_password, send_test_email
+from sqlalchemy import literal, desc
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -394,3 +398,78 @@ def get_failed_summary(
             for r in stuck_rows
         ],
     }
+
+
+@router.get("/manual-logs", response_model=ManualLogPage)
+def get_manual_logs(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+):
+    """查询手动上传日志（包括手动上传数据 Lot 和手动上传程序 PgsUpload，支持按角色权限过滤，分页）"""
+    # For manual data lots:
+    q_lots = db.query(
+        literal("data").label("upload_type"),
+        Lot.id.label("id"),
+        Lot.filename.label("filename"),
+        Lot.upload_date.label("upload_date"),
+        Lot.status.label("status"),
+        literal("").label("error_msg"),
+        Lot.file_size.label("file_size"),
+        User.username.label("uploader_name"),
+        Lot.user_id.label("uploader_id")
+    ).outerjoin(User, User.id == Lot.user_id).filter(Lot.data_source == 'manual')
+
+    # For program uploads:
+    q_pgs = db.query(
+        literal("program").label("upload_type"),
+        PgsUpload.id.label("id"),
+        PgsUpload.filename.label("filename"),
+        PgsUpload.upload_date.label("upload_date"),
+        PgsUpload.parse_status.label("status"),
+        PgsUpload.parse_error.label("error_msg"),
+        literal(None).label("file_size"),
+        User.username.label("uploader_name"),
+        PgsUpload.uploader_id.label("uploader_id")
+    ).outerjoin(User, User.id == PgsUpload.uploader_id)
+
+    # Permission check: normal user only sees their own uploads
+    if not (current_user.role == 'admin' or current_user.role == 'eng'):
+        q_lots = q_lots.filter(Lot.user_id == current_user.id)
+        q_pgs = q_pgs.filter(PgsUpload.uploader_id == current_user.id)
+
+    union_q = q_lots.union_all(q_pgs)
+    subq = union_q.subquery()
+
+    total = db.query(subq).count()
+    rows = (
+        db.query(subq)
+        .order_by(desc(subq.c.upload_date))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    items = []
+    for r in rows:
+        mapped_status = "processing"
+        if r.status in ("processed", "ok"):
+            mapped_status = "success"
+        elif r.status in ("failed", "error"):
+            mapped_status = "failed"
+
+        items.append(ManualLogItem(
+            upload_type=r.upload_type,
+            id=r.id,
+            filename=r.filename,
+            upload_date=r.upload_date,
+            status=mapped_status,
+            error_msg=r.error_msg or None,
+            file_size=r.file_size,
+            uploader_name=r.uploader_name or "未知",
+            uploader_id=r.uploader_id,
+        ))
+
+    return ManualLogPage(total=total, page=page, page_size=page_size, items=items)
+

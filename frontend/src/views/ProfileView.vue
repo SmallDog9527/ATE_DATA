@@ -294,128 +294,202 @@
       <!-- ═══════════════════════════════════════ -->
       <!-- FTP 上传日志卡片                         -->
       <!-- ═══════════════════════════════════════ -->
-      <div v-if="authStore.isAdmin || authStore.isEng" class="settings-card">
+      <div class="settings-card">
         <div class="settings-card-header" @click="ftpLogExpanded = !ftpLogExpanded">
           <div class="settings-card-title">
             <span class="settings-icon">📋</span>
-            <span>FTP 上传日志</span>
-            <span class="badge blue" style="margin-left:8px">{{ logTotal }} 条</span>
+            <span>{{ (authStore.isAdmin || authStore.isEng) ? 'FTP 上传日志' : '手动上传日志' }}</span>
+            <span class="badge blue" style="margin-left:8px">
+              {{ activeLogSubTab === 'ftp' ? logTotal + ' 条' : manualLogTotal + ' 条' }}
+            </span>
           </div>
           <span class="collapse-arrow">{{ ftpLogExpanded ? '▲' : '▼' }}</span>
         </div>
 
         <div v-if="ftpLogExpanded" class="settings-card-body">
-          <div class="log-filter-row">
-            <select v-model="logFilterOsat" @change="loadFtpLogs" class="filter-select-sm">
-              <option value="">全部 OSAT</option>
-              <option v-for="o in osatList" :key="o.id" :value="o.id">{{ o.name }}</option>
-            </select>
-            <select v-model="logFilterStatus" @change="loadFtpLogs" class="filter-select-sm">
-              <option value="">全部状态</option>
-              <option value="success">✅ 成功</option>
-              <option value="failed">❌ 失败</option>
-              <option value="processing">⏳ 处理中</option>
-            </select>
-            <button class="btn-sm" @click="loadFtpLogs">🔄 刷新</button>
-            <button class="btn-sm btn-warn" @click="loadStuckFiles" style="margin-left:auto">
-              ⚠ 查看卡住文件 <span v-if="stuckFiles.length > 0" class="stuck-badge">{{ stuckFiles.length }}</span>
+          <!-- sub-tabs (only for admin/eng) -->
+          <div v-if="authStore.isAdmin || authStore.isEng" class="quick-select-row" style="margin-bottom: 16px;">
+            <button :class="['preset-btn', activeLogSubTab === 'ftp' ? 'active' : '']" @click="activeLogSubTab = 'ftp'">
+              📋 FTP 自动上传日志
+            </button>
+            <button :class="['preset-btn', activeLogSubTab === 'manual' ? 'active' : '']" @click="activeLogSubTab = 'manual'">
+              📤 ENG_上传日志
             </button>
           </div>
 
-          <!-- 卡住文件面板 -->
-          <div v-if="stuckPanelVisible" class="stuck-panel">
-            <div class="stuck-panel-header">
-              <span>⚠ 失败超过 {{ stuckMaxRetries }} 次、被跳过的文件（共 {{ stuckFiles.length }} 个）</span>
-              <div class="stuck-panel-actions">
-                <button class="btn-sm btn-green" @click="retryAllStuck" :disabled="stuckRetrying"
-                  v-if="stuckFiles.length > 0">
-                  {{ stuckRetrying ? '重置中...' : '🔁 全部重试' }}
-                </button>
-                <button class="btn-sm" @click="stuckPanelVisible = false">关闭</button>
+          <!-- FTP 自动上传日志 content -->
+          <template v-if="activeLogSubTab === 'ftp' && (authStore.isAdmin || authStore.isEng)">
+            <div class="log-filter-row">
+              <select v-model="logFilterOsat" @change="loadFtpLogs" class="filter-select-sm">
+                <option value="">全部 OSAT</option>
+                <option v-for="o in osatList" :key="o.id" :value="o.id">{{ o.name }}</option>
+              </select>
+              <select v-model="logFilterStatus" @change="loadFtpLogs" class="filter-select-sm">
+                <option value="">全部状态</option>
+                <option value="success">✅ 成功</option>
+                <option value="failed">❌ 失败</option>
+                <option value="processing">⏳ 处理中</option>
+              </select>
+              <button class="btn-sm" @click="loadFtpLogs">🔄 刷新</button>
+              <button class="btn-sm btn-warn" @click="loadStuckFiles" style="margin-left:auto">
+                ⚠ 查看卡住文件 <span v-if="stuckFiles.length > 0" class="stuck-badge">{{ stuckFiles.length }}</span>
+              </button>
+            </div>
+
+            <!-- Stuck files panel -->
+            <div v-if="stuckPanelVisible" class="stuck-panel">
+              <div class="stuck-panel-header">
+                <span>⚠ 失败超过 {{ stuckMaxRetries }} 次、被跳过的文件（共 {{ stuckFiles.length }} 个）</span>
+                <div class="stuck-panel-actions">
+                  <button class="btn-sm btn-green" @click="retryAllStuck" :disabled="stuckRetrying"
+                    v-if="stuckFiles.length > 0">
+                    {{ stuckRetrying ? '重置中...' : '🔁 全部重试' }}
+                  </button>
+                  <button class="btn-sm" @click="stuckPanelVisible = false">关闭</button>
+                </div>
+              </div>
+              <div v-if="stuckFiles.length === 0" class="empty-tip" style="margin:12px 0">没有卡住的文件 🎉</div>
+              <table v-else class="log-table" style="margin-top:8px">
+                <colgroup>
+                  <col style="width:90px" />
+                  <col />
+                  <col style="width:60px" />
+                  <col style="width:150px" />
+                  <col style="width:220px" />
+                  <col style="width:80px" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>OSAT</th>
+                    <th>文件名</th>
+                    <th>失败次数</th>
+                    <th>最后尝试</th>
+                    <th>最后错误</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="f in stuckFiles" :key="f.remote_path">
+                    <td><span class="osat-tag">{{ f.osat_name || '—' }}</span></td>
+                    <td class="log-path" :title="f.remote_path">{{ f.filename }}</td>
+                    <td style="text-align:center"><span class="badge red">{{ f.fail_count }}</span></td>
+                    <td>{{ fmtDate(f.last_attempt) }}</td>
+                    <td class="log-error" :title="f.last_error">{{ f.last_error || '—' }}</td>
+                    <td>
+                      <button class="btn-sm btn-green" @click="retryOneStuck(f)" :disabled="f._retrying">
+                        {{ f._retrying ? '...' : '🔁 重试' }}
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <div v-if="stuckMsg" :class="['msg', stuckMsg.ok ? 'success' : 'error']" style="margin-top:8px">
+                {{ stuckMsg.text }}
               </div>
             </div>
-            <div v-if="stuckFiles.length === 0" class="empty-tip" style="margin:12px 0">没有卡住的文件 🎉</div>
-            <table v-else class="log-table" style="margin-top:8px">
+
+            <div v-if="logsLoading" class="loading">加载中...</div>
+            <div v-else-if="ftpLogs.length === 0" class="empty-tip">暂无上传日志</div>
+            <table v-else class="log-table">
               <colgroup>
                 <col style="width:90px" />
                 <col />
-                <col style="width:60px" />
+                <col style="width:120px" />
+                <col style="width:120px" />
                 <col style="width:150px" />
-                <col style="width:220px" />
-                <col style="width:80px" />
+                <col style="width:110px" />
               </colgroup>
               <thead>
                 <tr>
                   <th>OSAT</th>
                   <th>文件名</th>
-                  <th>失败次数</th>
-                  <th>最后尝试</th>
-                  <th>最后错误</th>
-                  <th>操作</th>
+                  <th>状态</th>
+                  <th>大小</th>
+                  <th>时间</th>
+                  <th>备注</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="f in stuckFiles" :key="f.remote_path">
-                  <td><span class="osat-tag">{{ f.osat_name || '—' }}</span></td>
-                  <td class="log-path" :title="f.remote_path">{{ f.filename }}</td>
-                  <td style="text-align:center"><span class="badge red">{{ f.fail_count }}</span></td>
-                  <td>{{ fmtDate(f.last_attempt) }}</td>
-                  <td class="log-error" :title="f.last_error">{{ f.last_error || '—' }}</td>
+                <tr v-for="log in ftpLogs" :key="log.id">
+                  <td><span class="osat-tag">{{ log.osat_name || '—' }}</span></td>
+                  <td class="log-path" :title="log.remote_path">{{ log.filename || log.remote_path }}</td>
                   <td>
-                    <button class="btn-sm btn-green" @click="retryOneStuck(f)" :disabled="f._retrying">
-                      {{ f._retrying ? '...' : '🔁 重试' }}
-                    </button>
+                    <span v-if="log.status === 'success'" class="badge green">✅ 成功</span>
+                    <span v-else-if="log.status === 'failed'" class="badge red">❌ 失败</span>
+                    <span v-else class="badge blue">⏳ 处理中</span>
                   </td>
+                  <td>{{ log.file_size ? fmtBytes(log.file_size) : '—' }}</td>
+                  <td>{{ fmtDate(log.uploaded_at) }}</td>
+                  <td class="log-error">{{ log.error_msg || (log.lot_id_created ? `Lot#${log.lot_id_created}` : '—') }}</td>
                 </tr>
               </tbody>
             </table>
-            <div v-if="stuckMsg" :class="['msg', stuckMsg.ok ? 'success' : 'error']" style="margin-top:8px">
-              {{ stuckMsg.text }}
-            </div>
-          </div>
 
-          <div v-if="logsLoading" class="loading">加载中...</div>
-          <div v-else-if="ftpLogs.length === 0" class="empty-tip">暂无上传日志</div>
-          <table v-else class="log-table">
-            <colgroup>
-              <col style="width:90px" />         <!-- OSAT -->
-              <col />                              <!-- 文件名（自动撑开） -->
-              <col style="width:120px" />        <!-- 状态 -->
-              <col style="width:120px" />        <!-- 大小 -->
-              <col style="width:150px" />        <!-- 时间 -->
-              <col style="width:110px" />        <!-- 备注 -->
-            </colgroup>
-            <thead>
-              <tr>
-                <th>OSAT</th>
-                <th>文件名</th>
-                <th>状态</th>
-                <th>大小</th>
-                <th>时间</th>
-                <th>备注</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="log in ftpLogs" :key="log.id">
-                <td><span class="osat-tag">{{ log.osat_name || '—' }}</span></td>
-                <td class="log-path" :title="log.remote_path">{{ log.filename || log.remote_path }}</td>
-                <td>
-                  <span v-if="log.status === 'success'" class="badge green">✅ 成功</span>
-                  <span v-else-if="log.status === 'failed'" class="badge red">❌ 失败</span>
-                  <span v-else class="badge blue">⏳ 处理中</span>
-                </td>
-                <td>{{ log.file_size ? fmtBytes(log.file_size) : '—' }}</td>
-                <td>{{ fmtDate(log.uploaded_at) }}</td>
-                <td class="log-error">{{ log.error_msg || (log.lot_id_created ? `Lot#${log.lot_id_created}` : '—') }}</td>
-              </tr>
-            </tbody>
-          </table>
-          <!-- 分页 -->
-          <div v-if="logTotal > logPageSize" class="log-pagination">
-            <button :disabled="logPage === 1" @click="logPage--; loadFtpLogs()" class="btn-sm">上一页</button>
-            <span>第 {{ logPage }} 页 / 共 {{ Math.ceil(logTotal / logPageSize) }} 页</span>
-            <button :disabled="logPage * logPageSize >= logTotal" @click="logPage++; loadFtpLogs()" class="btn-sm">下一页</button>
-          </div>
+            <!-- FTP pagination -->
+            <div v-if="logTotal > logPageSize" class="log-pagination">
+              <button :disabled="logPage === 1" @click="logPage--; loadFtpLogs()" class="btn-sm">上一页</button>
+              <span>第 {{ logPage }} 页 / 共 {{ Math.ceil(logTotal / logPageSize) }} 页</span>
+              <button :disabled="logPage * logPageSize >= logTotal" @click="logPage++; loadFtpLogs()" class="btn-sm">下一页</button>
+            </div>
+          </template>
+
+          <!-- ENG_上传日志 content (manual uploads) -->
+          <template v-if="activeLogSubTab === 'manual' || (!authStore.isAdmin && !authStore.isEng)">
+            <div class="log-filter-row">
+              <button class="btn-sm" @click="loadManualLogs">🔄 刷新</button>
+            </div>
+
+            <div v-if="manualLogsLoading" class="loading">加载中...</div>
+            <div v-else-if="manualLogs.length === 0" class="empty-tip">暂无手动上传日志</div>
+            <table v-else class="log-table">
+              <colgroup>
+                <col style="width:70px" />
+                <col />
+                <col style="width:120px" />
+                <col style="width:120px" />
+                <col style="width:150px" />
+                <col v-if="authStore.isAdmin || authStore.isEng" style="width:120px" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>类型</th>
+                  <th>文件名</th>
+                  <th>状态</th>
+                  <th>大小</th>
+                  <th>时间</th>
+                  <th v-if="authStore.isAdmin || authStore.isEng">上传者</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="log in manualLogs" :key="log.upload_type + '-' + log.id">
+                  <td>
+                    <span :class="['badge', log.upload_type === 'program' ? 'purple' : 'blue']">
+                      {{ log.upload_type === 'program' ? '程序' : '数据' }}
+                    </span>
+                  </td>
+                  <td class="log-path" :title="log.filename">{{ log.filename }}</td>
+                  <td>
+                    <span v-if="log.status === 'success'" class="badge green">✅ 成功</span>
+                    <span v-else-if="log.status === 'failed'" class="badge red" :title="log.error_msg">❌ 失败</span>
+                    <span v-else class="badge blue">⏳ 处理中</span>
+                    <div v-if="log.status === 'failed' && log.error_msg" class="log-error" :title="log.error_msg" style="margin-top:4px">
+                      {{ log.error_msg }}
+                    </div>
+                  </td>
+                  <td>{{ log.file_size ? fmtBytes(log.file_size) : '—' }}</td>
+                  <td>{{ fmtDate(log.upload_date) }}</td>
+                  <td v-if="authStore.isAdmin || authStore.isEng">{{ log.uploader_name || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <!-- Manual pagination -->
+            <div v-if="manualLogTotal > manualLogPageSize" class="log-pagination">
+              <button :disabled="manualLogPage === 1" @click="manualLogPage--; loadManualLogs()" class="btn-sm">上一页</button>
+              <span>第 {{ manualLogPage }} 页 / 共 {{ Math.ceil(manualLogTotal / manualLogPageSize) }} 页</span>
+              <button :disabled="manualLogPage * manualLogPageSize >= manualLogTotal" @click="manualLogPage++; loadManualLogs()" class="btn-sm">下一页</button>
+            </div>
+          </template>
         </div>
       </div>
 
@@ -595,18 +669,17 @@ const authStore = useAuthStore()
 const route = useRoute()
 
 // ── Tabs ──
-const tabs = [
-  { key: 'info',   label: '个人信息' },
-  { key: 'shares', label: '我的分享' },
-  { key: 'admin',  label: '系统管理' },
-]
 const visibleTabs = computed(() => {
-  return tabs.filter(t => {
-    if (t.key === 'admin') {
-      return authStore.isAdmin || authStore.isEng
-    }
-    return true
-  })
+  const list = [
+    { key: 'info',   label: '个人信息' },
+    { key: 'shares', label: '我的分享' },
+  ]
+  if (authStore.isAdmin || authStore.isEng) {
+    list.push({ key: 'admin',  label: '系统管理' })
+  } else {
+    list.push({ key: 'admin',  label: '上传日志' })
+  }
+  return list
 })
 const activeTab = ref((route.path === '/settings' && (authStore.isAdmin || authStore.isEng)) ? 'admin' : 'info')
 
@@ -1089,6 +1162,43 @@ async function loadFtpLogs() {
   }
 }
 
+// ── Manual Upload Logs ──
+interface ManualLog {
+  upload_type: string
+  id: number
+  filename: string
+  upload_date: string
+  status: string
+  error_msg?: string
+  file_size?: number
+  uploader_name?: string
+  uploader_id?: number
+}
+const manualLogs        = ref<ManualLog[]>([])
+const manualLogsLoading = ref(false)
+const manualLogPage     = ref(1)
+const manualLogPageSize = ref(20)
+const manualLogTotal    = ref(0)
+const activeLogSubTab   = ref((authStore.isAdmin || authStore.isEng) ? 'ftp' : 'manual')
+
+async function loadManualLogs() {
+  manualLogsLoading.value = true
+  try {
+    const params: any = { page: manualLogPage.value, page_size: manualLogPageSize.value }
+    const data: any = await api.get('/settings/manual-logs', { params })
+    manualLogs.value = data.items || []
+    manualLogTotal.value = data.total || 0
+  } catch {} finally {
+    manualLogsLoading.value = false
+  }
+}
+
+watch(activeTab, (newTab) => {
+  if (newTab === 'admin') {
+    loadManualLogs()
+  }
+})
+
 // ── 卡住文件（失败超过上限且从未成功）──
 interface StuckFile {
   osat_id: number; osat_name?: string
@@ -1231,6 +1341,7 @@ function fmtBytes(b?: number) {
 onMounted(async () => {
   await authStore.refreshMe()
   await loadShares()
+  await loadManualLogs()
   if (authStore.isAdmin || authStore.isEng) {
     await Promise.all([loadOsats(), loadFtpLogs(), loadSmtpConfig()])
   }

@@ -126,3 +126,27 @@ class FtpLogPage(BaseModel):
     page: int
     page_size: int
     items: list[FtpLogItem]
+
+
+# ──────────────────────────────────────────────
+# ENG 手动上传日志
+# ──────────────────────────────────────────────
+
+class ManualLogItem(BaseModel):
+    upload_type: str  # "data" / "program"
+    id: int
+    filename: str
+    upload_date: datetime
+    status: str
+    error_msg: Optional[str] = None
+    file_size: Optional[int] = None
+    uploader_name: Optional[str] = None
+    uploader_id: Optional[int] = None
+
+
+class ManualLogPage(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[ManualLogItem]
+
