@@ -28,12 +28,14 @@
           ⬇ 下载原数据 {{ selectedRows.length ? `(${selectedRows.length})` : '' }}
         </button>
         <button class="btn btn-merge" :disabled="selectedRows.length < 2" @click="openMergeDialog"
-                @mouseover="hoverTip = '将一片的多次测试数据合并为完整数据。'"
+                @mouseover="handleMouseOverMerge"
+                @mousemove="handleMouseMove"
                 @mouseleave="hoverTip = ''">
           🔗 合并数据 {{ selectedRows.length >= 2 ? `(${selectedRows.length})` : '' }}
         </button>
         <button class="btn btn-merge-many" :disabled="selectedRows.length < 2" @click="openMergeManyDialog"
-                @mouseover="hoverTip = '将多片数据合并在一起显示，无坐标。'"
+                @mouseover="handleMouseOverMergeMany"
+                @mousemove="handleMouseMove"
                 @mouseleave="hoverTip = ''">
           🧩 合多数据 {{ selectedRows.length >= 2 ? `(${selectedRows.length})` : '' }}
         </button>
@@ -75,8 +77,8 @@
       </div>
     </div>
 
-    <!-- 悬浮提示说明 -->
-    <div v-if="hoverTip" class="hover-tip-bar">
+    <!-- 鼠标悬浮提示框 -->
+    <div v-if="hoverTip" class="floating-hover-tip" :style="{ left: mouseX + 'px', top: mouseY + 'px' }">
       💡 {{ hoverTip }}
     </div>
 
@@ -372,6 +374,32 @@ const reparsing = ref(false)
 
 const activeHomeTab = ref('ENG_DATA')
 const hoverTip = ref('')
+const mouseX = ref(0)
+const mouseY = ref(0)
+
+function handleMouseMove(e: MouseEvent) {
+  mouseX.value = e.clientX + 10
+  mouseY.value = e.clientY + 15
+}
+
+function handleMouseOverMerge() {
+  const today = new Date().toDateString()
+  const lastShown = localStorage.getItem('last_shown_merge')
+  if (lastShown !== today) {
+    hoverTip.value = '将一片的多次测试数据合并为完整数据。'
+    localStorage.setItem('last_shown_merge', today)
+  }
+}
+
+function handleMouseOverMergeMany() {
+  const today = new Date().toDateString()
+  const lastShown = localStorage.getItem('last_shown_merge_many')
+  if (lastShown !== today) {
+    hoverTip.value = '将多片数据合并在一起显示，无坐标。'
+    localStorage.setItem('last_shown_merge_many', today)
+  }
+}
+
 let gridFilterTimer: ReturnType<typeof setTimeout> | null = null
 
 const backendTotalPages = computed(() => Math.max(1, Math.ceil(backendTotal.value / backendPageSize.value)))
@@ -1988,16 +2016,17 @@ watch(activeHomeTab, () => {
   box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.25);
 }
 
-.hover-tip-bar {
-  padding: 6px 14px;
+.floating-hover-tip {
+  position: fixed;
+  padding: 6px 12px;
   font-size: 12px;
   color: #8b5cf6;
   background: #f5f3ff;
   border: 1px solid #ddd6fe;
   border-radius: 4px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: -4px;
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.15);
+  pointer-events: none;
+  z-index: 9999;
+  white-space: nowrap;
 }
 </style>
