@@ -119,7 +119,7 @@
       <!-- Data Table Card (AG Grid) -->
       <div class="table-card" style="flex: 1; display: flex; flex-direction: column; min-height: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0;">
         <AgGridVue
-          class="ag-theme-alpine"
+          class="ag-theme-alpine detail-grid"
           :theme="'legacy'"
           :rowData="items"
           :columnDefs="detailColDefs"
@@ -268,10 +268,10 @@ const YieldRenderer = (p: any) => {
 const SingleBinRenderer = (p: any) => {
   const bin = p.value;
   if (!bin) return '';
-  return `<div style="display:flex; justify-content: space-between; align-items:center; width: 100%; padding-right: 4px;">
-      <span style="color: #db2777; font-weight: 500;">${bin.bin}</span>
-      <span style="color: #475569; font-size: 11px;">${bin.count}</span>
-      <span style="color: #2563eb; font-size: 11px;">${bin.pct}%</span>
+  return `<div style="display:flex; width: 100%; font-family: 'Courier New', Courier, monospace;">
+      <span style="display:inline-block; width: 60px; color: #db2777; font-weight: 600; text-align: left;">${bin.bin}</span>
+      <span style="display:inline-block; width: 50px; color: #475569; text-align: right; font-size: 11px;">${bin.count}</span>
+      <span style="display:inline-block; width: 55px; color: #db2777; text-align: right; font-size: 11px;">${bin.pct}%</span>
     </div>`;
 }
 
@@ -279,6 +279,8 @@ const DeviceLinkRenderer = (p: any) => {
   if (!p.value) return '';
   return `<button class="device-link" onclick="if(window.goToDeviceDetail) window.goToDeviceDetail('${p.value}')">${p.value}</button>`;
 }
+
+const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#f97316'];
 
 // ══════════════════════════════════════════════════════════════════
 //  OVERVIEW STATE
@@ -1023,12 +1025,12 @@ onMounted(() => {
   box-shadow: none;
   border: none;
   justify-content: flex-end;
-  font-size: 11px; /* smaller font size */
+  font-size: 11px;
   color: #475569;
+  height: 16px;
 }
 
 .db-page-footer {
-  height: 32px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1038,25 +1040,36 @@ onMounted(() => {
 
 .page-size-select-simple {
   margin-left: 4px;
-  padding: 2px;
+  padding: 0 2px;
   border: 1px solid #d9d9d9;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 10px;
+  height: 16px;
 }
 
 .db-page-btn {
-  min-width: 24px;
-  height: 24px;
+  min-width: 18px;
+  height: 16px;
+  line-height: 14px;
   background: #fff;
   border: 1px solid #d9d9d9;
-  border-radius: 4px;
+  border-radius: 3px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
+  font-size: 10px;
+  padding: 0 4px;
 }
 .db-page-btn:disabled { color: #bfbfbf; cursor: not-allowed; background: #f5f5f5; }
 .db-page-btn:hover:not(:disabled) { border-color: #1890ff; color: #1890ff; }
+
+/* Detail Grid Customizations */
+.detail-grid {
+  --ag-font-size: 10px !important;
+  --ag-row-height: 24px !important;
+  --ag-header-height: 28px !important;
+}
 
 .skeleton-card { position: relative; overflow: hidden; }
 .skeleton-shimmer {
