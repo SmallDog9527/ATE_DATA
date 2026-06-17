@@ -268,10 +268,10 @@ const YieldRenderer = (p: any) => {
 const SingleBinRenderer = (p: any) => {
   const bin = p.value;
   if (!bin) return '';
-  return `<div style="display:flex; width: 100%; font-family: 'Courier New', Courier, monospace;">
-      <span style="display:inline-block; width: 60px; color: #db2777; font-weight: 600; text-align: left;">${bin.bin}</span>
-      <span style="display:inline-block; width: 50px; color: #475569; text-align: right; font-size: 11px;">${bin.count}</span>
-      <span style="display:inline-block; width: 55px; color: #db2777; text-align: right; font-size: 11px;">${bin.pct}%</span>
+  return `<div style="display:flex; width: 100%; font-family: 'Courier New', Courier, monospace; font-size: 13px;">
+      <span style="display:inline-block; width: 65px; color: #db2777; font-weight: 600; text-align: left;">${bin.bin}</span>
+      <span style="display:inline-block; width: 55px; color: #475569; text-align: right;">${bin.count}</span>
+      <span style="display:inline-block; width: 65px; color: #db2777; text-align: right;">${bin.pct}%</span>
     </div>`;
 }
 
@@ -298,7 +298,7 @@ for(let i=0; i<5; i++) {
     headerName: `Fail Bin ${i+1}`,
     valueGetter: (p: any) => p.data.top5_fail_bins ? p.data.top5_fail_bins[i] : null,
     cellRenderer: SingleBinRenderer,
-    width: 140
+    width: 200
   })
 }
 
@@ -447,7 +447,7 @@ for (let i = 1; i <= 130; i++) {
   detailColDefs.push({ 
     field: 'sbin' + i, 
     headerName: 'Sbin' + i, 
-    width: 80, 
+    width: 55, 
     type: 'numericColumn',
     valueFormatter: (p: any) => p.value === 0 ? '' : p.value
   })
@@ -1066,9 +1066,9 @@ onMounted(() => {
 
 /* Detail Grid Customizations */
 .detail-grid {
-  --ag-font-size: 10px !important;
-  --ag-row-height: 24px !important;
-  --ag-header-height: 28px !important;
+  --ag-font-size: 11px !important;
+  --ag-row-height: 26px !important;
+  --ag-header-height: 30px !important;
 }
 
 .skeleton-card { position: relative; overflow: hidden; }
