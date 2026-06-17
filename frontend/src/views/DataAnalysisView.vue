@@ -269,8 +269,8 @@ const SingleBinRenderer = (p: any) => {
   const bin = p.value;
   if (!bin) return '';
   return `<div style="display:flex; width: 100%; font-family: 'Courier New', Courier, monospace; font-size: 13px;">
-      <span style="display:inline-block; width: 65px; color: #db2777; font-weight: 600; text-align: left;">${bin.bin}</span>
-      <span style="display:inline-block; width: 55px; color: #475569; text-align: right;">${bin.count}</span>
+      <span style="display:inline-block; width: 65px; font-weight: 600; color: #db2777; text-align: left;">${bin.bin}</span>
+      <span style="display:inline-block; width: 55px; text-align: right;">${bin.count}</span>
       <span style="display:inline-block; width: 65px; color: #db2777; text-align: right;">${bin.pct}%</span>
     </div>`;
 }
@@ -436,9 +436,9 @@ const detailColDefs = [
   { field: 'total', headerName: 'TOTAL', width: 90, type: 'numericColumn' },
   { field: 'pass', headerName: 'PASS', width: 90, type: 'numericColumn' },
   { field: 'yield_rate', headerName: 'YIELD', width: 90, cellRenderer: YieldRenderer },
-  { field: 'program', headerName: 'Test Program', width: 160 },
+  { field: 'program', headerName: 'Test Program', width: 315 },
   { field: 'mp_tester', headerName: 'MP Tester', width: 110 },
-  { field: 'probecard', headerName: 'Probe Card', width: 110 },
+  { field: 'probecard', headerName: 'Probe Card', width: 217 },
   { field: 'test_start', headerName: 'Test Start', width: 150 },
   { field: 'test_date', headerName: 'Test End', width: 150 },
   { field: 'duration_h', headerName: 'Time(h)', width: 90, type: 'numericColumn' }
@@ -447,7 +447,7 @@ for (let i = 1; i <= 130; i++) {
   detailColDefs.push({ 
     field: 'sbin' + i, 
     headerName: 'Sbin' + i, 
-    width: 55, 
+    width: 70,
     type: 'numericColumn',
     valueFormatter: (p: any) => p.value === 0 ? '' : p.value
   })
@@ -513,6 +513,7 @@ let deviceYieldChart: any = null
 const deviceColDefs = [
   { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
   { field: 'lot_id', headerName: 'LOT ID', width: 180, pinned: 'left' },
+  { field: 'test_start', headerName: '测试时间(最早)', width: 160 },
   { field: 'wafers', headerName: 'Wafers', width: 90, type: 'numericColumn' },
   { field: 'avg_wafer_time_h', headerName: 'Time(h)', width: 90, type: 'numericColumn' },
   { field: 'bin1_k', headerName: 'Bin1(K)', width: 90, type: 'numericColumn' },
@@ -624,7 +625,12 @@ async function fetchDeviceData() {
       })
     }
     
-    compiledLots.sort((a, b) => (a.test_start > b.test_start ? 1 : -1))
+    compiledLots.sort((a, b) => {
+      const tA = a.test_start || '';
+      const tB = b.test_start || '';
+      if (tA === tB) return 0;
+      return tA > tB ? 1 : -1;
+    })
     deviceLots.value = compiledLots
 
     const weeks = Object.keys(weeklyCount).sort()
