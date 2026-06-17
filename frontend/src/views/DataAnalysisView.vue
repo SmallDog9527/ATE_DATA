@@ -27,7 +27,7 @@
                 v-for="m in [1, 3, 6, 12]"
                 :key="m"
                 :class="['month-btn', { active: ovMonths === m }]"
-                @click="ovMonths = m; fetchOverview()"
+                @click="ovMonths = m; fetchOverview(true)"
               >{{ m }}月</button>
               <input
                 type="number"
@@ -36,12 +36,12 @@
                 max="36"
                 class="month-custom-input"
                 placeholder="自定义"
-                @change="ovMonths = ovMonthsCustom; fetchOverview()"
+                @change="ovMonths = ovMonthsCustom; fetchOverview(true)"
               />
             </div>
           </div>
           <div class="ov-filter-item ov-filter-right">
-            <button class="btn btn-primary" @click="fetchOverview">刷新</button>
+            <button class="btn btn-primary" @click="fetchOverview(true)">刷新</button>
           </div>
         </div>
       </div>
@@ -116,8 +116,21 @@
         </div>
       </div>
 
-      <!-- Pagination Footer FIXED TO TOP -->
-      <div class="db-page-footer">
+      <!-- Data Table Card (AG Grid) -->
+      <div class="table-card" style="flex: 1; display: flex; flex-direction: column; min-height: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0;">
+        <AgGridVue
+          class="ag-theme-alpine"
+          :theme="'legacy'"
+          :rowData="items"
+          :columnDefs="detailColDefs"
+          :defaultColDef="defaultColDef"
+          style="width: 100%; flex: 1; min-height: 0;"
+          :suppressScrollOnNewData="true"
+        />
+      </div>
+
+      <!-- Pagination Footer FIXED TO BOTTOM RIGHT -->
+      <div class="db-page-footer db-page-footer-bottom">
         <span class="db-page-size">
           Page Size:
           <select v-model="pageSize" class="page-size-select-simple" @change="handleSearch">
@@ -134,19 +147,6 @@
         <span class="db-page-current">Page {{ page }} of {{ maxPage }}</span>
         <button class="db-page-btn" :disabled="page >= maxPage" @click="page++; fetchData()">&gt;</button>
         <button class="db-page-btn" :disabled="page >= maxPage" @click="page = maxPage; fetchData()">&gt;|</button>
-      </div>
-
-      <!-- Data Table Card (AG Grid) -->
-      <div class="table-card" style="flex: 1; display: flex; flex-direction: column; min-height: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
-        <AgGridVue
-          class="ag-theme-alpine"
-          :theme="'legacy'"
-          :rowData="items"
-          :columnDefs="detailColDefs"
-          :defaultColDef="defaultColDef"
-          style="width: 100%; flex: 1; min-height: 0;"
-          :suppressScrollOnNewData="true"
-        />
       </div>
     </div>
 
@@ -195,13 +195,35 @@
   </div>
 </template>
 
+<script lang="ts">
+import { ref, shallowRef } from 'vue'
+
+// ── Global Caches to prevent re-fetching on view swap ──
+const globalOvLoaded = ref(false)
+const globalOvMonths = ref(3)
+const globalOvMonthsCustom = ref<number | null>(null)
+const globalOvProducts = shallowRef<any[]>([])
+const globalOvWeeklyOutput = ref<any[]>([])
+
+export default {
+  name: 'DataAnalysisView'
+}
+</script>
+
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, nextTick, shallowRef } from 'vue'
+import { reactive, computed, onMounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import api from '@/api'
 import { AgGridVue } from 'ag-grid-vue3'
 import 'ag-grid-community/styles/ag-grid.css'
 import 'ag-grid-community/styles/ag-theme-alpine.css'
+
+// Bind global cache
+const ovLoaded = globalOvLoaded
+const ovMonths = globalOvMonths
+const ovMonthsCustom = globalOvMonthsCustom
+const ovProducts = globalOvProducts
+const ovWeeklyOutput = globalOvWeeklyOutput
 
 // ── View switching ───────────────────────────────────────────────────────────
 const activeView = ref<'overview' | 'detail' | 'device'>('overview')
@@ -216,7 +238,6 @@ function switchView(view: 'overview' | 'detail' | 'device') {
   }
 }
 
-// Ensure globally accessible navigation function for Ag Grid cell renderer
 if (typeof window !== 'undefined') {
   (window as any).goToDeviceDetail = (deviceName: string) => {
     deviceViewDevice.value = deviceName
@@ -229,40 +250,29 @@ if (typeof window !== 'undefined') {
 const defaultColDef = {
   sortable: true,
   resizable: true,
-  filter: true,
+  filter: false, // Turned off filter per user request
   suppressMovable: true,
   menuTabs: []
 }
 
-function getYieldClass(val: number | null | undefined) {
-  if (val == null) return 'yield-neutral'
-  if (val >= 98) return 'yield-excellent'
-  if (val >= 95) return 'yield-good'
-  if (val >= 90) return 'yield-warning'
-  return 'yield-critical'
-}
-
 const YieldRenderer = (p: any) => {
   const val = p.value;
-  if (val == null) return `<div style="width: 100%; text-align: center;"><span class="yield-badge yield-neutral">-</span></div>`;
-  const badgeClass = getYieldClass(val);
-  return `<div style="width: 100%; text-align: center;"><span class="yield-badge ${badgeClass}">${val.toFixed(2)}%</span></div>`;
+  if (val == null) return `<div style="width: 100%;"><span style="color: #64748b;">-</span></div>`;
+  let color = 'green';
+  let fw = 'normal';
+  if (val < 80) { color = 'red'; fw = 'bold'; }
+  else if (val < 95) { color = 'orange'; }
+  return `<div style="width: 100%;"><span style="color: ${color}; font-weight: ${fw};">${val.toFixed(2)}%</span></div>`;
 }
 
-const Top5BinsRenderer = (p: any) => {
-  const bins = p.value || [];
-  let html = `<div style="display: flex; gap: 6px; align-items: center; height: 100%; overflow: hidden;">`;
-  for (const bin of bins) {
-    if (bin) {
-      html += `<div class="bin-group">
-        <span class="bin-tag">${bin.bin}</span>
-        <span class="bin-count">${bin.count}</span>
-        <span class="bin-pct">${bin.pct}%</span>
-      </div>`;
-    }
-  }
-  html += `</div>`;
-  return html;
+const SingleBinRenderer = (p: any) => {
+  const bin = p.value;
+  if (!bin) return '';
+  return `<div style="display:flex; justify-content: space-between; align-items:center; width: 100%; padding-right: 4px;">
+      <span style="color: #db2777; font-weight: 500;">${bin.bin}</span>
+      <span style="color: #475569; font-size: 11px;">${bin.count}</span>
+      <span style="color: #2563eb; font-size: 11px;">${bin.pct}%</span>
+    </div>`;
 }
 
 const DeviceLinkRenderer = (p: any) => {
@@ -274,38 +284,46 @@ const DeviceLinkRenderer = (p: any) => {
 //  OVERVIEW STATE
 // ══════════════════════════════════════════════════════════════════
 const ovLoading = ref(false)
-const ovMonths = ref(3)
-const ovMonthsCustom = ref<number | null>(null)
-const ovProducts = shallowRef<any[]>([])
-const ovWeeklyOutput = ref<any[]>([])
-
 const outputChartRef = ref<HTMLElement | null>(null)
 const pieChartRef   = ref<HTMLElement | null>(null)
 
 let outputChart: any = null
 let pieChart: any = null
 
+const failBinCols = []
+for(let i=0; i<5; i++) {
+  failBinCols.push({
+    headerName: `Fail Bin ${i+1}`,
+    valueGetter: (p: any) => p.data.top5_fail_bins ? p.data.top5_fail_bins[i] : null,
+    cellRenderer: SingleBinRenderer,
+    width: 140
+  })
+}
+
 const ovColDefs = [
-  { field: 'product_name', headerName: 'Device（产品名）', width: 220, pinned: 'left', cellRenderer: DeviceLinkRenderer },
-  { field: 'wafers', headerName: 'Wafers', width: 100, type: 'numericColumn' },
-  { field: 'avg_wafer_time_h', headerName: 'Time(h)', width: 100, type: 'numericColumn' },
-  { field: 'bin1_k', headerName: 'Bin1(K)', width: 100, type: 'numericColumn' },
-  { field: 'avg_yield', headerName: '平均良率', width: 120, cellRenderer: YieldRenderer },
-  { field: 'top5_fail_bins', headerName: 'Top 5 失效 Bin（Sbin / Count / 占TOTAL比）', flex: 1, minWidth: 400, cellRenderer: Top5BinsRenderer, sortable: false }
+  { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
+  { field: 'product_name', headerName: 'Device（产品名）', width: 180, pinned: 'left', cellRenderer: DeviceLinkRenderer },
+  { field: 'wafers', headerName: 'Wafers', width: 90, type: 'numericColumn' },
+  { field: 'avg_wafer_time_h', headerName: 'Time(h)', width: 90, type: 'numericColumn' },
+  { field: 'bin1_k', headerName: 'Bin1(K)', width: 90, type: 'numericColumn' },
+  { field: 'avg_yield', headerName: '平均良率', width: 100, cellRenderer: YieldRenderer },
+  ...failBinCols
 ]
 
-const PIE_COLORS = [
-  '#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6',
-  '#06b6d4','#ec4899','#84cc16','#f97316','#6366f1',
-]
-
-async function fetchOverview() {
+async function fetchOverview(force = false) {
+  if (ovLoaded.value && !force) {
+    // Already loaded, just render charts
+    nextTick(() => renderOverviewCharts())
+    return
+  }
+  
   ovLoading.value = true
   try {
     const params: any = { months: ovMonths.value }
     const resp: any = await api.get('/lots/mp-yield/overview', { params })
     ovProducts.value = resp.products || []
     ovWeeklyOutput.value = resp.weekly_output || []
+    ovLoaded.value = true
     nextTick(() => renderOverviewCharts())
   } catch (error) {
     console.error('Failed to fetch overview:', error)
@@ -408,19 +426,20 @@ const page = ref(1)
 const pageSize = ref(50)
 
 const detailColDefs = [
-  { field: 'osat_name', headerName: 'OSAT', width: 100, pinned: 'left' },
-  { field: 'product_name', headerName: 'Device', width: 150, pinned: 'left' },
-  { field: 'lot_id', headerName: 'LOT ID', width: 150, pinned: 'left' },
+  { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
+  { field: 'osat_name', headerName: 'OSAT', width: 90, pinned: 'left' },
+  { field: 'product_name', headerName: 'Device', width: 140, pinned: 'left' },
+  { field: 'lot_id', headerName: 'LOT ID', width: 140, pinned: 'left' },
   { field: 'wafer_id', headerName: 'WAFER ID', width: 100, pinned: 'left' },
-  { field: 'total', headerName: 'TOTAL', width: 100, type: 'numericColumn' },
-  { field: 'pass', headerName: 'PASS', width: 100, type: 'numericColumn' },
-  { field: 'yield_rate', headerName: 'YIELD', width: 100, cellRenderer: YieldRenderer },
-  { field: 'program', headerName: 'Test Program', width: 180 },
-  { field: 'mp_tester', headerName: 'MP Tester', width: 120 },
-  { field: 'probecard', headerName: 'Probe Card', width: 120 },
-  { field: 'test_start', headerName: 'Test Start', width: 160 },
-  { field: 'test_date', headerName: 'Test End', width: 160 },
-  { field: 'duration_h', headerName: 'Time(h)', width: 100, type: 'numericColumn' }
+  { field: 'total', headerName: 'TOTAL', width: 90, type: 'numericColumn' },
+  { field: 'pass', headerName: 'PASS', width: 90, type: 'numericColumn' },
+  { field: 'yield_rate', headerName: 'YIELD', width: 90, cellRenderer: YieldRenderer },
+  { field: 'program', headerName: 'Test Program', width: 160 },
+  { field: 'mp_tester', headerName: 'MP Tester', width: 110 },
+  { field: 'probecard', headerName: 'Probe Card', width: 110 },
+  { field: 'test_start', headerName: 'Test Start', width: 150 },
+  { field: 'test_date', headerName: 'Test End', width: 150 },
+  { field: 'duration_h', headerName: 'Time(h)', width: 90, type: 'numericColumn' }
 ]
 for (let i = 1; i <= 130; i++) {
   detailColDefs.push({ 
@@ -490,12 +509,13 @@ let deviceOutputChart: any = null
 let deviceYieldChart: any = null
 
 const deviceColDefs = [
-  { field: 'lot_id', headerName: 'LOT ID', width: 220, pinned: 'left' },
-  { field: 'wafers', headerName: 'Wafers', width: 100, type: 'numericColumn' },
-  { field: 'avg_wafer_time_h', headerName: 'Time(h)', width: 100, type: 'numericColumn' },
-  { field: 'bin1_k', headerName: 'Bin1(K)', width: 100, type: 'numericColumn' },
-  { field: 'avg_yield', headerName: '平均良率', width: 120, cellRenderer: YieldRenderer },
-  { field: 'top5_fail_bins', headerName: 'Top 5 失效 Bin（Sbin / Count / 占TOTAL比）', flex: 1, minWidth: 400, cellRenderer: Top5BinsRenderer, sortable: false }
+  { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
+  { field: 'lot_id', headerName: 'LOT ID', width: 180, pinned: 'left' },
+  { field: 'wafers', headerName: 'Wafers', width: 90, type: 'numericColumn' },
+  { field: 'avg_wafer_time_h', headerName: 'Time(h)', width: 90, type: 'numericColumn' },
+  { field: 'bin1_k', headerName: 'Bin1(K)', width: 90, type: 'numericColumn' },
+  { field: 'avg_yield', headerName: '平均良率', width: 100, cellRenderer: YieldRenderer },
+  ...failBinCols
 ]
 
 function getWeekString(dateStr: string) {
@@ -689,7 +709,7 @@ function renderDeviceCharts() {
 // ══════════════════════════════════════════════════════════════════
 onMounted(() => {
   try {
-    fetchOverview()
+    fetchOverview(false) // Will not fetch if already loaded
     fetchData()
   } catch (err) {
     console.error('Error in onMounted', err)
@@ -974,36 +994,6 @@ onMounted(() => {
 }
 :deep(.device-link:hover) { color: #40a9ff; }
 
-:deep(.yield-badge) {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-weight: 600;
-  font-size: 11px;
-}
-:deep(.yield-excellent) { background: #dcfce7; color: #166534; }
-:deep(.yield-good) { background: #dbeafe; color: #1e40af; }
-:deep(.yield-warning) { background: #fef9c3; color: #854d0e; }
-:deep(.yield-critical) { background: #fee2e2; color: #991b1b; }
-:deep(.yield-neutral) { background: #f1f5f9; color: #475569; }
-
-:deep(.bin-group) {
-  display: flex;
-  align-items: center;
-}
-:deep(.bin-tag) { 
-  display: inline-block; 
-  background: #fee2e2; /* 淡红色底色 */
-  padding: 2px 6px; 
-  border-radius: 4px; 
-  font-size: 10px; 
-  color: #991b1b; 
-  font-weight: 600; 
-  margin-right: 4px; 
-}
-:deep(.bin-count) { font-size: 11px; color: #1f2937; margin-right: 4px; }
-:deep(.bin-pct) { font-size: 10px; color: #64748b; margin-right: 8px; }
-
 .loading-state, .empty-state {
   display: flex;
   flex-direction: column;
@@ -1026,22 +1016,24 @@ onMounted(() => {
 
 @keyframes spin { 100% { transform: rotate(360deg); } }
 
+/* PAGE FOOTER TO BOTTOM RIGHT */
+.db-page-footer-bottom {
+  margin-top: 8px;
+  background: transparent;
+  box-shadow: none;
+  border: none;
+  justify-content: flex-end;
+  font-size: 11px; /* smaller font size */
+  color: #475569;
+}
+
 .db-page-footer {
-  height: 36px;
+  height: 32px;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 10px;
-  padding: 0 12px;
-  background: #ffffff;
-  border-radius: 6px;
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-  font-size: 13px;
-  color: #111827;
+  padding: 0;
   flex-shrink: 0;
-  margin-bottom: 8px; /* Give it a little gap to table */
 }
 
 .page-size-select-simple {
@@ -1049,11 +1041,12 @@ onMounted(() => {
   padding: 2px;
   border: 1px solid #d9d9d9;
   border-radius: 4px;
+  font-size: 11px;
 }
 
 .db-page-btn {
-  min-width: 28px;
-  height: 28px;
+  min-width: 24px;
+  height: 24px;
   background: #fff;
   border: 1px solid #d9d9d9;
   border-radius: 4px;
