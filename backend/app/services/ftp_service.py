@@ -22,7 +22,8 @@ from app.services.smtp_dynamic import decrypt_password
 
 def _detect_osat_data_type(osat, filename: str, parsed_test_stage: Optional[str]) -> str:
     base_name = os.path.splitext(os.path.basename(filename))[0].strip()
-    if base_name.upper().endswith('QA'):
+    # 文件名中只要包含 QA（如 xxx(QA).csv、xxxQA.csv），就归为 QA 类型
+    if 'QA' in base_name.upper():
         return 'QA'
     if parsed_test_stage:
         return parsed_test_stage
@@ -200,7 +201,8 @@ def _walk_ftp(ftp: ftplib.FTP, current_dir: str, result: List[str], visited: set
                         or lower_name.endswith('sum.csv.zip')):
                     continue
                 if (lower_name.endswith('.csv') or lower_name.endswith('.zip') or lower_name.endswith('.rar')
-                        or lower_name.endswith('.txt') or lower_name.endswith('.gz')):
+                        or lower_name.endswith('.txt') or lower_name.endswith('.gz')
+                        or lower_name.endswith('.xls') or lower_name.endswith('.xlsx')):
                     result.append(full_path)
 
         # 递归遍历子目录
@@ -442,7 +444,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
         csv_files_to_process = []
 
         if ext in ('.zip', '.rar'):
-            # ZIP 文件：解压并查找所有 CSV / TXT 文件
+            # ZIP 文件：解压并查找所有 CSV / TXT / XLS / XLSX 文件
             extract_dir = os.path.join(tmp_dir, 'extracted')
             os.makedirs(extract_dir, exist_ok=True)
             if ext == '.zip':
@@ -453,11 +455,13 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
 
             for root, _, files in os.walk(extract_dir):
                 for f in files:
-                    if f.lower().endswith('.csv') or f.lower().endswith('.txt'):
+                    flower = f.lower()
+                    if (flower.endswith('.csv') or flower.endswith('.txt')
+                            or flower.endswith('.xls') or flower.endswith('.xlsx')):
                         csv_files_to_process.append(os.path.join(root, f))
 
             if not csv_files_to_process:
-                raise Exception("ZIP 压缩包中未找到任何 .csv 或 .txt 文件")
+                raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt, .xls 或 .xlsx 文件")
 
         elif ext == '.gz':
             # GZ 文件：解压，仅当内部文件是 CSV 或 TXT 时才处理
@@ -482,14 +486,14 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
             csv_files_to_process.append(inner_path)
             print(f"[ftp_fetch] GZ 已解压: {filename} -> {inner_name}")
 
-        elif ext == '.csv' or ext == '.txt':
-            # 单个 CSV 或 TXT 文件
+        elif ext in ('.csv', '.txt', '.xls', '.xlsx'):
+            # 单个 CSV, TXT, XLS 或 XLSX 文件
             csv_files_to_process.append(local_file)
         else:
             raise Exception(f"不支持的文件格式: {ext}")
 
-        # 确保 txt 文件排在 csv 文件后面进行处理
-        csv_files_to_process.sort(key=lambda p: (1 if p.lower().endswith('.txt') else 0, p))
+        # 确保 txt/xls/xlsx 文件排在 csv 文件后面进行处理
+        csv_files_to_process.sort(key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
 
         last_lot_id = None
 
@@ -517,6 +521,17 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                     print(f"[ftp_fetch] 文件 {csv_filename} 已存在但无对应 Lot 记录，覆盖写入")
 
             shutil.copy2(csv_filepath, save_path)
+
+            if csv_filename.lower().endswith(('.xls', '.xlsx')):
+                try:
+                    from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
+                    created_lots = parse_and_save_xls_summary(save_path, db, None, osat_name=osat.name)
+                    if created_lots:
+                        last_lot_id = created_lots[-1].id
+                except Exception as ex:
+                    import traceback
+                    traceback.print_exc()
+                continue
 
             if csv_filename.lower().endswith('.txt'):
                 # Process Summary txt file
@@ -744,10 +759,12 @@ def _do_download(osat_id: int, remote_path: str, admin_user_id: int):
                 _extract_rar_archive(local_file, extract_dir)
             for root, _, files in os.walk(extract_dir):
                 for f in files:
-                    if f.lower().endswith('.csv') or f.lower().endswith('.txt'):
+                    flower = f.lower()
+                    if (flower.endswith('.csv') or flower.endswith('.txt')
+                            or flower.endswith('.xls') or flower.endswith('.xlsx')):
                         csv_files_to_process.append(os.path.join(root, f))
             if not csv_files_to_process:
-                raise Exception("ZIP 压缩包中未找到任何 .csv 或 .txt 文件")
+                raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt, .xls 或 .xlsx 文件")
 
         elif ext == '.gz':
             inner_name = os.path.splitext(filename)[0]
@@ -770,12 +787,12 @@ def _do_download(osat_id: int, remote_path: str, admin_user_id: int):
             csv_files_to_process.append(inner_path)
             print(f"[ftp_dl] GZ 已解压: {filename} -> {inner_name}")
 
-        elif ext in ('.csv', '.txt'):
+        elif ext in ('.csv', '.txt', '.xls', '.xlsx'):
             csv_files_to_process.append(local_file)
         else:
             raise Exception(f"不支持的文件格式: {ext}")
 
-        csv_files_to_process.sort(key=lambda p: (1 if p.lower().endswith('.txt') else 0, p))
+        csv_files_to_process.sort(key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
         print(f"[ftp_dl] ✅ 下载完成: {filename} ({len(csv_files_to_process)} 个文件待解析)")
         return (log_id, tmp_dir, csv_files_to_process)
 
@@ -856,6 +873,17 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
                     print(f"[ftp_parse] 文件 {csv_filename} 已存在但无对应 Lot 记录，覆盖写入")
 
             shutil.copy2(csv_filepath, save_path)
+
+            if csv_filename.lower().endswith(('.xls', '.xlsx')):
+                try:
+                    from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
+                    created_lots = parse_and_save_xls_summary(save_path, db, None, osat_name=osat.name)
+                    if created_lots:
+                        last_lot_id = created_lots[-1].id
+                except Exception as ex:
+                    import traceback
+                    traceback.print_exc()
+                continue
 
             if csv_filename.lower().endswith('.txt'):
                 lot = Lot(

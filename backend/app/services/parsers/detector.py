@@ -52,4 +52,6 @@ def detect_test_stage(filename: str, has_coords: bool) -> str:
     The filename is intentionally ignored so tokens such as FT/PT/RT do not
     override the actual data shape.
     """
+    if 'QA' in filename.upper():
+        return 'QA'
     return 'CP' if has_coords else 'FT'

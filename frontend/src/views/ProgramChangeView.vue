@@ -44,87 +44,84 @@
 
             <!-- 有程序的正常行 -->
             <template v-else>
-              <tr
-                v-for="(prog, pi) in row.programs"
-                :key="prog.lot_id"
-                class="data-row"
-              >
-                <td v-if="pi === 0" :rowspan="row.programs.length" class="td-no">{{ row.index }}</td>
+              <tr class="data-row">
+                <td class="td-no">{{ row.index }}</td>
                 <td
-                  v-if="pi === 0"
-                  :rowspan="row.programs.length"
                   class="td-product"
                   @click="goToProduct(row.product_name)"
                 >{{ row.product_name }}</td>
 
-                <td class="td-program" @click="openPgmProgram(row.product_name, prog)">
-                  <span class="prog-link">{{ prog.pgm_program || prog.program }}</span>
+                <td
+                  class="td-program"
+                  @click="openPgmProgram(row.product_name, row.programs[0])"
+                >
+                  <span class="prog-link">{{ getProgramNameToShow(row, row.programs[0]) }}</span>
                 </td>
-                <td>{{ fmtDate(prog.test_date) }}</td>
-                <td>{{ prog.site ?? '' }}</td>
+                <td>{{ fmtDate(row.programs[0].test_date) }}</td>
+                <td>{{ row.programs[0].site ?? '' }}</td>
                 <td>{{ row.avg_touch_down_s != null ? row.avg_touch_down_s.toFixed(1) : '' }}</td>
                 <!-- UPH: CP取单片测试时间, FT用户填写 -->
-                <td class="editable-cell" @click="startEdit(prog.lot_id, 'uph_s', prog.uph_s, prog)">
-                  <span v-if="editState.lot_id !== prog.lot_id || editState.field !== 'uph_s'">
-                    {{ fmtHours(prog.uph_s) }}
+                <td class="editable-cell" @click="startEdit(row.programs[0].lot_id, 'uph_s', row.programs[0].uph_s, row.programs[0])">
+                  <span v-if="editState.lot_id !== row.programs[0].lot_id || editState.field !== 'uph_s'">
+                    {{ fmtHours(row.programs[0].uph_s) }}
                   </span>
                   <div v-else class="inline-edit">
                     <input v-model.number="editState.value" type="number" step="0.01"
-                      @keyup.enter="saveUph(prog)" @keyup.escape="cancelEdit"
-                      @blur="saveUph(prog)" class="inline-input" autofocus />
+                      @keyup.enter="saveUph(row.programs[0])" @keyup.escape="cancelEdit"
+                      @blur="saveUph(row.programs[0])" class="inline-input" autofocus />
                     <span style="font-size:11px;color:#888;margin-left:4px">h</span>
                   </div>
                 </td>
-                <td>{{ prog.tester }}</td>
+                <td>{{ row.programs[0].tester }}</td>
                 <!-- CP/FT 下拉 -->
-                <td class="editable-cell" @click="startEdit(prog.lot_id, 'data_type', prog.data_type, prog)">
-                  <span v-if="editState.lot_id !== prog.lot_id || editState.field !== 'data_type'">
-                    <span v-if="prog.data_type" class="type-badge" :class="prog.data_type === 'CP' ? 'type-cp' : 'type-ft'">
-                      {{ prog.data_type }}
+                <td class="editable-cell" @click="startEdit(row.programs[0].lot_id, 'data_type', row.programs[0].data_type, row.programs[0])">
+                  <span v-if="editState.lot_id !== row.programs[0].lot_id || editState.field !== 'data_type'">
+                    <span v-if="row.programs[0].data_type" class="type-badge" :class="row.programs[0].data_type === 'CP' ? 'type-cp' : 'type-ft'">
+                      {{ row.programs[0].data_type }}
                     </span>
                   </span>
                   <select v-else v-model="editState.value"
-                    @change="saveDataType(prog)" @blur="cancelEdit" class="inline-select" autofocus>
+                    @change="saveDataType(row.programs[0])" @blur="cancelEdit" class="inline-select" autofocus>
                     <option value="">—</option>
                     <option value="CP">CP</option>
                     <option value="FT">FT</option>
                   </select>
                 </td>
                 <!-- 用户可编辑列 -->
-                <td class="editable-cell" @click="startEdit(prog.lot_id, 'engineer', prog.engineer, prog)">
-                  <template v-if="editState.lot_id !== prog.lot_id || editState.field !== 'engineer'">
-                    {{ prog.engineer }}
+                <td class="editable-cell" @click="startEdit(row.programs[0].lot_id, 'engineer', row.programs[0].engineer, row.programs[0])">
+                  <template v-if="editState.lot_id !== row.programs[0].lot_id || editState.field !== 'engineer'">
+                    {{ row.programs[0].engineer }}
                   </template>
                   <div v-else class="inline-edit">
-                    <input v-model="editState.value" @keyup.enter="saveField(prog, 'engineer')"
-                      @keyup.escape="cancelEdit" @blur="saveField(prog, 'engineer')"
+                    <input v-model.value="editState.value" @keyup.enter="saveField(row.programs[0], 'engineer')"
+                      @keyup.escape="cancelEdit" @blur="saveField(row.programs[0], 'engineer')"
                       list="eng-list" class="inline-input" autofocus />
                     <datalist id="eng-list">
                       <option v-for="s in suggestions.engineer" :key="s" :value="s"/>
                     </datalist>
                   </div>
                 </td>
-                <td>{{ prog.osat }}</td>
-                <td class="editable-cell" @click="startEdit(prog.lot_id, 'package', prog.package, prog)">
-                  <template v-if="editState.lot_id !== prog.lot_id || editState.field !== 'package'">
-                    {{ prog.package }}
+                <td>{{ row.programs[0].osat }}</td>
+                <td class="editable-cell" @click="startEdit(row.programs[0].lot_id, 'package', row.programs[0].package, row.programs[0])">
+                  <template v-if="editState.lot_id !== row.programs[0].lot_id || editState.field !== 'package'">
+                    {{ row.programs[0].package }}
                   </template>
                   <div v-else class="inline-edit">
-                    <input v-model="editState.value" @keyup.enter="saveField(prog, 'package')"
-                      @keyup.escape="cancelEdit" @blur="saveField(prog, 'package')"
+                    <input v-model.value="editState.value" @keyup.enter="saveField(row.programs[0], 'package')"
+                      @keyup.escape="cancelEdit" @blur="saveField(row.programs[0], 'package')"
                       list="pkg-list" class="inline-input" autofocus />
                     <datalist id="pkg-list">
                       <option v-for="s in suggestions.package" :key="s" :value="s"/>
                     </datalist>
                   </div>
                 </td>
-                <td class="editable-cell" @click="startEdit(prog.lot_id, 'hardware_info', prog.hardware_info, prog)">
-                  <template v-if="editState.lot_id !== prog.lot_id || editState.field !== 'hardware_info'">
-                    {{ prog.hardware_info }}
+                <td class="editable-cell" @click="startEdit(row.programs[0].lot_id, 'hardware_info', row.programs[0].hardware_info, row.programs[0])">
+                  <template v-if="editState.lot_id !== row.programs[0].lot_id || editState.field !== 'hardware_info'">
+                    {{ row.programs[0].hardware_info }}
                   </template>
                   <div v-else class="inline-edit">
-                    <input v-model="editState.value" @keyup.enter="saveField(prog, 'hardware_info')"
-                      @keyup.escape="cancelEdit" @blur="saveField(prog, 'hardware_info')"
+                    <input v-model.value="editState.value" @keyup.enter="saveField(row.programs[0], 'hardware_info')"
+                      @keyup.escape="cancelEdit" @blur="saveField(row.programs[0], 'hardware_info')"
                       list="hw-list" class="inline-input" autofocus />
                     <datalist id="hw-list">
                       <option v-for="s in suggestions.hardware_info" :key="s" :value="s"/>
@@ -237,14 +234,61 @@ function goToProduct(name: string) {
 }
 
 function openPgmProgram(productName: string, prog: any) {
-  if (prog.pgm_upload_id) {
-    router.push({
-      name: 'pgs-param',
-      params: { productName, id: prog.pgm_upload_id },
-    })
-  } else {
-    router.push({ name: 'product-programs', params: { productName } })
+  router.push({ name: 'product-programs', params: { productName } })
+}
+
+function getHigherVersion(pgmProg: string, dataProg: string): string {
+  if (!pgmProg) return dataProg || ''
+  if (!dataProg) return pgmProg || ''
+  
+  const extractVersion = (name: string) => {
+    const match = name.match(/_V(\d+(?:\.\d+)*)/i) || name.match(/V(\d+(?:\.\d+)*)/i)
+    return match ? match[1] : null
   }
+  
+  const verA = extractVersion(pgmProg)
+  const verB = extractVersion(dataProg)
+  
+  if (verA && verB) {
+    const partsA = verA.split('.').map(Number)
+    const partsB = verB.split('.').map(Number)
+    const maxLen = Math.max(partsA.length, partsB.length)
+    for (let i = 0; i < maxLen; i++) {
+      const a = partsA[i] || 0
+      const b = partsB[i] || 0
+      if (a > b) return pgmProg
+      if (b > a) return dataProg
+    }
+  } else if (verA) {
+    return pgmProg
+  } else if (verB) {
+    return dataProg
+  }
+  
+  return pgmProg.localeCompare(dataProg, undefined, { numeric: true }) >= 0 ? pgmProg : dataProg
+}
+
+function getProgramNameToShow(row: any, prog: any): string {
+  const pgm = prog.pgm_program
+  const currentData = prog.program || ''
+
+  if (!pgm) return currentData
+
+  // Extract versions to compare them cleanly
+  const extractVersion = (name: string) => {
+    const match = name.match(/_V(\d+(?:\.\d+)*)/i) || name.match(/V(\d+(?:\.\d+)*)/i)
+    return match ? match[1] : null
+  }
+  const verPgm = extractVersion(pgm)
+  const verData = extractVersion(currentData)
+
+  // If they are exactly identical (or their versions are identical), display the DATA program name
+  if (pgm === currentData || (verPgm && verData && verPgm === verData)) {
+    return currentData
+  }
+
+  // Otherwise, show the one with the higher version
+  return getHigherVersion(pgm, currentData)
 }
 
 function startEdit(lotId: number, field: string, val: any, progRef: any) {

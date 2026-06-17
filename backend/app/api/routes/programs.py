@@ -29,7 +29,7 @@ from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import desc
+from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -594,6 +594,7 @@ def _find_prev_lot(db: Session, lot: Lot) -> Optional[Lot]:
             Lot.test_machine == lot.test_machine,
             Lot.status == "processed",
             Lot.id != lot.id,
+            or_(Lot.data_type.is_(None), Lot.data_type != "MP_Yield"),
         )
         .order_by(desc(Lot.test_date))
     )
@@ -950,6 +951,7 @@ def get_program_list(db: Session = Depends(get_db)):
             Lot.product_name.isnot(None),
             Lot.program.isnot(None),
             Lot.status == "processed",
+            or_(Lot.data_type.is_(None), Lot.data_type != "MP_Yield"),
         )
         .order_by(Lot.product_name, Lot.test_machine, desc(Lot.test_date))
         .all()
@@ -1031,6 +1033,7 @@ def get_product_programs(product_name: str, db: Session = Depends(get_db)):
             Lot.product_name == product_name,
             Lot.program.isnot(None),
             Lot.status == "processed",
+            or_(Lot.data_type.is_(None), Lot.data_type != "MP_Yield"),
         )
         .order_by(Lot.test_machine, desc(Lot.test_date))
         .all()

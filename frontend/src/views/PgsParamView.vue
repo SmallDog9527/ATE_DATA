@@ -291,12 +291,12 @@
           <table class="vs-tbl summary-vs-tbl">
             <thead>
               <tr class="vs-prog-row">
-                <th colspan="3" class="vs-prog-th vs-prog-th-left">
+                <th colspan="4" class="vs-prog-th vs-prog-th-left">
                   <span class="vs-prog-badge new-badge">当前</span>
                   <span class="vs-prog-name">{{ currentPgs?.program_version ?? currentPgs?.filename }}</span>
                 </th>
                 <th class="vs-mid-col"></th>
-                <th colspan="3" class="vs-prog-th vs-prog-th-right">
+                <th colspan="4" class="vs-prog-th vs-prog-th-right">
                   <span class="vs-prog-badge old-badge">对比</span>
                   <span class="vs-prog-name">{{ vsTargetPgs?.program_version ?? vsTargetPgs?.filename }}</span>
                 </th>
@@ -305,10 +305,12 @@
                 <th class="col-bin">SWBin</th>
                 <th class="col-bin">HWBin</th>
                 <th>Bin Name</th>
+                <th>SBL管控</th>
                 <th class="vs-mid-col"></th>
                 <th class="col-bin">SWBin</th>
                 <th class="col-bin">HWBin</th>
                 <th>Bin Name</th>
+                <th>SBL管控</th>
               </tr>
             </thead>
             <tbody>
@@ -317,22 +319,32 @@
                   <td class="col-bin">{{ row.left.sw_bin }}</td>
                   <td class="col-bin" :class="{ 'bin-changed': row.right && row.left.hw_bin !== row.right.hw_bin }">{{ row.left.hw_bin }}</td>
                   <td :class="{ 'bin-changed': isSummaryBinNameChanged(row) }">{{ row.left.bin_name }}</td>
+                  <td>
+                    <template v-if="row.left.sw_bin == 3">
+                      <input class="sbl-input" v-model="sblInputText" placeholder="BIN5≥0.5%..." style="width: 150px; padding: 2px 4px; border: 1px solid #ccc; border-radius: 4px;" @keyup.enter="parseSbl" />
+                      <button class="btn btn-primary btn-sm" style="margin-left:4px" @click="parseSbl">解析</button>
+                    </template>
+                    <template v-else>
+                      {{ sblLimits[row.left.hw_bin] ?? '' }}
+                    </template>
+                  </td>
                 </template>
                 <template v-else>
-                  <td colspan="3" class="vs-empty-side">—</td>
+                  <td colspan="4" class="vs-empty-side">—</td>
                 </template>
                 <td class="vs-mid-col"></td>
                 <template v-if="row.right">
                   <td class="col-bin">{{ row.right.sw_bin }}</td>
                   <td class="col-bin">{{ row.right.hw_bin }}</td>
                   <td :class="{ 'bin-changed': isSummaryBinNameChanged(row) }">{{ row.right.bin_name }}</td>
+                  <td>{{ sblLimits[row.right.hw_bin] ?? '' }}</td>
                 </template>
                 <template v-else>
-                  <td colspan="3" class="vs-empty-side">—</td>
+                  <td colspan="4" class="vs-empty-side">—</td>
                 </template>
               </tr>
               <tr v-if="!summaryVsRows.length">
-                <td colspan="7" class="td-empty">无数据</td>
+                <td colspan="9" class="td-empty">无数据</td>
               </tr>
             </tbody>
           </table>
@@ -341,12 +353,12 @@
           <table class="vs-tbl summary-vs-tbl">
             <thead>
               <tr class="vs-prog-row">
-                <th colspan="3" class="vs-prog-th vs-prog-th-left">
+                <th colspan="4" class="vs-prog-th vs-prog-th-left">
                   <span class="vs-prog-badge new-badge">Current</span>
                   <span class="vs-prog-name">{{ currentPgs?.program_version ?? currentPgs?.filename }}</span>
                 </th>
                 <th class="vs-mid-col"></th>
-                <th colspan="3" class="vs-prog-th vs-prog-th-right">
+                <th colspan="4" class="vs-prog-th vs-prog-th-right">
                   <span class="vs-prog-badge old-badge">PGM</span>
                   <span class="vs-prog-name">{{ dataSummaryStandard.reference?.program_version ?? dataSummaryStandard.reference?.filename }}</span>
                 </th>
@@ -355,10 +367,12 @@
                 <th class="col-bin">SWBin</th>
                 <th class="col-bin">HWBin</th>
                 <th>Bin Name</th>
+                <th>SBL管控</th>
                 <th class="vs-mid-col"></th>
                 <th class="col-bin">SWBin</th>
                 <th class="col-bin">HWBin</th>
                 <th>Bin Name</th>
+                <th>SBL管控</th>
               </tr>
             </thead>
             <tbody>
@@ -372,22 +386,32 @@
                   <td class="col-bin">{{ row.left.sw_bin }}</td>
                   <td class="col-bin">{{ row.left.hw_bin }}</td>
                   <td :class="{ 'bin-changed': row.status === 'changed' || row.status === 'added' }">{{ row.left.bin_name }}</td>
+                  <td>
+                    <template v-if="row.left.sw_bin == 3">
+                      <input class="sbl-input" v-model="sblInputText" placeholder="BIN5≥0.5%..." style="width: 150px; padding: 2px 4px; border: 1px solid #ccc; border-radius: 4px;" @keyup.enter="parseSbl" />
+                      <button class="btn btn-primary btn-sm" style="margin-left:4px" @click="parseSbl">解析</button>
+                    </template>
+                    <template v-else>
+                      {{ sblLimits[row.left.hw_bin] ?? '' }}
+                    </template>
+                  </td>
                 </template>
                 <template v-else>
-                  <td colspan="3" class="vs-empty-side">-</td>
+                  <td colspan="4" class="vs-empty-side">-</td>
                 </template>
                 <td class="vs-mid-col"></td>
                 <template v-if="row.right">
                   <td class="col-bin">{{ row.right.sw_bin }}</td>
                   <td class="col-bin">{{ row.right.hw_bin }}</td>
                   <td :class="{ 'bin-changed': row.status === 'changed' }">{{ row.right.bin_name }}</td>
+                  <td>{{ sblLimits[row.right.hw_bin] ?? '' }}</td>
                 </template>
                 <template v-else>
-                  <td colspan="3" class="vs-empty-side">Added</td>
+                  <td colspan="4" class="vs-empty-side">Added</td>
                 </template>
               </tr>
               <tr v-if="!dataStandardSummaryRows.length">
-                <td colspan="7" class="td-empty">No data</td>
+                <td colspan="9" class="td-empty">No data</td>
               </tr>
             </tbody>
           </table>
@@ -399,6 +423,7 @@
                 <th class="col-bin">SWBin</th>
                 <th class="col-bin">HWBin</th>
                 <th>Bin Name</th>
+                <th>SBL管控</th>
               </tr>
             </thead>
             <tbody>
@@ -406,9 +431,18 @@
                 <td class="col-bin">{{ s.sw_bin }}</td>
                 <td class="col-bin">{{ s.hw_bin }}</td>
                 <td>{{ s.bin_name }}</td>
+                <td>
+                  <template v-if="s.sw_bin == 3">
+                    <input class="sbl-input" v-model="sblInputText" placeholder="BIN5≥0.5%, BIN7≥0.5%..." style="width: 250px; padding: 2px 4px; border: 1px solid #ccc; border-radius: 4px;" @keyup.enter="parseSbl" />
+                    <button class="btn btn-primary btn-sm" style="margin-left:4px" @click="parseSbl">解析</button>
+                  </template>
+                  <template v-else>
+                    {{ sblLimits[s.hw_bin] ?? '' }}
+                  </template>
+                </td>
               </tr>
               <tr v-if="!displaySummaryRows.length">
-                <td colspan="3" class="td-empty">无数据</td>
+                <td colspan="4" class="td-empty">无数据</td>
               </tr>
             </tbody>
           </table>
@@ -673,6 +707,19 @@ const dataProgramList = ref<any[]>([])
 const paramFilter   = ref('')
 const currentPgs    = ref<any>(null)
 const qaAlertFilter = ref(false)  // QA 红色预警筛选
+const sblInputText  = ref('')
+const sblLimits     = ref<Record<string, string>>({})
+
+function parseSbl() {
+  const text = sblInputText.value
+  sblLimits.value = {}
+  const regex = /BIN(\d+)\s*(?:≥|>|≤|<|=)?\s*([\d.]+%?)/gi
+  let match
+  while ((match = regex.exec(text)) !== null) {
+    sblLimits.value[match[1]] = match[2]
+  }
+}
+
 const cppFile       = ref<any>(null)
 const vsCppFile     = ref<any>(null)
 const cppLoading    = ref(false)

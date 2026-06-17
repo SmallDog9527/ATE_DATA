@@ -13,7 +13,7 @@
         </RouterLink>
         <RouterLink to="/analysis" class="menu-item" :class="{ 'router-link-active': isAnalysisActive }">
           <span class="icon">📊</span>
-          <span v-if="!collapsed" class="label">数据分析</span>
+          <span v-if="!collapsed" class="label">量产良率</span>
         </RouterLink>
         <RouterLink to="/reports" class="menu-item">
           <span class="icon">📑</span>
@@ -84,7 +84,7 @@ const aiOpen = ref(false)
 
 const pageTitles: Record<string, string> = {
   '/': '数据列表',
-  '/analysis': '数据分析',
+  '/analysis': '量产良率',
   '/reports': '报表中心',
   '/settings': '系统设置',
 }

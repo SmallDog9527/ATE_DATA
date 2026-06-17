@@ -351,7 +351,7 @@
               <div v-if="stuckFiles.length === 0" class="empty-tip" style="margin:12px 0">没有卡住的文件 🎉</div>
               <table v-else class="log-table" style="margin-top:8px">
                 <colgroup>
-                  <col style="width:90px" />
+                  <col style="width:135px" />
                   <col />
                   <col style="width:60px" />
                   <col style="width:150px" />
@@ -392,7 +392,7 @@
             <div v-else-if="ftpLogs.length === 0" class="empty-tip">暂无上传日志</div>
             <table v-else class="log-table">
               <colgroup>
-                <col style="width:90px" />
+                <col style="width:135px" />
                 <col />
                 <col style="width:120px" />
                 <col style="width:120px" />
@@ -1196,7 +1196,7 @@ const manualLogsLoading = ref(false)
 const manualLogPage     = ref(1)
 const manualLogPageSize = ref(20)
 const manualLogTotal    = ref(0)
-const activeLogSubTab   = ref((authStore.isAdmin || authStore.isEng) ? 'ftp' : 'manual')
+const activeLogSubTab   = ref('manual')
 
 const manualLogFilterType = ref('')
 const manualLogFilterStatus = ref('')

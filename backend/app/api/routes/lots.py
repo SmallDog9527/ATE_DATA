@@ -7,7 +7,7 @@ import tempfile
 from fastapi import APIRouter, Depends, Query, UploadFile, File, HTTPException, BackgroundTasks, Body
 from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, or_
+from sqlalchemy import desc, or_, func
 from typing import Optional, List
 from datetime import datetime, timedelta
 from pydantic import BaseModel
@@ -76,7 +76,7 @@ def _collect_archive_data_files(extract_dir: str) -> list[str]:
     for root, _, files in os.walk(extract_dir):
         for f in files:
             flower = f.lower()
-            if flower.endswith('.csv') or flower.endswith('.txt'):
+            if flower.endswith('.csv') or flower.endswith('.txt') or flower.endswith('.xls') or flower.endswith('.xlsx'):
                 data_files.append(os.path.join(root, f))
             elif _is_stdf(f):
                 from app.services.parsers.stdf_converter import convert_stdf_to_csv
@@ -102,7 +102,7 @@ def _collect_archive_data_files(extract_dir: str) -> list[str]:
                     os.remove(gz_inner)
                 except Exception as e:
                     print(f"[upload] Archive GZ extract failed {gz_inner}: {e}")
-    return sorted(data_files, key=lambda p: (1 if p.lower().endswith('.txt') else 0, p))
+    return sorted(data_files, key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
 
 
 def _extract_data_archive(archive_path: str, filename: str) -> tuple[list[str], str]:
@@ -248,7 +248,7 @@ async def _process_upload(file: UploadFile, db: Session, background_tasks: Backg
         for root, _, files in os.walk(extract_dir):
             for f in files:
                 flower = f.lower()
-                if flower.endswith('.csv') or flower.endswith('.txt'):
+                if flower.endswith('.csv') or flower.endswith('.txt') or flower.endswith('.xls') or flower.endswith('.xlsx'):
                     csv_files.append(os.path.join(root, f))
                 elif _is_stdf(f):
                     # ZIP 内的 STDF 文件先转换为 CSV
@@ -277,9 +277,9 @@ async def _process_upload(file: UploadFile, db: Session, background_tasks: Backg
                     except Exception as e:
                         print(f"[upload] ZIP 内 GZ 解压失败 {gz_inner}: {e}")
         if not csv_files:
-            raise HTTPException(status_code=400, detail="ZIP中未找到CSV、STDF或TXT文件")
-        # 确保 txt 文件排在 csv 文件后面
-        csv_paths = sorted(csv_files, key=lambda p: (1 if p.lower().endswith('.txt') else 0, p))
+            raise HTTPException(status_code=400, detail="ZIP中未找到CSV、STDF、TXT或XLS/XLSX文件")
+        # 确保 txt/xls 文件排在 csv 文件后面
+        csv_paths = sorted(csv_files, key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
 
     return await _process_csv_paths(
         csv_paths, filename, save_path if is_zip else None,
@@ -304,6 +304,26 @@ async def _process_csv_paths(
 
     for csv_path in csv_paths:
         csv_name = os.path.basename(csv_path)
+
+        if csv_name.lower().endswith(('.xls', '.xlsx')):
+            try:
+                from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
+                created_lots = parse_and_save_xls_summary(csv_path, db, user_id, osat_name="chipmore")
+                for lot in created_lots:
+                    results.append({
+                        "filename": csv_name,
+                        "status": "processed",
+                        "lot_id": lot.id
+                    })
+            except Exception as ex:
+                import traceback
+                traceback.print_exc()
+                results.append({
+                    "filename": csv_name,
+                    "status": "failed",
+                    "error": str(ex)
+                })
+            continue
 
         if csv_name.lower().endswith('.txt'):
             # Summary txt file
@@ -661,6 +681,7 @@ def _prepare_reparse_csv(lot: Lot) -> tuple[str, Optional[str]]:
 
 def _reparse_lot_bg(lot_id: int):
     from app.core.database import SessionLocal
+    from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
 
     db = SessionLocal()
     tmp_dir = None
@@ -668,8 +689,13 @@ def _reparse_lot_bg(lot_id: int):
         lot = db.query(Lot).filter(Lot.id == lot_id).first()
         if not lot:
             return
-        csv_path, tmp_dir = _prepare_reparse_csv(lot)
-        _parse_and_save(lot.id, csv_path, db)
+            
+        lower_path = lot.storage_path.lower()
+        if lower_path.endswith('.xls') or lower_path.endswith('.xlsx'):
+            parse_and_save_xls_summary(lot.storage_path, db, user_id=lot.user_id, osat_name=lot.osat_name)
+        else:
+            csv_path, tmp_dir = _prepare_reparse_csv(lot)
+            _parse_and_save(lot.id, csv_path, db)
     except Exception as e:
         print(f"[_reparse_lot_bg] error lot_id={lot_id}: {e}")
         lot = db.query(Lot).filter(Lot.id == lot_id).first()
@@ -717,11 +743,12 @@ def reparse_lots(
             continue
 
         lower_path = lot.storage_path.lower()
-        if not (lower_path.endswith('.csv') or lower_path.endswith('.zip')):
+        if not (lower_path.endswith('.csv') or lower_path.endswith('.zip') or lower_path.endswith('.xls') or lower_path.endswith('.xlsx')):
             skipped.append({"id": lot.id, "reason": "unsupported source file type"})
             continue
 
-        lot.status = 'pending'
+        if not lower_path.endswith('.xls') and not lower_path.endswith('.xlsx'):
+            lot.status = 'pending'
         queued.append(lot.id)
         background_tasks.add_task(_reparse_lot_bg, lot.id)
 
@@ -740,6 +767,294 @@ def reparse_lots(
     }
 
 
+@router.get("/mp-yield/overview")
+def get_mp_yield_overview(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    months: int = Query(1, ge=1, le=36),
+    product_name: Optional[str] = None,
+):
+    """
+    Get per-product overview statistics for the MP Yield overview tab.
+    Only counts FTP-sourced data. Returns:
+    - Per-product: wafer count, bin1_k (PASS/1000 integer), avg yield,
+                   avg_wafer_time_h, top5 fail bins (pct = bin_cnt/total_die)
+    - Weekly trend: output (wafers/week) and avg yield per week
+    """
+    try:
+        from app.models.lot import DataSource
+        from collections import defaultdict
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=months * 30)
+
+        # ── Build dedup filter subquery ──────────────────────────────────────
+        def _latest_ids_filter(extra_filter=None):
+            q = db.query(func.max(Lot.id)).filter(
+                Lot.data_source == DataSource.ftp,
+                Lot.data_type == "MP_Yield",
+                Lot.status != "deleted",
+                Lot.test_date >= cutoff,
+            )
+            if extra_filter is not None:
+                q = q.filter(extra_filter)
+            return q.group_by(Lot.lot_id, Lot.wafer_id).subquery()
+
+        pname_filter = Lot.product_name.ilike(f"%{product_name}%") if product_name else None
+
+        base_q = db.query(Lot).filter(
+            Lot.data_source == DataSource.ftp,
+            Lot.data_type == "MP_Yield",
+            Lot.status != "deleted",
+            Lot.test_date >= cutoff,
+        )
+        if pname_filter is not None:
+            base_q = base_q.filter(pname_filter)
+
+        latest_ids_sq = _latest_ids_filter(pname_filter)
+        lots = base_q.filter(Lot.id.in_(latest_ids_sq)).all()
+
+        if not lots:
+            return {"products": [], "weekly_output": [], "weekly_yield": []}
+
+        lot_ids = [lot.id for lot in lots]
+
+        # Fetch bin summaries (site=0 = all-site)
+        bins = (
+            db.query(BinSummary)
+            .filter(BinSummary.lot_id.in_(lot_ids), BinSummary.site == 0)
+            .all()
+        )
+        bin_map: dict = {}
+        for b in bins:
+            bin_map.setdefault(b.lot_id, {})[b.bin_number] = b.count
+
+        # ── Per-product aggregation ──────────────────────────────────────────
+        prod_lots: dict = defaultdict(list)
+        for lot in lots:
+            pname = lot.product_name or "(unknown)"
+            prod_lots[pname].append(lot)
+
+        products = []
+        for pname, plots in prod_lots.items():
+            wafer_count = len(plots)
+            total_pass = sum((lot.pass_count or 0) for lot in plots)
+            total_die  = sum((lot.die_count  or 0) for lot in plots)
+            avg_yield  = (total_pass / total_die * 100.0) if total_die > 0 else 0.0
+
+            # Fail bin aggregation
+            fail_bin_totals: dict = defaultdict(int)
+            for lot in plots:
+                for bin_num, cnt in bin_map.get(lot.id, {}).items():
+                    if bin_num != 1:   # bin1 = PASS
+                        fail_bin_totals[bin_num] += cnt
+
+            top5_bins = sorted(fail_bin_totals.items(), key=lambda x: -x[1])[:5]
+            # pct = bin_count / total_die  (correct: each fail die out of all tested)
+            top5 = [
+                {
+                    "bin": f"Sbin{b}",
+                    "count": cnt,
+                    "pct": round(cnt / total_die * 100, 2) if total_die > 0 else 0.0,
+                }
+                for b, cnt in top5_bins
+            ]
+
+            durations_h = []
+            for lot in plots:
+                if lot.beginning_time and lot.ending_time:
+                    diff_s = (lot.ending_time - lot.beginning_time).total_seconds()
+                    if diff_s > 0:
+                        durations_h.append(diff_s / 3600.0)
+            
+            avg_wafer_time_h = None
+            if durations_h:
+                durations_h.sort(reverse=True)
+                n = len(durations_h)
+                drop_count = int(n * 0.3)
+                if drop_count > 0 and n - 2 * drop_count > 0:
+                    middle = durations_h[drop_count : n - drop_count]
+                else:
+                    middle = durations_h
+                if middle:
+                    avg_wafer_time_h = round(sum(middle) / len(middle), 2)
+
+            products.append({
+                "product_name": pname,
+                "wafers": wafer_count,
+                "bin1_k": int(total_pass // 1000),       # integer K
+                "avg_yield": round(avg_yield, 2),
+                "avg_wafer_time_h": avg_wafer_time_h,
+                "top5_fail_bins": top5,
+            })
+
+        # Sort by wafer count descending
+        products.sort(key=lambda x: -x["wafers"])
+
+        # ── Weekly trend ─────────────────────────────────────────────────────
+        week_data: dict = defaultdict(lambda: {"pass": 0, "die": 0, "wafers": 0})
+        for lot in lots:
+            if lot.test_date:
+                td = lot.test_date
+                if td.tzinfo is None:
+                    td = td.replace(tzinfo=timezone.utc)
+                year, week, _ = td.isocalendar()
+                wkey = f"{year}-W{week:02d}"
+                week_data[wkey]["pass"]   += lot.pass_count or 0
+                week_data[wkey]["die"]    += lot.die_count  or 0
+                week_data[wkey]["wafers"] += 1
+
+        sorted_weeks = sorted(week_data.keys())
+
+        weekly_output = [{"week": w, "wafers": week_data[w]["wafers"]} for w in sorted_weeks]
+        weekly_yield  = [
+            {
+                "week": w,
+                "yield": round(week_data[w]["pass"] / week_data[w]["die"] * 100.0, 2)
+                if week_data[w]["die"] > 0 else 0.0,
+            }
+            for w in sorted_weeks
+        ]
+
+        return {
+            "products": products,
+            "weekly_output": weekly_output,
+            "weekly_yield": weekly_yield,
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@router.get("/mp-yield/list")
+def get_mp_yield_list(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    lot_id: Optional[str] = None,
+    wafer_id: Optional[str] = None,
+    product_name: Optional[str] = None,
+    mp_tester: Optional[str] = None,
+    test_date_from: Optional[str] = None,
+    test_date_to: Optional[str] = None,
+):
+    """
+    Get a list of MP Yield records with horizontally pivoted sbin1-sbin130 values.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        if current_user.role in ['admin', 'eng']:
+            query = db.query(Lot)
+        else:
+            shared_lot_ids = (
+                db.query(LotShare.lot_id)
+                .filter(
+                    LotShare.shared_to == current_user.id,
+                    LotShare.expires_at > now,
+                )
+                .subquery()
+            )
+            from app.models.lot import DataSource
+            query = db.query(Lot).filter(
+                or_(
+                    Lot.user_id == current_user.id,
+                    Lot.id.in_(shared_lot_ids),
+                    Lot.data_source == DataSource.ftp
+                )
+            )
+            
+        query = query.filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
+        
+        # Deduplicate wafer runs: only show the latest wafer run (highest ID) for each unique (lot_id, wafer_id) combination
+        latest_wafer_run_ids = (
+            db.query(func.max(Lot.id))
+            .filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
+            .group_by(Lot.lot_id, Lot.wafer_id)
+            .subquery()
+        )
+        query = query.filter(Lot.id.in_(latest_wafer_run_ids))
+        
+        if lot_id:
+            query = query.filter(Lot.lot_id.ilike(f"%{lot_id}%"))
+        if wafer_id:
+            query = query.filter(Lot.wafer_id.ilike(f"%{wafer_id}%"))
+        if product_name:
+            query = query.filter(Lot.product_name.ilike(f"%{product_name}%"))
+        if mp_tester:
+            query = query.filter(Lot.mp_tester.ilike(f"%{mp_tester}%"))
+        if test_date_from:
+            query = query.filter(Lot.test_date >= datetime.strptime(test_date_from, "%Y-%m-%d"))
+        if test_date_to:
+            query = query.filter(Lot.test_date < datetime.strptime(test_date_to, "%Y-%m-%d") + timedelta(days=1))
+            
+        total = query.count()
+        lots = query.order_by(desc(Lot.test_date), desc(Lot.id)).offset(
+            (page - 1) * page_size
+        ).limit(page_size).all()
+        
+        lot_ids = [lot.id for lot in lots]
+        bin_summaries_map = {}
+        if lot_ids:
+            bins = db.query(BinSummary).filter(BinSummary.lot_id.in_(lot_ids)).all()
+            for b in bins:
+                if b.lot_id not in bin_summaries_map:
+                    bin_summaries_map[b.lot_id] = {}
+                bin_summaries_map[b.lot_id][b.bin_number] = b.count
+                
+        items = []
+        for lot in lots:
+            lot_bins = bin_summaries_map.get(lot.id, {})
+            test_date_str = ""
+            if lot.test_date:
+                test_date_str = lot.test_date.strftime("%Y-%m-%d %H:%M:%S")
+                
+            test_start_str = ""
+            if lot.beginning_time:
+                test_start_str = lot.beginning_time.strftime("%Y-%m-%d %H:%M:%S")
+                
+            duration_h = None
+            if lot.beginning_time and lot.ending_time:
+                diff_s = (lot.ending_time - lot.beginning_time).total_seconds()
+                if diff_s > 0:
+                    duration_h = round(diff_s / 3600.0, 2)
+                    
+            item = {
+                "id": lot.id,
+                "osat_name": lot.osat_name or "chipmore",
+                "test_start": test_start_str,
+                "test_date": test_date_str,
+                "duration_h": duration_h,
+                "product_name": lot.product_name or "",
+                "lot_id": lot.lot_id or "",
+                "wafer_id": lot.wafer_id or "",
+                "total": lot.die_count or 0,
+                "pass": lot.pass_count or 0,
+                "yield_rate": round((lot.yield_rate or 0.0) * 100.0, 2),
+                "program": lot.program or "",
+                "mp_tester": lot.mp_tester or "",
+                "probecard": lot.probecard or "",
+            }
+            
+            for sbin_idx in range(1, 131):
+                item[f"sbin{sbin_idx}"] = lot_bins.get(sbin_idx, 0)
+                
+            items.append(item)
+            
+        return {
+            "total": total,
+            "items": items,
+            "page": page,
+            "page_size": page_size
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("", response_model=LotListResponse)
 def get_lots(
     db: Session = Depends(get_db),
@@ -756,6 +1071,7 @@ def get_lots(
     data_source: Optional[str] = None,
     test_machine: Optional[str] = None,
     osat_name: Optional[str] = None,
+    osat_type: Optional[str] = None,   # OSAT Tab 专用：按 osat_config.data_type 过滤（CP/FT）
     test_date_from: Optional[str] = None,
     test_date_to: Optional[str] = None,
     upload_date_from: Optional[str] = None,
@@ -786,6 +1102,20 @@ def get_lots(
         
         query = query.filter(Lot.status != 'deleted')
 
+        # Deduplicate summary files: only show the first wafer (minimum ID) for each unique summary filename
+        representative_mp_yield_ids = (
+            db.query(func.min(Lot.id))
+            .filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
+            .group_by(Lot.filename)
+            .subquery()
+        )
+        query = query.filter(
+            or_(
+                Lot.data_type != 'MP_Yield',
+                Lot.id.in_(representative_mp_yield_ids)
+            )
+        )
+
         if filename:
             query = query.filter(Lot.filename.ilike(f"%{filename}%"))
         if product_name:
@@ -806,6 +1136,14 @@ def get_lots(
             query = query.filter(Lot.test_machine == test_machine)
         if osat_name:
             query = query.filter(Lot.osat_name == osat_name)
+        # OSAT Tab 专用过滤：按 osat_config.data_type 过滤，而非 lot.data_type
+        # 这样 QA 文件（data_type='QA'）也会出现在对应的 OSAT_CP/OSAT_FT Tab 中
+        if osat_type:
+            from app.models.osat_config import OsatConfig
+            osat_names_for_type = [
+                r[0] for r in db.query(OsatConfig.name).filter(OsatConfig.data_type == osat_type).all()
+            ]
+            query = query.filter(Lot.osat_name.in_(osat_names_for_type))
         if test_date_from:
             query = query.filter(Lot.test_date >= datetime.strptime(test_date_from, "%Y-%m-%d"))
         if test_date_to:
@@ -819,6 +1157,18 @@ def get_lots(
         items = query.order_by(desc(Lot.upload_date)).offset(
             (page-1)*page_size
         ).limit(page_size).all()
+
+        # 填充 osat_type：从 osat_config 读取每个 lot 所属 OSAT 的 CP/FT 分类
+        # 这样前端可以按 osat_type 过滤 Tab，而不是按 lot.data_type
+        from app.models.osat_config import OsatConfig
+        osat_type_map = {
+            r[0]: r[1] for r in db.query(OsatConfig.name, OsatConfig.data_type).all()
+        }
+        for item in items:
+            if item.osat_name and item.data_source == 'ftp':
+                item.osat_type = osat_type_map.get(item.osat_name)
+            else:
+                item.osat_type = None
 
         return {
             "total": total,
@@ -927,8 +1277,8 @@ def update_lot_display(
         normalized = value.strip()
         if field == "filename" and not normalized:
             raise HTTPException(status_code=400, detail="Display name cannot be empty")
-        if field == "data_type" and normalized.upper() not in {"CP", "FT", "QA"}:
-            raise HTTPException(status_code=400, detail="Data Type 只能是 CP / FT / QA")
+        if field == "data_type" and normalized.upper() not in {"CP", "FT", "QA", "MP_YIELD"}:
+            raise HTTPException(status_code=400, detail="Data Type 只能是 CP / FT / QA / MP_YIELD")
         if field == "data_type":
             normalized = normalized.upper()
         setattr(lot, field, normalized)

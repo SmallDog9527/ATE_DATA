@@ -358,7 +358,7 @@ const uploading = ref(false)
 const uploadFiles = ref<File[]>([])
 const fileInput = ref<HTMLInputElement>()
 const gridApi = ref<GridApi>()
-const filters = ref({ product_name: '', lot_id: '', status: '' })
+const filters = ref({ product_name: '', lot_id: '', status: 'processed' })
 const backendGridFilters = ref<Record<string, string>>({})
 const displayEditInput = ref<HTMLInputElement>()
 const displayEditDialog = ref({
@@ -466,13 +466,15 @@ const filteredLots = computed(() => {
   }
   if (activeHomeTab.value === 'ENG_DATA') {
     if (authStore.isAdmin || authStore.isEng) {
-      return lots.value.filter((l: any) => l.data_source === 'manual')
+      return lots.value.filter((l: any) => l.data_source === 'manual' && l.data_type !== 'MP_Yield')
     } else {
       // 普通用户只显示本人的手动上传数据
-      return lots.value.filter((l: any) => l.data_source === 'manual' && l.user_id === authStore.user?.id)
+      return lots.value.filter((l: any) => l.data_source === 'manual' && l.user_id === authStore.user?.id && l.data_type !== 'MP_Yield')
     }
   }
-  return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type === activeHomeTab.value)
+  // OSAT_CP/OSAT_FT Tab 按 osat_type 过滤（而非 data_type）
+  // 这样来自 CP OSAT 的 QA 文件仍留在 OSAT_CP Tab，而不会因 data_type='QA' 而消失
+  return lots.value.filter((l: any) => l.data_source === 'ftp' && l.osat_type === activeHomeTab.value && l.data_type !== 'MP_Yield')
 })
 
 const computedColumnDefs = computed(() => {
@@ -733,7 +735,11 @@ const SelectFloatingFilter = defineComponent({
         },
       }, [
         h('option', { value: '' }, '全部'),
-        ...options.map((option: string) => h('option', { value: option }, option)),
+        ...options.map((option: any) => {
+          const val = typeof option === 'object' ? option.value : option
+          const label = typeof option === 'object' ? option.label : option
+          return h('option', { value: val }, label)
+        }),
       ])
     }
   },
@@ -942,7 +948,8 @@ const columnDefs: ColDef[] = [
     suppressHeaderFilterButton: true,
     floatingFilterComponent: SelectFloatingFilter,
     floatingFilterComponentParams: {
-      options: () => uniqueColumnOptions('data_type'),
+      // 固定列表：不受当前 Tab 过滤影响，始终显示所有可能的 Data Type
+      options: () => ['CP', 'FT', 'QA', 'Summary'],
       placeholder: 'Data Type',
     },
   },
@@ -951,8 +958,19 @@ const columnDefs: ColDef[] = [
   {
     headerName: '状态',
     field: 'status',
-    width: 90,
-    filter: false,
+    width: 100,
+    filter: 'agTextColumnFilter',
+    suppressHeaderFilterButton: true,
+    floatingFilterComponent: SelectFloatingFilter,
+    floatingFilterComponentParams: {
+      options: () => [
+        { value: 'pending', label: '待处理' },
+        { value: 'processing', label: '处理中' },
+        { value: 'processed', label: '已完成' },
+        { value: 'failed', label: '失败' }
+      ],
+      placeholder: '状态',
+    },
     cellRenderer: (p: any) => {
       const map: Record<string, string> = {
         pending: '<span style="color:#888">待处理</span>',
@@ -1061,6 +1079,21 @@ watch(() => timezoneStore.timezone, () => {
   gridApi.value?.refreshCells({ force: true })
 })
 
+// 监听工具栏“状态”筛选变化，同步更新表格列筛选器状态
+watch(() => filters.value.status, (newStatus) => {
+  if (!gridApi.value) return
+  const model = gridApi.value.getFilterModel() || {}
+  const currentModelStatus = model.status?.filter || ''
+  if (currentModelStatus !== newStatus) {
+    if (!newStatus) {
+      delete model.status
+    } else {
+      model.status = { type: 'equals', filter: newStatus }
+    }
+    gridApi.value.setFilterModel(model)
+  }
+})
+
 function formatDateTime(val: any) {
   if (!val) return '-'
   if (val instanceof Date) {
@@ -1115,10 +1148,10 @@ async function fetchLots() {
       params.data_source = 'manual'
     } else if (activeHomeTab.value === 'FT') {
       params.data_source = 'ftp'
-      params.data_type = 'FT'
+      params.osat_type = 'FT'   // 按 OSAT 配置的 data_type 过滤，而非 lot 自身的 data_type
     } else if (activeHomeTab.value === 'CP') {
       params.data_source = 'ftp'
-      params.data_type = 'CP'
+      params.osat_type = 'CP'   // 按 OSAT 配置的 data_type 过滤，而非 lot 自身的 data_type
     }
 
     const data: any = await api.get('/lots', { params })
@@ -1178,6 +1211,12 @@ async function saveProductName() {
 
 function onGridReady(params: any) {
   gridApi.value = params.api
+  // 初始化表格时，如果默认状态有值，应用到表格列筛选器
+  if (filters.value.status) {
+    const model = gridApi.value.getFilterModel() || {}
+    model.status = { type: 'equals', filter: filters.value.status }
+    gridApi.value.setFilterModel(model)
+  }
 }
 
 function textFilterValue(model: any, field: string): string {
@@ -1224,12 +1263,14 @@ function onGridFilterChanged() {
   const model = gridApi.value.getFilterModel()
   const nextProductName = textFilterValue(model, 'product_name')
   const nextLotId = textFilterValue(model, 'lot_id')
+  const nextStatus = textFilterValue(model, 'status')
   const nextBackendGridFilters = extractBackendGridFilters(model)
   const backendFilterChanged = JSON.stringify(nextBackendGridFilters) !== JSON.stringify(backendGridFilters.value)
 
   if (
     nextProductName === filters.value.product_name &&
     nextLotId === filters.value.lot_id &&
+    nextStatus === filters.value.status &&
     !backendFilterChanged
   ) {
     return
@@ -1237,6 +1278,7 @@ function onGridFilterChanged() {
 
   filters.value.product_name = nextProductName
   filters.value.lot_id = nextLotId
+  filters.value.status = nextStatus
   backendGridFilters.value = nextBackendGridFilters
 
   if (gridFilterTimer) clearTimeout(gridFilterTimer)
@@ -1597,6 +1639,15 @@ function onCheckboxClick(event: MouseEvent, p: string) {
 
 onMounted(fetchLots)
 watch(activeHomeTab, () => {
+  if (gridApi.value) {
+    const model = gridApi.value.getFilterModel() || {}
+    if (activeHomeTab.value === 'CP') {
+      model.data_type = { type: 'equals', filter: 'CP' }
+    } else {
+      delete model.data_type
+    }
+    gridApi.value.setFilterModel(model)
+  }
   fetchLotsFromFirstPage()
 })
 </script>

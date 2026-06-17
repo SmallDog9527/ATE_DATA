@@ -32,6 +32,7 @@ class LotResponse(BaseModel):
     probecard: Optional[str] = None    # 探针卡（后续通过 Summary 关联）
     ftp_path: Optional[str] = None
     check_status: Optional[str] = None
+    osat_type: Optional[str] = None     # OSAT 归属类别（CP/FT），从 osat_config.data_type 读取，FTP lot 专用
 
     class Config:
         from_attributes = True
