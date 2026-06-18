@@ -1,7 +1,7 @@
 """
 PGS 文件解析服务
 ===================
-支持版本：1007, 1002
+支持版本：1007, 1006, 1003, 1002
 输出：
   params  - Param 表行列表（与 XLS Sheet1 一致）
   summary - Summary 表行列表（与 XLS Sheet2 一致）
@@ -151,7 +151,7 @@ def _version_sort_key(version_str: Optional[str]) -> int:
 # ─────────────────────────────────────────
 
 def detect_version(content: str) -> Optional[int]:
-    """检测 PGS 文件版本，返回整数（如 1007/1002），找不到返回 None"""
+    """检测 PGS 文件版本，返回整数（如 1007/1006/1003/1002），找不到返回 None"""
     for line in content.splitlines():
         if 'iPgsVersion' in line and '=' in line:
             try:
@@ -822,7 +822,7 @@ def _parse_bindef_summary_v1002(lines: list) -> list:
 
 
 def parse_v1002(content: str) -> dict:
-    """解析 v1002 格式 PGS，输出结构与 v1007 一致。"""
+    """解析 v1002 / v1003 格式 PGS，输出结构与 v1007 一致。"""
     lines = content.splitlines()
     start_func_num = _parse_start_function_num(lines)
     has_qa = start_func_num > 1
@@ -962,10 +962,10 @@ def parse_pgs(content: str, filename: str = '') -> dict:
         result = parse_v1007(content)
     elif version == 1006:
         result = parse_v1006(content)
-    elif version == 1002:
+    elif version in (1002, 1003):
         result = parse_v1002(content)
     else:
-        raise ValueError(f"暂不支持 PGS 版本 {version}（目前支持：1007, 1006, 1002）")
+        raise ValueError(f"暂不支持 PGS 版本 {version}（目前支持：1007, 1006, 1003, 1002）")
 
     program_version = _extract_version_from_filename(filename)
     result['pgs_version'] = version
