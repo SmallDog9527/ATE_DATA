@@ -126,7 +126,7 @@
         <div v-if="versionExpanded" class="settings-card-body">
           <div v-if="authStore.isAdmin" class="form-grid">
             <div class="form-field" style="grid-column: 1/-1;">
-              <label>更新日志内容（支持多行输入）</label>
+              <label>当前版本（{{ versionInfo.version }}）更新日志内容（支持多行输入）</label>
               <textarea
                 v-model="versionInfo.content"
                 placeholder="请输入版本更新内容，例如新功能介绍、修复说明等..."
@@ -144,8 +144,24 @@
             </div>
           </div>
           <div v-else class="version-viewer">
-            <div class="viewer-title" style="font-weight: 600; margin-bottom: 8px; font-size: 14px; color: #475569;">更新日志：</div>
+            <div class="viewer-title" style="font-weight: 600; margin-bottom: 8px; font-size: 14px; color: #475569;">当前版本（{{ versionInfo.version }}）更新日志：</div>
             <pre style="white-space: pre-wrap; font-family: inherit; font-size: 14px; line-height: 1.6; color: #334155; background: #f8fafc; padding: 12px 16px; border-radius: 6px; border: 1px solid #e2e8f0; margin: 0;">{{ versionInfo.content || '暂无更新说明' }}</pre>
+          </div>
+
+          <!-- 历史版本更新记录 -->
+          <div v-if="versionInfo.history && versionInfo.history.length > 0" class="version-history-section" style="margin-top: 20px; border-top: 1px dashed #cbd5e1; padding-top: 16px;">
+            <div class="history-title" style="font-weight: 600; margin-bottom: 12px; font-size: 14px; color: #1e293b; display: flex; align-items: center;">
+              <span>📜 历史版本更新记录</span>
+            </div>
+            <div class="history-list" style="display: flex; flex-direction: column; gap: 10px;">
+              <div v-for="item in versionInfo.history" :key="item.version" class="history-item" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px 14px;">
+                <div class="history-item-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                  <span class="badge purple" style="font-size: 11px; font-weight: 600; background: #f5f3ff; color: #7c3aed; padding: 2px 6px; border-radius: 4px;">{{ item.version }}</span>
+                  <span class="history-date" style="font-size: 11px; color: #94a3b8;">{{ item.updated_at }}</span>
+                </div>
+                <pre style="white-space: pre-wrap; font-family: inherit; font-size: 13px; line-height: 1.5; color: #475569; margin: 0; padding: 0; background: none; border: none;">{{ item.content || '无更新说明' }}</pre>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -951,7 +967,7 @@ async function sendTestEmail() {
 
 // ── 版本更新信息 ──
 const versionExpanded = ref(false)
-const versionInfo     = ref({ version: 'V01_20260623', content: '' })
+const versionInfo     = ref({ version: 'V01_20260623', content: '', history: [] as any[] })
 const versionSaving   = ref(false)
 const versionSaveMsg  = ref<{ok: boolean; text: string} | null>(null)
 
@@ -970,6 +986,7 @@ async function saveVersion() {
   try {
     await api.put('/settings/version', { content: versionInfo.value.content })
     versionSaveMsg.value = { ok: true, text: '✅ 版本更新内容已保存' }
+    await loadVersionInfo()
   } catch (e: any) {
     versionSaveMsg.value = { ok: false, text: `❌ 保存失败：${e.message || e}` }
   } finally {

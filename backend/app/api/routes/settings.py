@@ -3,6 +3,7 @@ settings.py  —  系统设置 API（仅管理员）
 包含：SMTP邮箱配置、OSAT/FTP管理、上传日志查询
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
+import os
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime, timezone
@@ -565,12 +566,52 @@ def get_version_settings(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """获取当前系统版本号与版本更新内容"""
-    cfg = db.query(SystemSetting).first()
-    content = cfg.version_update_content if (cfg and cfg.version_update_content) else ""
+    """获取当前系统版本号与版本更新历史记录"""
+    import json
+    current_version = get_project_version()
+    
+    # 从 JSON 文件读取历史记录
+    history = []
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    history_file = os.path.join(os.path.dirname(os.path.dirname(current_dir)), "version_history.json")
+    if os.path.exists(history_file):
+        try:
+            with open(history_file, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except Exception as e:
+            print(f"[get_version_settings] Error reading history file: {e}")
+            
+    # 如果文件不存在或者为空，做个初始化兜底
+    if not history:
+        history = [
+            {
+                "version": "V01_20260623",
+                "content": "1. 解析 KSHT Summary 后入库的 OSAT 名称统一显示为大写的 \"KSHT\"\n2. 修复明细页面中 OSAT 的搜索，支持大小写不敏感匹配",
+                "updated_at": "2026-06-23 20:30:00"
+            },
+            {
+                "version": "V1_20260618",
+                "content": "系统初始发布版本",
+                "updated_at": "2026-06-18 09:00:00"
+            }
+        ]
+        try:
+            with open(history_file, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    # 找到当前版本的说明
+    current_content = ""
+    for item in history:
+        if item.get("version") == current_version:
+            current_content = item.get("content", "")
+            break
+
     return {
-        "version": get_project_version(),
-        "content": content
+        "version": current_version,
+        "content": current_content,  # 当前版本的更新说明
+        "history": history           # 历次版本更新记录
     }
 
 
@@ -580,15 +621,58 @@ def save_version_settings(
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
-    """保存版本更新内容（仅管理员）"""
+    """保存版本更新内容（仅管理员）到 JSON 文件中"""
+    import json
+    current_version = get_project_version()
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    history_file = os.path.join(os.path.dirname(os.path.dirname(current_dir)), "version_history.json")
+    
+    # 1. 读取现有历史
+    history = []
+    if os.path.exists(history_file):
+        try:
+            with open(history_file, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except Exception:
+            pass
+            
+    if not history:
+        history = []
+        
+    # 2. 更新或追加当前版本的内容
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    found = False
+    for item in history:
+        if item.get("version") == current_version:
+            item["content"] = body.content
+            item["updated_at"] = now_str
+            found = True
+            break
+            
+    if not found:
+        # 插在最前面，按最新版本排序
+        history.insert(0, {
+            "version": current_version,
+            "content": body.content,
+            "updated_at": now_str
+        })
+        
+    # 3. 写入回 JSON 文件
+    try:
+        with open(history_file, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"保存版本历史文件失败: {e}")
+        
+    # 4. 同步保存到数据库
     cfg = db.query(SystemSetting).first()
     if not cfg:
         cfg = SystemSetting()
         db.add(cfg)
-
     cfg.version_update_content = body.content
     cfg.updated_at = datetime.now(timezone.utc)
     db.commit()
-    return {"message": "版本更新内容已保存"}
+    
+    return {"message": "版本更新内容已成功保存至历史文件"}
 
 
