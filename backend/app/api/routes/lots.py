@@ -771,7 +771,9 @@ def reparse_lots(
 def get_mp_yield_overview(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    months: int = Query(1, ge=1, le=36),
+    range_type: str = Query("month"),
+    range_value: Optional[int] = Query(3),
+    months: Optional[int] = Query(None),
     product_name: Optional[str] = None,
 ):
     """
@@ -785,28 +787,61 @@ def get_mp_yield_overview(
         from app.models.lot import DataSource
         from collections import defaultdict
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=months * 30)
+        if months is not None:
+            range_type = "month"
+            range_value = months
+
+        filters = [
+            Lot.data_source == DataSource.ftp,
+            Lot.data_type == "MP_Yield",
+            Lot.status != "deleted",
+        ]
+
+        if range_type == "month":
+            val = range_value if range_value is not None else 3
+            cutoff = datetime.now(timezone.utc) - timedelta(days=val * 30)
+            filters.append(Lot.test_date >= cutoff)
+        elif range_type == "year":
+            val = range_value if range_value is not None else 1
+            cutoff = datetime.now(timezone.utc) - timedelta(days=val * 365)
+            filters.append(Lot.test_date >= cutoff)
+        elif range_type == "lot":
+            val = range_value if range_value is not None else 20
+            # Get recent N distinct lot IDs for MP_Yield
+            recent_lots_q = (
+                db.query(Lot.lot_id)
+                .filter(
+                    Lot.data_source == DataSource.ftp,
+                    Lot.data_type == "MP_Yield",
+                    Lot.status != "deleted",
+                )
+            )
+            if product_name:
+                recent_lots_q = recent_lots_q.filter(Lot.product_name.ilike(f"%{product_name}%"))
+            recent_lots_results = (
+                recent_lots_q.group_by(Lot.lot_id)
+                .order_by(func.max(Lot.test_date).desc())
+                .limit(val)
+                .all()
+            )
+            recent_lot_ids = [r[0] for r in recent_lots_results] if recent_lots_results else []
+            if not recent_lot_ids:
+                return {"products": [], "weekly_output": [], "weekly_yield": []}
+            filters.append(Lot.lot_id.in_(recent_lot_ids))
+        elif range_type == "all":
+            # No date/lot filter
+            pass
 
         # ── Build dedup filter subquery ──────────────────────────────────────
         def _latest_ids_filter(extra_filter=None):
-            q = db.query(func.max(Lot.id)).filter(
-                Lot.data_source == DataSource.ftp,
-                Lot.data_type == "MP_Yield",
-                Lot.status != "deleted",
-                Lot.test_date >= cutoff,
-            )
+            q = db.query(func.max(Lot.id)).filter(*filters)
             if extra_filter is not None:
                 q = q.filter(extra_filter)
             return q.group_by(Lot.lot_id, Lot.wafer_id).subquery()
 
         pname_filter = Lot.product_name.ilike(f"%{product_name}%") if product_name else None
 
-        base_q = db.query(Lot).filter(
-            Lot.data_source == DataSource.ftp,
-            Lot.data_type == "MP_Yield",
-            Lot.status != "deleted",
-            Lot.test_date >= cutoff,
-        )
+        base_q = db.query(Lot).filter(*filters)
         if pname_filter is not None:
             base_q = base_q.filter(pname_filter)
 
@@ -814,7 +849,7 @@ def get_mp_yield_overview(
         lots = base_q.filter(Lot.id.in_(latest_ids_sq)).all()
 
         if not lots:
-            return {"products": [], "weekly_output": [], "weekly_yield": []}
+            return {"products": [], "weekly_output": [], "weekly_yield": [], "osats": []}
 
         lot_ids = [lot.id for lot in lots]
 
@@ -828,14 +863,15 @@ def get_mp_yield_overview(
         for b in bins:
             bin_map.setdefault(b.lot_id, {})[b.bin_number] = b.count
 
-        # ── Per-product aggregation ──────────────────────────────────────────
-        prod_lots: dict = defaultdict(list)
+        # ── Grouping by (product_name, osat_name) ─────────────────────────────
+        group_lots: dict = defaultdict(list)
         for lot in lots:
             pname = lot.product_name or "(unknown)"
-            prod_lots[pname].append(lot)
+            osat = lot.osat_name or "chipmore"
+            group_lots[(pname, osat)].append(lot)
 
         products = []
-        for pname, plots in prod_lots.items():
+        for (pname, osat), plots in group_lots.items():
             wafer_count = len(plots)
             total_pass = sum((lot.pass_count or 0) for lot in plots)
             total_die  = sum((lot.die_count  or 0) for lot in plots)
@@ -849,7 +885,7 @@ def get_mp_yield_overview(
                         fail_bin_totals[bin_num] += cnt
 
             top5_bins = sorted(fail_bin_totals.items(), key=lambda x: -x[1])[:5]
-            # pct = bin_count / total_die  (correct: each fail die out of all tested)
+            # pct = bin_count / total_die
             top5 = [
                 {
                     "bin": f"Sbin{b}",
@@ -880,6 +916,7 @@ def get_mp_yield_overview(
 
             products.append({
                 "product_name": pname,
+                "osat": osat.upper() if osat.lower() == "ksht" else osat,
                 "wafers": wafer_count,
                 "bin1_k": int(total_pass // 1000),       # integer K
                 "avg_yield": round(avg_yield, 2),
@@ -915,10 +952,25 @@ def get_mp_yield_overview(
             for w in sorted_weeks
         ]
 
+        # ── OSAT aggregation ─────────────────────────────────────────────────
+        osat_bin1_totals = defaultdict(int)
+        for lot in lots:
+            osat = lot.osat_name or "chipmore"
+            osat_bin1_totals[osat] += lot.pass_count or 0
+
+        osats = [
+            {
+                "osat_name": name,
+                "bin1_k": int(total_pass // 1000)
+            }
+            for name, total_pass in osat_bin1_totals.items()
+        ]
+
         return {
             "products": products,
             "weekly_output": weekly_output,
             "weekly_yield": weekly_yield,
+            "osats": osats,
         }
 
     except Exception as e:
@@ -938,8 +990,12 @@ def get_mp_yield_list(
     wafer_id: Optional[str] = None,
     product_name: Optional[str] = None,
     mp_tester: Optional[str] = None,
+    osat_name: Optional[str] = None,
+    program: Optional[str] = None,
     test_date_from: Optional[str] = None,
     test_date_to: Optional[str] = None,
+    range_type: Optional[str] = None,
+    range_value: Optional[int] = None,
 ):
     """
     Get a list of MP Yield records with horizontally pivoted sbin1-sbin130 values.
@@ -983,12 +1039,56 @@ def get_mp_yield_list(
             query = query.filter(Lot.wafer_id.ilike(f"%{wafer_id}%"))
         if product_name:
             query = query.filter(Lot.product_name.ilike(f"%{product_name}%"))
+        if osat_name:
+            if osat_name.lower() == "chipmore":
+                query = query.filter(or_(Lot.osat_name.ilike(f"%{osat_name}%"), Lot.osat_name.is_(None)))
+            else:
+                query = query.filter(Lot.osat_name.ilike(f"%{osat_name}%"))
+        if program:
+            query = query.filter(Lot.program.ilike(f"%{program}%"))
         if mp_tester:
-            query = query.filter(Lot.mp_tester.ilike(f"%{mp_tester}%"))
-        if test_date_from:
-            query = query.filter(Lot.test_date >= datetime.strptime(test_date_from, "%Y-%m-%d"))
-        if test_date_to:
-            query = query.filter(Lot.test_date < datetime.strptime(test_date_to, "%Y-%m-%d") + timedelta(days=1))
+            if mp_tester == "(unknown)":
+                query = query.filter(or_(Lot.mp_tester == "(unknown)", Lot.mp_tester.is_(None)))
+            else:
+                query = query.filter(Lot.mp_tester.ilike(f"%{mp_tester}%"))
+            
+        if range_type:
+            from app.models.lot import DataSource
+            if range_type == "month":
+                val = range_value if range_value is not None else 3
+                cutoff = datetime.now(timezone.utc) - timedelta(days=val * 30)
+                query = query.filter(Lot.test_date >= cutoff)
+            elif range_type == "year":
+                val = range_value if range_value is not None else 1
+                cutoff = datetime.now(timezone.utc) - timedelta(days=val * 365)
+                query = query.filter(Lot.test_date >= cutoff)
+            elif range_type == "lot":
+                val = range_value if range_value is not None else 20
+                recent_lots_q = (
+                    db.query(Lot.lot_id)
+                    .filter(
+                        Lot.data_source == DataSource.ftp,
+                        Lot.data_type == "MP_Yield",
+                        Lot.status != "deleted",
+                    )
+                )
+                if product_name:
+                    recent_lots_q = recent_lots_q.filter(Lot.product_name.ilike(f"%{product_name}%"))
+                recent_lots_results = (
+                    recent_lots_q.group_by(Lot.lot_id)
+                    .order_by(func.max(Lot.test_date).desc())
+                    .limit(val)
+                    .all()
+                )
+                recent_lot_ids = [r[0] for r in recent_lots_results] if recent_lots_results else []
+                query = query.filter(Lot.lot_id.in_(recent_lot_ids))
+            elif range_type == "all":
+                pass
+        else:
+            if test_date_from:
+                query = query.filter(Lot.test_date >= datetime.strptime(test_date_from, "%Y-%m-%d"))
+            if test_date_to:
+                query = query.filter(Lot.test_date < datetime.strptime(test_date_to, "%Y-%m-%d") + timedelta(days=1))
             
         total = query.count()
         lots = query.order_by(desc(Lot.test_date), desc(Lot.id)).offset(
@@ -1135,7 +1235,10 @@ def get_lots(
         if test_machine:
             query = query.filter(Lot.test_machine == test_machine)
         if osat_name:
-            query = query.filter(Lot.osat_name == osat_name)
+            if osat_name.lower() == "chipmore":
+                query = query.filter(or_(Lot.osat_name.ilike(f"%{osat_name}%"), Lot.osat_name.is_(None)))
+            else:
+                query = query.filter(Lot.osat_name.ilike(f"%{osat_name}%"))
         # OSAT Tab 专用过滤：按 osat_config.data_type 过滤，而非 lot.data_type
         # 这样 QA 文件（data_type='QA'）也会出现在对应的 OSAT_CP/OSAT_FT Tab 中
         if osat_type:
@@ -1249,6 +1352,8 @@ class LotDisplayUpdate(BaseModel):
     lot_id: Optional[str] = None
     wafer_id: Optional[str] = None
     data_type: Optional[str] = None
+    test_machine: Optional[str] = None
+
 
 
 @router.patch("/{lot_id}/display")
@@ -1270,7 +1375,7 @@ def update_lot_display(
         raise HTTPException(status_code=403, detail="Permission denied")
 
     updated_fields = {}
-    for field in ("filename", "lot_id", "wafer_id", "data_type"):
+    for field in ("filename", "lot_id", "wafer_id", "data_type", "test_machine"):
         value = getattr(data, field)
         if value is None:
             continue
@@ -1295,6 +1400,7 @@ def update_lot_display(
         "lot_id": lot.lot_id,
         "wafer_id": lot.wafer_id,
         "data_type": lot.data_type,
+        "test_machine": lot.test_machine,
     }
 
 

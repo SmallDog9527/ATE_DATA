@@ -20,6 +20,7 @@ from app.schemas.settings import (
     OsatConfigIn, OsatConfigOut,
     FtpLogItem, FtpLogPage,
     ManualLogItem, ManualLogPage,
+    VersionUpdateIn,
 )
 from app.services.smtp_dynamic import encrypt_password, decrypt_password, send_test_email
 from sqlalchemy import literal, desc, cast, String
@@ -112,6 +113,7 @@ def create_osat(
 
     osat = OsatConfig(
         name=body.name.strip(),
+        protocol=body.protocol,
         ftp_host=body.ftp_host.strip(),
         ftp_port=body.ftp_port,
         ftp_user=body.ftp_user.strip(),
@@ -151,7 +153,9 @@ def update_osat(
         raise HTTPException(status_code=400, detail=f"OSAT 名称 '{body.name}' 已存在")
 
     osat.name = body.name.strip()
+    osat.protocol = body.protocol
     osat.ftp_host = body.ftp_host.strip()
+
     osat.ftp_port = body.ftp_port
     osat.ftp_user = body.ftp_user.strip()
     osat.ftp_encryption = body.ftp_encryption
@@ -512,5 +516,77 @@ def get_manual_operators(
     union_users = lot_users.union(pgs_users).all()
     usernames = sorted(list(set(r[0] for r in union_users if r[0])))
     return usernames
+
+
+def get_project_version() -> str:
+    import os
+    import subprocess
+    # 1. 尝试从本地的 app/version.txt 文件读取 (Docker 容器环境或本地部署)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # app/api/routes/settings.py -> app/version.txt
+    version_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))), "version.txt")
+    if os.path.exists(version_file):
+        for encoding in ("utf-8", "utf-16", "gbk"):
+            try:
+                with open(version_file, "r", encoding=encoding) as f:
+                    ver = f.read().strip()
+                    # 清除可能存在的 BOM 字符和空字符
+                    ver = ver.replace('\x00', '').replace('\ufeff', '').strip()
+                    if ver:
+                        return ver
+            except Exception:
+                pass
+
+    # 2. 尝试执行 git 命令动态获取 (本地开发环境)
+    try:
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))))
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--abbrev=0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+            cwd=project_root
+        )
+        tag = result.stdout.strip()
+        if tag:
+            return tag
+    except Exception:
+        pass
+
+    # 3. 兜底默认版本号
+    return "V1_20260618"
+
+
+@router.get("/version")
+def get_version_settings(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """获取当前系统版本号与版本更新内容"""
+    cfg = db.query(SystemSetting).first()
+    content = cfg.version_update_content if (cfg and cfg.version_update_content) else ""
+    return {
+        "version": get_project_version(),
+        "content": content
+    }
+
+
+@router.put("/version")
+def save_version_settings(
+    body: VersionUpdateIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """保存版本更新内容（仅管理员）"""
+    cfg = db.query(SystemSetting).first()
+    if not cfg:
+        cfg = SystemSetting()
+        db.add(cfg)
+
+    cfg.version_update_content = body.content
+    cfg.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"message": "版本更新内容已保存"}
 
 

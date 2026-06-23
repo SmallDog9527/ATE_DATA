@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes import auth, lots, products, analysis, users, shares, reports, programs
+from app.api.routes import auth, lots, products, analysis, users, shares, reports, programs, specs
 from app.api.routes import settings as settings_router
 
 app = FastAPI(
@@ -25,6 +25,8 @@ app.include_router(shares.router,           prefix="/api")
 app.include_router(reports.router,          prefix="/api")
 app.include_router(settings_router.router,  prefix="/api")
 app.include_router(programs.router,         prefix="/api")
+app.include_router(specs.router,            prefix="/api")
+
 
 
 @app.on_event("startup")
@@ -33,6 +35,21 @@ def on_startup():
     from app.core.database import engine, Base
     import app.models  # noqa: 确保所有 model 已注册
     Base.metadata.create_all(bind=engine)
+
+    # 动态检测并增加版本更新内容字段
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS version_update_content VARCHAR"))
+            conn.execute(text("ALTER TABLE pgs_uploads ADD COLUMN IF NOT EXISTS datasheet_filename VARCHAR"))
+            conn.execute(text("ALTER TABLE pgs_uploads ADD COLUMN IF NOT EXISTS datasheet_path VARCHAR"))
+            conn.execute(text("ALTER TABLE datasheet_parameters ADD COLUMN IF NOT EXISTS remark VARCHAR"))
+            # Update existing ksht records to uppercase KSHT
+            conn.execute(text("UPDATE lots SET osat_name = 'KSHT' WHERE osat_name = 'ksht'"))
+            conn.execute(text("UPDATE osat_configs SET name = 'KSHT' WHERE name = 'ksht'"))
+            conn.commit()
+        except Exception:
+            conn.rollback()
 
     from app.tasks.ftp_scheduler import start_scheduler
     start_scheduler()

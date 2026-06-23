@@ -62,6 +62,9 @@ META_KEYS: dict[str, list[str]] = {
     'test_date_raw': [
         '[TestDate]', 'Date:', 'TestDate:', '测试日期:', '测试日期',
     ],
+    'test_time_range': [
+        'Test Time (start-end)',
+    ],
     'beginning_time': [
         '[Beginning Time]', 'Beginning Time:', 'BeginningTime:', 'Beginning:', 'Beginning', 'Beginning 测试日期', 'Beginning   测试日期'
     ],
@@ -346,6 +349,12 @@ def _extract_meta(header_lines: list[str]) -> dict[str, Optional[str]]:
                     if kv_clean.lower().startswith('datalog'):
                         if not any(ch.isdigit() for ch in value):
                             break
+
+                elif field == 'test_time_range':
+                    parts = value.split(' - ', 1)
+                    if len(parts) == 2:
+                        result['beginning_time'] = parts[0].strip()
+                        result['ending_time']    = parts[1].strip()
 
                 elif field == 'beginning_time':
                     value = value.split(' - ')[0].strip()

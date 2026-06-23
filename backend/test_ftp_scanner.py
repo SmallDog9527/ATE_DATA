@@ -123,8 +123,73 @@ def test_recursive_walk():
     
     print("[OK] _walk_ftp recursive walk verified successfully!")
 
+import io
+class MockSFTPAttribute:
+    def __init__(self, filename, mode, size):
+        self.filename = filename
+        self.st_mode = mode
+        self.st_size = size
+
+class MockSFTPClient:
+    def __init__(self, tree_attrs):
+        self.tree_attrs = tree_attrs
+
+    def listdir_attr(self, path):
+        return self.tree_attrs.get(path, [])
+
+    def stat(self, path):
+        import posixpath
+        parent, filename = posixpath.split(path)
+        for attr in self.tree_attrs.get(parent, []):
+            if attr.filename == filename:
+                return attr
+        raise IOError("No such file")
+
+    def open(self, path, mode):
+        return io.BytesIO(b"file content data")
+
+def test_sftp_adapter():
+    print("\n[*] Testing SftpAdapter behavior and compatibility...")
+    import stat
+    from app.services.ftp_service import SftpAdapter
+    
+    DIR_MODE = stat.S_IFDIR | 0o755
+    FILE_MODE = stat.S_IFREG | 0o644
+    
+    tree_attrs = {
+        "root": [
+            MockSFTPAttribute("sub1", DIR_MODE, 4096),
+            MockSFTPAttribute("file1.csv", FILE_MODE, 1024),
+        ],
+        "root/sub1": [
+            MockSFTPAttribute("data1.zip", FILE_MODE, 2048),
+        ]
+    }
+    
+    mock_sftp = MockSFTPClient(tree_attrs)
+    adapter = SftpAdapter(None, mock_sftp)
+    
+    # 1. Test size
+    assert adapter.size("root/file1.csv") == 1024
+    assert adapter.size("non_existent") == 0
+    
+    # 2. Test retrbinary
+    chunks = []
+    adapter.retrbinary("RETR root/file1.csv", chunks.append)
+    assert b"".join(chunks) == b"file content data"
+    
+    # 3. Test retrlines (LIST)
+    lines = []
+    adapter.retrlines("LIST root", lines.append)
+    assert len(lines) == 2
+    assert any("sub1" in l and l.startswith("d") for l in lines)
+    assert any("file1.csv" in l and l.startswith("-") for l in lines)
+    
+    print("[OK] SftpAdapter verified successfully!")
+
 if __name__ == "__main__":
     print("[*] Starting FTP Scanner module verification...")
     test_line_parser()
     test_recursive_walk()
+    test_sftp_adapter()
     print("[*] Module verification PASSED!")

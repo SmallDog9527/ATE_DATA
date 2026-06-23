@@ -42,6 +42,7 @@ class SmtpTestRequest(BaseModel):
 
 class OsatConfigIn(BaseModel):
     name: str
+    protocol: str = "ftp"      # ftp / sftp
     ftp_host: str
     ftp_port: int = 21
     ftp_user: str
@@ -54,7 +55,16 @@ class OsatConfigIn(BaseModel):
     enabled: bool = False
     data_type: str = "CP"      # 数据类型 CP / FT
 
+    @field_validator('protocol')
+    @classmethod
+    def valid_protocol(cls, v):
+        allowed = {"ftp", "sftp"}
+        if v not in allowed:
+            raise ValueError('协议方式无效')
+        return v
+
     @field_validator('ftp_port')
+
     @classmethod
     def valid_port(cls, v):
         if not (1 <= v <= 65535):
@@ -84,8 +94,10 @@ class OsatConfigIn(BaseModel):
 class OsatConfigOut(BaseModel):
     id: int
     name: str
+    protocol: str = "ftp"
     ftp_host: str
     ftp_port: int
+
     ftp_user: str
     ftp_encryption: str = "plain"
     ftp_remote_dir: str
@@ -149,4 +161,9 @@ class ManualLogPage(BaseModel):
     page: int
     page_size: int
     items: list[ManualLogItem]
+
+
+class VersionUpdateIn(BaseModel):
+    content: str
+
 

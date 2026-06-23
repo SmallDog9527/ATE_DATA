@@ -42,6 +42,10 @@
             <button class="ptab" :class="{ 'ptab-active': tab === 'param' }" @click="tab = 'param'">Param</button>
             <button class="ptab" :class="{ 'ptab-active': tab === 'summary' }" @click="tab = 'summary'">Summary</button>
             <button v-if="!isDataProgram" class="ptab" :class="{ 'ptab-active': tab === 'cpp' }" @click="switchTab('cpp')">cpp</button>
+            <button v-if="!isDataProgram" class="ptab" :class="{ 'ptab-active': tab === 'datasheet' }" @click="switchTab('datasheet')">Datasheet</button>
+            <button v-if="!isDataProgram" class="ptab ptab-excel" @click="exportToExcel">
+              📥 导出 Excel
+            </button>
           </div>
         </div>
       </div>
@@ -226,8 +230,8 @@
                     <td class="col-num" :class="leftMinClass(row)">{{ fmtLimit(row.left.min) }}</td>
                     <td class="col-num" :class="leftMaxClass(row)">{{ fmtLimit(row.left.max) }}</td>
                     <td class="col-unit">{{ row.left.unit }}</td>
-                    <td class="col-bin" :class="{ 'bin-changed': row.right && row.left.sw_bin !== row.right.sw_bin }">{{ row.left.sw_bin ?? '' }}</td>
-                    <td class="col-bin" :class="{ 'bin-changed': row.right && row.left.hw_bin !== row.right.hw_bin }">{{ row.left.hw_bin ?? '' }}</td>
+                    <td class="col-bin">{{ row.left.sw_bin ?? '' }}</td>
+                    <td class="col-bin">{{ row.left.hw_bin ?? '' }}</td>
                   </template>
                   <template v-else>
                     <td colspan="8" class="vs-empty-side">—</td>
@@ -262,26 +266,40 @@
 
       <!-- ══ Summary 页 ══ -->
       <div v-if="tab === 'summary'" class="pgs-body">
-        <div class="info-bar">
-          <template v-if="vsMode && vsTargetId">
-            当前 <strong>{{ sortedSummary.length }}</strong> 个 Bin
-            <span class="qa-info-sep">|</span>
-            对比 <strong>{{ sortedVsSummary.length }}</strong> 个 Bin
-          </template>
-          <template v-else>
-            共 <strong>{{ displaySummaryRows.length }}</strong> 个 Bin
-            <template v-if="isDataProgram && dataSummaryStandard?.mode === 'pgm'">
+        <div class="info-bar" style="display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; width: 100%;">
+          <div class="info-bar-left">
+            <template v-if="vsMode && vsTargetId">
+              当前 <strong>{{ sortedSummary.length }}</strong> 个 Bin
               <span class="qa-info-sep">|</span>
-              PGM Summary
-              <strong :class="dataSummaryStandard.pass ? 'summary-pass' : 'summary-fail'">
-                {{ dataSummaryStandard.pass ? 'PASS' : 'DIFF' }}
-              </strong>
+              对比 <strong>{{ sortedVsSummary.length }}</strong> 个 Bin
             </template>
-            <template v-else-if="isDataProgram && dataSummaryStandard?.mode === 'expanded'">
-              <span class="qa-info-sep">|</span>
-              No PGM Standard
+            <template v-else>
+              共 <strong>{{ displaySummaryRows.length }}</strong> 个 Bin
+              <template v-if="isDataProgram && dataSummaryStandard?.mode === 'pgm'">
+                <span class="qa-info-sep">|</span>
+                PGM Summary
+                <strong :class="dataSummaryStandard.pass ? 'summary-pass' : 'summary-fail'">
+                  {{ dataSummaryStandard.pass ? 'PASS' : 'DIFF' }}
+                </strong>
+              </template>
+              <template v-else-if="isDataProgram && dataSummaryStandard?.mode === 'expanded'">
+                <span class="qa-info-sep">|</span>
+                No PGM Standard
+              </template>
             </template>
-          </template>
+          </div>
+          <div class="info-bar-right" style="display: flex; align-items: center; gap: 8px; margin-left: 24px;">
+            <span style="font-size: 12px; color: #475569; font-weight: 500;">解析:</span>
+            <input 
+              class="sbl-input" 
+              v-model="sblInputText" 
+              placeholder="输入 SBL/SYL 规则并回车... 例如：SYL:85%,SBL:BIN5:0.1%,BIN1+13:92%" 
+              style="width: 450px; padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 12px; outline: none;" 
+              @keyup.enter="saveSblText" 
+              @change="saveSblText"
+              @input="parseSbl"
+            />
+          </div>
         </div>
         <div v-if="vsMode && vsLoading" class="loading-mask">⏳ 加载对比 Summary...</div>
         <div v-else-if="vsMode && !vsTargetId" class="vs-empty-hint">
@@ -317,16 +335,10 @@
               <tr v-for="(row, i) in summaryVsRows" :key="i" class="vs-row">
                 <template v-if="row.left">
                   <td class="col-bin">{{ row.left.sw_bin }}</td>
-                  <td class="col-bin" :class="{ 'bin-changed': row.right && row.left.hw_bin !== row.right.hw_bin }">{{ row.left.hw_bin }}</td>
+                  <td class="col-bin">{{ row.left.hw_bin }}</td>
                   <td :class="{ 'bin-changed': isSummaryBinNameChanged(row) }">{{ row.left.bin_name }}</td>
                   <td>
-                    <template v-if="row.left.sw_bin == 3">
-                      <input class="sbl-input" v-model="sblInputText" placeholder="BIN5≥0.5%..." style="width: 150px; padding: 2px 4px; border: 1px solid #ccc; border-radius: 4px;" @keyup.enter="parseSbl" />
-                      <button class="btn btn-primary btn-sm" style="margin-left:4px" @click="parseSbl">解析</button>
-                    </template>
-                    <template v-else>
-                      {{ sblLimits[row.left.hw_bin] ?? '' }}
-                    </template>
+                    {{ sblLimits[row.left.sw_bin] ?? '' }}
                   </td>
                 </template>
                 <template v-else>
@@ -337,7 +349,7 @@
                   <td class="col-bin">{{ row.right.sw_bin }}</td>
                   <td class="col-bin">{{ row.right.hw_bin }}</td>
                   <td :class="{ 'bin-changed': isSummaryBinNameChanged(row) }">{{ row.right.bin_name }}</td>
-                  <td>{{ sblLimits[row.right.hw_bin] ?? '' }}</td>
+                  <td>{{ sblLimits[row.right.sw_bin] ?? '' }}</td>
                 </template>
                 <template v-else>
                   <td colspan="4" class="vs-empty-side">—</td>
@@ -387,13 +399,7 @@
                   <td class="col-bin">{{ row.left.hw_bin }}</td>
                   <td :class="{ 'bin-changed': row.status === 'changed' || row.status === 'added' }">{{ row.left.bin_name }}</td>
                   <td>
-                    <template v-if="row.left.sw_bin == 3">
-                      <input class="sbl-input" v-model="sblInputText" placeholder="BIN5≥0.5%..." style="width: 150px; padding: 2px 4px; border: 1px solid #ccc; border-radius: 4px;" @keyup.enter="parseSbl" />
-                      <button class="btn btn-primary btn-sm" style="margin-left:4px" @click="parseSbl">解析</button>
-                    </template>
-                    <template v-else>
-                      {{ sblLimits[row.left.hw_bin] ?? '' }}
-                    </template>
+                    {{ sblLimits[row.left.sw_bin] ?? '' }}
                   </td>
                 </template>
                 <template v-else>
@@ -404,7 +410,7 @@
                   <td class="col-bin">{{ row.right.sw_bin }}</td>
                   <td class="col-bin">{{ row.right.hw_bin }}</td>
                   <td :class="{ 'bin-changed': row.status === 'changed' }">{{ row.right.bin_name }}</td>
-                  <td>{{ sblLimits[row.right.hw_bin] ?? '' }}</td>
+                  <td>{{ sblLimits[row.right.sw_bin] ?? '' }}</td>
                 </template>
                 <template v-else>
                   <td colspan="4" class="vs-empty-side">Added</td>
@@ -432,13 +438,7 @@
                 <td class="col-bin">{{ s.hw_bin }}</td>
                 <td>{{ s.bin_name }}</td>
                 <td>
-                  <template v-if="s.sw_bin == 3">
-                    <input class="sbl-input" v-model="sblInputText" placeholder="BIN5≥0.5%, BIN7≥0.5%..." style="width: 250px; padding: 2px 4px; border: 1px solid #ccc; border-radius: 4px;" @keyup.enter="parseSbl" />
-                    <button class="btn btn-primary btn-sm" style="margin-left:4px" @click="parseSbl">解析</button>
-                  </template>
-                  <template v-else>
-                    {{ sblLimits[s.hw_bin] ?? '' }}
-                  </template>
+                  {{ sblLimits[s.sw_bin] ?? '' }}
                 </td>
               </tr>
               <tr v-if="!displaySummaryRows.length">
@@ -674,7 +674,311 @@
           </aside>
         </div>
       </div>
+
+      <!-- ══ Datasheet Tab ══ -->
+      <div v-if="tab === 'datasheet'" class="pgs-body datasheet-body">
+        <!-- Loading State -->
+        <div v-if="datasheetLoading" class="ds-loading">⏳ 正在加载 Datasheet 对比数据...</div>
+        
+        <template v-else>
+          <!-- Top Info Card -->
+          <div class="ds-header-card">
+            <div class="ds-meta-info">
+              <div v-if="datasheetInfo" class="ds-status-ok">
+                <span class="status-badge active">已导入规格</span>
+                <span class="info-item">产品：<strong>{{ datasheetInfo.product_name }}</strong></span>
+                <span class="info-item">文件：<strong :title="datasheetInfo.filename">{{ datasheetInfo.filename }}</strong></span>
+                <span class="info-item">版本：<strong>{{ datasheetInfo.revision }}</strong></span>
+                <span class="info-item">更新时间：<strong>{{ formatDate(datasheetInfo.created_at) }}</strong></span>
+              </div>
+              <div v-else class="ds-status-empty">
+                <span class="status-badge empty">未导入规格数据</span>
+                <span class="warning-text">请上传该产品的 Excel Mapping Checklist 以及 Word Datasheet 文件以进行自动规格对比。</span>
+              </div>
+            </div>
+            
+            <div class="ds-actions">
+              <div class="upload-btn-group">
+                <button class="btn btn-action" @click="triggerChecklistSelect">
+                  📂 {{ datasheetInfo ? '更新 Mappings & Specs (Excel)' : '上传 Mappings & Specs (Excel)' }}
+                </button>
+                <input ref="xlsxInput" type="file" accept=".xlsx,.xls" style="display: none" @change="handleChecklistUpload" />
+                
+                <button class="btn btn-action" @click="triggerDatasheetSelect">
+                  📝 {{ datasheetInfo ? '更新 Datasheet EC (Word)' : '上传 Datasheet EC (Word)' }}
+                </button>
+                <input ref="docxInput" type="file" accept=".docx" style="display: none" @change="handleDatasheetUpload" />
+              </div>
+            </div>
+          </div>
+          
+          <!-- Filter & Statistics Panel -->
+          <div v-if="datasheetInfo" class="ds-filter-panel">
+            <div class="filter-controls">
+              <input v-model="datasheetFilter" placeholder="🔍 过滤 Symbol / 描述 / 状态..." class="filter-input-ds" />
+              
+              <label class="hide-col-cb">
+                <input type="checkbox" v-model="hideParamNameAndCond" />
+                隐藏 Parameter Name & Condition
+              </label>
+              
+              <div class="status-selector">
+                <button 
+                  v-for="st in ['all', 'out_of_spec', 'warning', 'unmapped', 'normal']"
+                  :key="st"
+                  class="st-btn"
+                  :class="{ active: datasheetStatusFilter === st, [st]: true }"
+                  @click="datasheetStatusFilter = st"
+                >
+                  {{ getStatusLabel(st) }} ({{ getStatusCount(st) }})
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Report Table -->
+          <div v-if="datasheetInfo && filteredDsRows.length > 0" class="table-wrap">
+            <table class="ds-report-tbl">
+              <colgroup>
+                <col style="width: 45px;" />
+                <col :style="{ width: dsSymWidth + 'px' }" />
+                <col :style="{ width: ateSymWidth + 'px' }" />
+                <col v-if="!hideParamNameAndCond" :style="{ width: descWidth + 'px' }" />
+                <col style="width: 60px;" />
+                <!-- Datasheet Specs (Min, Typ, Max) -->
+                <col style="width: 50px;" />
+                <col style="width: 50px;" />
+                <col style="width: 50px;" />
+                <!-- Program Limits (FT) (Min, Max) -->
+                <col style="width: 50px;" />
+                <col style="width: 50px;" />
+                <!-- Program Limits (QA) (Min, Max) -->
+                <col style="width: 50px;" />
+                <col style="width: 50px;" />
+                <col style="width: 60px;" />
+                <col style="width: 100px;" />
+                <col :style="{ width: msgWidth + 'px' }" />
+                <col :style="{ width: remarkWidth + 'px' }" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th rowspan="2" class="col-no">#</th>
+                  <th rowspan="2" class="col-ds-sym resizable" :style="dsSymWidth ? { width: dsSymWidth + 'px', minWidth: dsSymWidth + 'px', maxWidth: dsSymWidth + 'px' } : {}">
+                    Datasheet Symbol
+                    <div class="resize-handle" @mousedown.prevent="startResize($event, 'ds_sym')"></div>
+                  </th>
+                  <th rowspan="2" class="col-sym resizable" :style="ateSymWidth ? { width: ateSymWidth + 'px', minWidth: ateSymWidth + 'px', maxWidth: ateSymWidth + 'px' } : {}">
+                    ATE Symbol
+                    <div class="resize-handle" @mousedown.prevent="startResize($event, 'ate_sym')"></div>
+                  </th>
+                  <th rowspan="2" class="col-desc resizable" v-if="!hideParamNameAndCond" :style="descWidth ? { width: descWidth + 'px', minWidth: descWidth + 'px', maxWidth: descWidth + 'px' } : {}">
+                    Parameter Name & Condition
+                    <div class="resize-handle" @mousedown.prevent="startResize($event, 'desc')"></div>
+                  </th>
+                  <th rowspan="2" class="col-unit">Unit</th>
+                  <th colspan="3" class="hdr-group ds-hdr">Datasheet Specs</th>
+                  <th colspan="2" class="hdr-group ate-ft-hdr">Program Limits (FT)</th>
+                  <th colspan="2" class="hdr-group ate-qa-hdr">Program Limits (QA)</th>
+                  <th rowspan="2" class="col-mult">ATE Unit</th>
+                  <th rowspan="2" class="col-status">Status</th>
+                  <th rowspan="2" class="col-msg resizable" :style="msgWidth ? { width: msgWidth + 'px', minWidth: msgWidth + 'px', maxWidth: msgWidth + 'px' } : {}">
+                    Comparison Details
+                    <div class="resize-handle" @mousedown.prevent="startResize($event, 'msg')"></div>
+                  </th>
+                  <th rowspan="2" class="col-remark resizable" :style="remarkWidth ? { width: remarkWidth + 'px', minWidth: remarkWidth + 'px', maxWidth: remarkWidth + 'px' } : {}">
+                    Remark 备注
+                    <div class="resize-handle" @mousedown.prevent="startResize($event, 'remark')"></div>
+                  </th>
+                </tr>
+                <tr>
+                  <!-- Datasheet Specs -->
+                  <th class="col-num sub-hdr">Min</th>
+                  <th class="col-num sub-hdr">Typ</th>
+                  <th class="col-num sub-hdr">Max</th>
+                  <!-- FT Limits -->
+                  <th class="col-num sub-hdr">Min</th>
+                  <th class="col-num sub-hdr">Max</th>
+                  <!-- QA Limits -->
+                  <th class="col-num sub-hdr">Min</th>
+                  <th class="col-num sub-hdr">Max</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr 
+                  v-for="(row, idx) in filteredDsRows" 
+                  :key="idx" 
+                  class="ds-row" 
+                  :class="['status-' + row.status]"
+                >
+                  <template v-if="row.status === 'category'">
+                    <td class="col-no">{{ idx + 1 }}</td>
+                    <td :colspan="hideParamNameAndCond ? 14 : 15" class="col-category-title">
+                      {{ row.datasheet_symbol }}
+                    </td>
+                  </template>
+                  <template v-else>
+                    <td class="col-no">{{ idx + 1 }}</td>
+                    <td class="col-ds-sym bold-text" :style="dsSymWidth ? { width: dsSymWidth + 'px', minWidth: dsSymWidth + 'px', maxWidth: dsSymWidth + 'px' } : {}">{{ row.datasheet_symbol }}</td>
+                    <td class="col-sym font-mono editable-cell" :style="ateSymWidth ? { width: ateSymWidth + 'px', minWidth: ateSymWidth + 'px', maxWidth: ateSymWidth + 'px' } : {}" @dblclick="openMappingEdit(row)" title="双击进行编辑关联">{{ row.ate_symbol || '-' }}</td>
+                    <td class="col-desc" v-if="!hideParamNameAndCond" :style="descWidth ? { width: descWidth + 'px', minWidth: descWidth + 'px', maxWidth: descWidth + 'px' } : {}">
+                      <div class="p-name">{{ row.parameter_name }}</div>
+                      <div v-if="row.condition" class="p-cond">{{ row.condition }}</div>
+                    </td>
+                    <td class="col-unit">{{ row.unit || '-' }}</td>
+                    
+                    <!-- Datasheet Specs -->
+                    <td class="col-num spec-cell editable-cell">
+                      <div v-if="editingSpecRowId === row.datasheet_symbol && editingSpecField === 'min'" class="spec-edit-wrap">
+                        <input 
+                          v-model="localSpecVal" 
+                          @blur="saveSpec(row)" 
+                          @keyup.enter="saveSpec(row)" 
+                          @keyup.esc="editingSpecRowId = null"
+                          class="spec-input-inline"
+                          v-focus
+                        />
+                      </div>
+                      <div v-else @dblclick="startEditSpec(row, 'min')" class="spec-text-cell" title="双击编辑Min规格">
+                        <div v-for="(v, i) in splitSpecStr(row.ds_min_str)" :key="i" class="spec-val-line">{{ v }}</div>
+                      </div>
+                    </td>
+                    <td class="col-num spec-cell editable-cell">
+                      <div v-if="editingSpecRowId === row.datasheet_symbol && editingSpecField === 'typ'" class="spec-edit-wrap">
+                        <input 
+                          v-model="localSpecVal" 
+                          @blur="saveSpec(row)" 
+                          @keyup.enter="saveSpec(row)" 
+                          @keyup.esc="editingSpecRowId = null"
+                          class="spec-input-inline"
+                          v-focus
+                        />
+                      </div>
+                      <div v-else @dblclick="startEditSpec(row, 'typ')" class="spec-text-cell" title="双击编辑Typ规格">
+                        <div v-for="(v, i) in splitSpecStr(row.ds_typ_str)" :key="i" class="spec-val-line">{{ v }}</div>
+                      </div>
+                    </td>
+                    <td class="col-num spec-cell editable-cell">
+                      <div v-if="editingSpecRowId === row.datasheet_symbol && editingSpecField === 'max'" class="spec-edit-wrap">
+                        <input 
+                          v-model="localSpecVal" 
+                          @blur="saveSpec(row)" 
+                          @keyup.enter="saveSpec(row)" 
+                          @keyup.esc="editingSpecRowId = null"
+                          class="spec-input-inline"
+                          v-focus
+                        />
+                      </div>
+                      <div v-else @dblclick="startEditSpec(row, 'max')" class="spec-text-cell" title="双击编辑Max规格">
+                        <div v-for="(v, i) in splitSpecStr(row.ds_max_str)" :key="i" class="spec-val-line">{{ v }}</div>
+                      </div>
+                    </td>
+                    
+                    <!-- ATE FT Limits -->
+                    <td class="col-num ft-cell" :class="{ 'violates': isValViolated(row, 'ft_min') }">
+                      {{ fmtLimitVal(row.ft_min) }}
+                    </td>
+                    <td class="col-num ft-cell" :class="{ 'violates': isValViolated(row, 'ft_max') }">
+                      {{ fmtLimitVal(row.ft_max) }}
+                    </td>
+                    
+                    <!-- ATE QA Limits -->
+                    <td class="col-num qa-cell" :class="{ 'violates': isValViolated(row, 'qa_min') }">
+                      {{ fmtLimitVal(row.qa_min) }}
+                    </td>
+                    <td class="col-num qa-cell" :class="{ 'violates': isValViolated(row, 'qa_max') }">
+                      {{ fmtLimitVal(row.qa_max) }}
+                    </td>
+                    
+                    <td class="col-mult font-mono">{{ row.ate_unit || '-' }}</td>
+                    <td class="col-status">
+                      <span class="status-tag" :class="[row.status]">
+                        {{ getStatusLabel(row.status) }}
+                      </span>
+                    </td>
+                    <td class="col-msg" :class="[row.status]" :title="row.message" :style="msgWidth ? { width: msgWidth + 'px', minWidth: msgWidth + 'px', maxWidth: msgWidth + 'px' } : {}">
+                      <span v-if="row.status !== 'normal' && row.status !== 'unmapped'">
+                        {{ row.message }}
+                      </span>
+                    </td>
+                    <td class="col-remark" :style="remarkWidth ? { width: remarkWidth + 'px', minWidth: remarkWidth + 'px', maxWidth: remarkWidth + 'px' } : {}">
+                      <div v-if="editingRemarkId === row.datasheet_symbol" class="remark-edit-wrap">
+                        <input 
+                          v-model="localRemark" 
+                          @blur="saveRemark(row)" 
+                          @keyup.enter="saveRemark(row)" 
+                          @keyup.esc="editingRemarkId = null"
+                          class="remark-input-inline"
+                          v-focus
+                        />
+                      </div>
+                      <div v-else @dblclick="startEditRemark(row)" class="remark-text-cell" title="双击编辑备注">
+                        {{ row.remark || '-' }}
+                      </div>
+                    </td>
+                  </template>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          
+          <div v-else-if="datasheetInfo" class="ds-empty-msg">
+            📭 没有找到符合过滤条件的对比参数。
+          </div>
+          
+          <div v-else class="ds-empty-placeholder">
+            <div class="placeholder-icon">📋</div>
+            <h3>欢迎使用 Datasheet 规格对比系统</h3>
+            <p>通过该系统，您可以将 Word 格式的产品 Datasheet 规格书与 ATE 程序中的测试参数（FT 和 QA 限制）进行自动对比。</p>
+            <ol>
+              <li>上传 <strong>Excel Checklist (.xlsx)</strong> 以导入测试映射关系与基准参数。</li>
+              <li>上传 <strong>Word Datasheet (.docx)</strong> 以解析最新的 Datasheet 规格参数。</li>
+              <li>系统将自动按照 <code>Datasheet Min &le; FT Min &le; QA Min</code> 与 <code>QA Max &le; FT Max &le; Datasheet Max</code> 进行对比分析，高亮显示不合规项目。</li>
+            </ol>
+          </div>
+        </template>
+      </div>
     </template>
+    
+    <!-- ══ Edit Mapping Modal ══ -->
+    <div v-if="editingMapping" class="modal-backdrop" @click.self="editingMapping = null">
+      <div class="mapping-modal-card">
+        <div class="modal-header">
+          <h3>修改 ATE Mapping 关联</h3>
+          <button class="close-btn" @click="editingMapping = null">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-tip">正在修改 Datasheet 符号：<strong>{{ editingMapping.datasheet_symbol }}</strong></p>
+          <input 
+            v-model="mappingSearch" 
+            placeholder="🔍 搜索 ATE 参数符号..." 
+            class="modal-search-input" 
+            ref="mappingSearchInput"
+          />
+          <div class="modal-list-container">
+            <div 
+              class="list-item" 
+              :class="{ selected: selectedAteSymbol === '-' }"
+              @click="selectedAteSymbol = '-'"
+            >
+              🚫 <em>无关联（清除映射）</em>
+            </div>
+            <div 
+              v-for="sym in filteredAteSymbols" 
+              :key="sym" 
+              class="list-item"
+              :class="{ selected: selectedAteSymbol === sym }"
+              @click="selectedAteSymbol = sym"
+            >
+              {{ sym }}
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" @click="editingMapping = null">取消</button>
+          <button class="btn btn-primary" @click="saveMapping">保存修改</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -687,6 +991,8 @@ import type { DecorationSet } from '@codemirror/view'
 import { basicSetup } from 'codemirror'
 import { cpp } from '@codemirror/lang-cpp'
 import api from '@/api'
+import ExcelJS from 'exceljs'
+import { saveAs } from 'file-saver'
 
 const route  = useRoute()
 const router = useRouter()
@@ -698,7 +1004,215 @@ const dataMonths = computed(() => Math.max(1, Number(route.query.months) || 1))
 
 // ─── State ───
 const loading    = ref(false)
-const tab        = ref<'param' | 'summary' | 'cpp'>('param')
+const tab        = ref<'param' | 'summary' | 'cpp' | 'datasheet'>('param')
+// ─── Datasheet Comparison State ───
+const datasheetInfo = ref<any>(null)
+const datasheetRows = ref<any[]>([])
+const datasheetFilter = ref('')
+const datasheetStatusFilter = ref<string>('all')
+const datasheetLoading = ref(false)
+const hideParamNameAndCond = ref(true)
+const dsSymWidth = ref<number>(Number(localStorage.getItem('dsSymWidth') || 150))
+const ateSymWidth = ref<number>(Number(localStorage.getItem('ateSymWidth') || 150))
+const descWidth = ref<number>(Number(localStorage.getItem('descWidth') || 200))
+const msgWidth = ref<number>(Number(localStorage.getItem('msgWidth') || 250))
+const remarkWidth = ref<number>(Number(localStorage.getItem('remarkWidth') || 185))
+
+function startResize(e: MouseEvent, column: 'ds_sym' | 'ate_sym' | 'desc' | 'msg' | 'remark') {
+  const startX = e.pageX
+  const thEl = (e.target as HTMLElement).closest('th')
+  if (!thEl) return
+  const startWidth = thEl.getBoundingClientRect().width
+  
+  const startMsgWidth = msgWidth.value
+  const startRemarkWidth = remarkWidth.value
+  
+  if (column === 'ds_sym') {
+    dsSymWidth.value = startWidth
+  } else if (column === 'ate_sym') {
+    ateSymWidth.value = startWidth
+  } else if (column === 'desc') {
+    descWidth.value = startWidth
+  } else if (column === 'msg') {
+    msgWidth.value = startWidth
+  } else {
+    remarkWidth.value = startWidth
+  }
+  
+  const doDrag = (moveEvent: MouseEvent) => {
+    const dX = moveEvent.pageX - startX
+    if (column === 'ds_sym') {
+      const newWidth = Math.max(50, startWidth + dX)
+      dsSymWidth.value = newWidth
+      localStorage.setItem('dsSymWidth', String(newWidth))
+    } else if (column === 'ate_sym') {
+      const newWidth = Math.max(50, startWidth + dX)
+      ateSymWidth.value = newWidth
+      localStorage.setItem('ateSymWidth', String(newWidth))
+    } else if (column === 'desc') {
+      const newWidth = Math.max(50, startWidth + dX)
+      descWidth.value = newWidth
+      localStorage.setItem('descWidth', String(newWidth))
+    } else if (column === 'msg') {
+      // When adjusting comparison details (msg), keep columns before it static
+      // msg width increases by dX, remark width decreases by dX
+      const maxAvailableMsgWidth = startMsgWidth + startRemarkWidth - 50 // Keep remark at least 50px
+      const newMsgWidth = Math.max(50, Math.min(maxAvailableMsgWidth, startMsgWidth + dX))
+      const newRemarkWidth = startMsgWidth + startRemarkWidth - newMsgWidth
+      
+      msgWidth.value = newMsgWidth
+      remarkWidth.value = newRemarkWidth
+      
+      localStorage.setItem('msgWidth', String(newMsgWidth))
+      localStorage.setItem('remarkWidth', String(newRemarkWidth))
+    } else {
+      const newWidth = Math.max(50, startWidth + dX)
+      remarkWidth.value = newWidth
+      localStorage.setItem('remarkWidth', String(newWidth))
+    }
+  }
+  
+  const stopDrag = () => {
+    document.removeEventListener('mousemove', doDrag)
+    document.removeEventListener('mouseup', stopDrag)
+  }
+  
+  document.addEventListener('mousemove', doDrag)
+  document.addEventListener('mouseup', stopDrag)
+}
+
+// ─── ATE Mapping Editing ───
+const editingMapping = ref<any>(null) // { datasheet_symbol }
+const mappingSearch = ref('')
+const selectedAteSymbol = ref('')
+
+const uniqueAteSymbols = computed(() => {
+  const syms = new Set<string>()
+  params.value.forEach(p => {
+    if (p.symbol) syms.add(p.symbol)
+  })
+  return Array.from(syms).sort()
+})
+
+const filteredAteSymbols = computed(() => {
+  const q = mappingSearch.value.toLowerCase().trim()
+  if (!q) return uniqueAteSymbols.value
+  return uniqueAteSymbols.value.filter(sym => sym.toLowerCase().includes(q))
+})
+
+function openMappingEdit(row: any) {
+  editingMapping.value = { datasheet_symbol: row.datasheet_symbol }
+  selectedAteSymbol.value = row.ate_symbol || '-'
+  mappingSearch.value = ''
+}
+
+async function saveMapping() {
+  if (!editingMapping.value) return
+  try {
+    const payload = {
+      product_name: productName.value,
+      datasheet_symbol: editingMapping.value.datasheet_symbol,
+      ate_symbol: selectedAteSymbol.value
+    }
+    await api.post('/spec/update-mapping', payload)
+    await loadDatasheetReport()
+    editingMapping.value = null
+  } catch (err: any) {
+    alert('更新参数映射失败: ' + (err.response?.data?.detail || err.message))
+  }
+}
+
+// ─── Inline Remark Editing ───
+const editingRemarkId = ref<string | null>(null)
+const localRemark = ref('')
+
+const vFocus = {
+  mounted: (el: HTMLElement) => el.focus()
+}
+
+function startEditRemark(row: any) {
+  editingRemarkId.value = row.datasheet_symbol
+  localRemark.value = row.remark || ''
+}
+
+async function saveRemark(row: any) {
+  if (editingRemarkId.value !== row.datasheet_symbol) return
+  const oldVal = row.remark || ''
+  const newVal = localRemark.value.trim()
+  
+  if (oldVal === newVal) {
+    editingRemarkId.value = null
+    return
+  }
+  
+  try {
+    const payload = {
+      product_name: productName.value,
+      datasheet_symbol: row.datasheet_symbol,
+      remark: newVal
+    }
+    await api.post('/spec/update-remark', payload)
+    row.remark = newVal
+    editingRemarkId.value = null
+  } catch (err: any) {
+    alert('更新备注失败: ' + (err.response?.data?.detail || err.message))
+  }
+}
+
+// ─── Inline Spec Editing ───
+const editingSpecRowId = ref<string | null>(null)
+const editingSpecField = ref<'min' | 'typ' | 'max' | null>(null)
+const localSpecVal = ref('')
+
+function startEditSpec(row: any, field: 'min' | 'typ' | 'max') {
+  editingSpecRowId.value = row.datasheet_symbol
+  editingSpecField.value = field
+  if (field === 'min') {
+    localSpecVal.value = row.ds_min_str || ''
+  } else if (field === 'typ') {
+    localSpecVal.value = row.ds_typ_str || ''
+  } else {
+    localSpecVal.value = row.ds_max_str || ''
+  }
+}
+
+async function saveSpec(row: any) {
+  if (editingSpecRowId.value !== row.datasheet_symbol || !editingSpecField.value) return
+  const field = editingSpecField.value
+  const newVal = localSpecVal.value.trim()
+  
+  let newMinStr = row.ds_min_str || ''
+  let newTypStr = row.ds_typ_str || ''
+  let newMaxStr = row.ds_max_str || ''
+  
+  if (field === 'min') {
+    newMinStr = newVal
+  } else if (field === 'typ') {
+    newTypStr = newVal
+  } else {
+    newMaxStr = newVal
+  }
+  
+  editingSpecRowId.value = null
+  editingSpecField.value = null
+  
+  try {
+    const payload = {
+      product_name: productName.value,
+      datasheet_symbol: row.datasheet_symbol,
+      min_str: newMinStr,
+      typ_str: newTypStr,
+      max_str: newMaxStr
+    }
+    await api.post('/spec/update-specs', payload)
+    await loadDatasheetReport()
+  } catch (err: any) {
+    alert('更新规格值失败: ' + (err.response?.data?.detail || err.message))
+  }
+}
+
+const xlsxInput = ref<HTMLInputElement | null>(null)
+const docxInput = ref<HTMLInputElement | null>(null)
 const params     = ref<any[]>([])
 const summary    = ref<any[]>([])
 const dataSummaryStandard = ref<any>(null)
@@ -712,11 +1226,409 @@ const sblLimits     = ref<Record<string, string>>({})
 
 function parseSbl() {
   const text = sblInputText.value
-  sblLimits.value = {}
-  const regex = /BIN(\d+)\s*(?:≥|>|≤|<|=)?\s*([\d.]+%?)/gi
-  let match
-  while ((match = regex.exec(text)) !== null) {
-    sblLimits.value[match[1]] = match[2]
+  const limits: Record<string, string[]> = {}
+  
+  if (!text) {
+    sblLimits.value = {}
+    return
+  }
+
+  // Remove SBL: prefix if present
+  let cleanedText = text.replace(/SBL\s*:\s*/gi, '')
+  
+  // Split by comma
+  const tokens = cleanedText.split(',')
+  for (let token of tokens) {
+    token = token.trim()
+    if (!token) continue
+    
+    const colonIdx = token.indexOf(':')
+    if (colonIdx === -1) continue
+    
+    const key = token.substring(0, colonIdx).trim().toUpperCase()
+    const val = token.substring(colonIdx + 1).trim()
+    
+    if (key === 'SYL') {
+      const limitStr = val
+      limits['1'] = limits['1'] || []
+      limits['1'].push(limitStr)
+      limits['2'] = limits['2'] || []
+      limits['2'].push(limitStr)
+    } else if (key.startsWith('BIN')) {
+      const binPart = key.substring(3).trim() // e.g. "5" or "1+13"
+      if (binPart.includes('+')) {
+        const binNums = binPart.split('+').map(s => s.trim())
+        const limitStr = `${key}: ${val}`
+        for (const num of binNums) {
+          if (num) {
+            limits[num] = limits[num] || []
+            limits[num].push(limitStr)
+          }
+        }
+      } else {
+        limits[binPart] = limits[binPart] || []
+        limits[binPart].push(val)
+      }
+    }
+  }
+  
+  const finalLimits: Record<string, string> = {}
+  for (const bin in limits) {
+    const list = limits[bin]
+    if (list) {
+      finalLimits[bin] = list.join(', ')
+    }
+  }
+  sblLimits.value = finalLimits
+}
+
+async function saveSblText() {
+  if (isDataProgram.value) return
+  parseSbl()
+  try {
+    await api.post(`/programs/pgs/${currentId.value}/sbl`, {
+      sbl_input: sblInputText.value
+    })
+  } catch (e) {
+    console.error('Failed to save SBL text:', e)
+  }
+}
+
+async function exportToExcel() {
+  loading.value = true
+  try {
+    // 1. Ensure datasheet is loaded
+    if (!datasheetRows.value || datasheetRows.value.length === 0) {
+      await loadDatasheetReport()
+    }
+
+    const workbook = new ExcelJS.Workbook()
+    workbook.creator = 'Chip ATE System'
+
+    // ═══════════════════════════════════════
+    // SHEET 1: Datasheet
+    // ═══════════════════════════════════════
+    const ws1 = workbook.addWorksheet('Datasheet')
+    
+    // Add header rows
+    const r1 = ws1.addRow([
+      '#',
+      'Datasheet Symbol',
+      'ATE Symbol',
+      'Parameter Name',
+      'Condition',
+      'Unit',
+      'Datasheet Specs', '', '', // G, H, I
+      'Program Limits (FT)', '', // J, K
+      'Program Limits (QA)', '', // L, M
+      'ATE Unit',
+      'Status',
+      'Comparison Details',
+      'Remark'
+    ])
+
+    const r2 = ws1.addRow([
+      '', '', '', '', '', '',
+      'Min', 'Typ', 'Max',
+      'Min', 'Max',
+      'Min', 'Max',
+      '', '', '', ''
+    ])
+
+    // Merge header cells
+    ws1.mergeCells('A1:A2')
+    ws1.mergeCells('B1:B2')
+    ws1.mergeCells('C1:C2')
+    ws1.mergeCells('D1:D2')
+    ws1.mergeCells('E1:E2')
+    ws1.mergeCells('F1:F2')
+    ws1.mergeCells('G1:I1')
+    ws1.mergeCells('J1:K1')
+    ws1.mergeCells('L1:M1')
+    ws1.mergeCells('N1:N2')
+    ws1.mergeCells('O1:O2')
+    ws1.mergeCells('P1:P2')
+    ws1.mergeCells('Q1:Q2')
+
+    // Style headers
+    ;[r1, r2].forEach((row: any) => {
+      row.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+      row.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
+      row.eachCell((cell: any) => {
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FF4F81BD' }
+        }
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+          left: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+          bottom: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+          right: { style: 'thin', color: { argb: 'FFD3D3D3' } }
+        }
+      })
+    })
+
+    // Write Datasheet data
+    let dsIdx = 1
+    datasheetRows.value.forEach(row => {
+      let rowData: any[]
+      if (row.status === 'category') {
+        rowData = [
+          dsIdx++,
+          row.datasheet_symbol || '',
+          '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''
+        ]
+      } else {
+        rowData = [
+          dsIdx++,
+          row.datasheet_symbol || '',
+          row.ate_symbol || '',
+          row.parameter_name || '',
+          row.condition || '',
+          row.unit || '',
+          row.ds_min_str || '',
+          row.ds_typ_str || '',
+          row.ds_max_str || '',
+          fmtLimitVal(row.ft_min),
+          fmtLimitVal(row.ft_max),
+          fmtLimitVal(row.qa_min),
+          fmtLimitVal(row.qa_max),
+          row.ate_unit || '',
+          getStatusLabel(row.status),
+          row.message || '',
+          row.remark || ''
+        ]
+      }
+
+      const excelRow = ws1.addRow(rowData)
+
+      if (row.status === 'category') {
+        ;(excelRow as any).isCategory = true
+        excelRow.font = { bold: true }
+        excelRow.eachCell((cell: any) => {
+          cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FFEAEAEA' }
+          }
+        })
+        ws1.mergeCells(`B${excelRow.number}:Q${excelRow.number}`)
+      } else {
+        excelRow.eachCell((cell: any, colNumber: number) => {
+          cell.border = {
+            top: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+            left: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+            bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+            right: { style: 'thin', color: { argb: 'FFE0E0E0' } }
+          }
+          if ([1, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(colNumber)) {
+            cell.alignment = { horizontal: 'center', vertical: 'middle' }
+          } else {
+            cell.alignment = { horizontal: 'left', vertical: 'middle' }
+          }
+        })
+
+        // Highlight violation limits
+        const fillViolated: any = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFFFC7CE' }
+        }
+        const fontViolated = { color: { argb: 'FF9C0006' }, bold: true }
+
+        if (isValViolated(row, 'ft_min')) {
+          const c = excelRow.getCell(10)
+          c.fill = fillViolated; c.font = fontViolated
+        }
+        if (isValViolated(row, 'ft_max')) {
+          const c = excelRow.getCell(11)
+          c.fill = fillViolated; c.font = fontViolated
+        }
+        if (isValViolated(row, 'qa_min')) {
+          const c = excelRow.getCell(12)
+          c.fill = fillViolated; c.font = fontViolated
+        }
+        if (isValViolated(row, 'qa_max')) {
+          const c = excelRow.getCell(13)
+          c.fill = fillViolated; c.font = fontViolated
+        }
+
+        // Highlight status column
+        const statusCell = excelRow.getCell(15)
+        if (row.status === 'out_of_spec') {
+          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' } }
+          statusCell.font = { color: { argb: 'FF9C0006' }, bold: true }
+        } else if (row.status === 'warning') {
+          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEB9C' } }
+          statusCell.font = { color: { argb: 'FF9C6500' }, bold: true }
+        } else if (row.status === 'normal') {
+          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } }
+          statusCell.font = { color: { argb: 'FF006100' }, bold: true }
+        } else if (row.status === 'unmapped') {
+          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } }
+          statusCell.font = { color: { argb: 'FF475569' } }
+        }
+      }
+    })
+
+    // ═══════════════════════════════════════
+    // SHEET 2: Param
+    // ═══════════════════════════════════════
+    const ws2 = workbook.addWorksheet('Param')
+    const showQa = hasQaData.value
+
+    const paramHeaders = [
+      '#',
+      'Function',
+      'Param',
+      'Min',
+      'Max',
+      'Unit',
+      'SWBin',
+      'HWBin'
+    ]
+    if (showQa) {
+      paramHeaders.push('QA_MIN', 'QA_MAX')
+    }
+
+    const headerRow2 = ws2.addRow(paramHeaders)
+    headerRow2.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+    headerRow2.alignment = { horizontal: 'center', vertical: 'middle' }
+    headerRow2.eachCell((cell: any) => {
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF4F81BD' }
+      }
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+        left: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+        bottom: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+        right: { style: 'thin', color: { argb: 'FFD3D3D3' } }
+      }
+    })
+
+    params.value.forEach(p => {
+      const rowData = [
+        p.row_no,
+        p.function || '',
+        p.symbol || '',
+        fmtLimit(p.min),
+        fmtLimit(p.max),
+        p.unit || '',
+        p.sw_bin ?? '',
+        p.hw_bin ?? ''
+      ]
+      if (showQa) {
+        rowData.push(fmtLimit(p.qa_min), fmtLimit(p.qa_max))
+      }
+
+      const excelRow = ws2.addRow(rowData)
+
+      excelRow.eachCell((cell: any, colNumber: number) => {
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+          left: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+          bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+          right: { style: 'thin', color: { argb: 'FFE0E0E0' } }
+        }
+        if ([1, 4, 5, 6, 7, 8, 9, 10].includes(colNumber)) {
+          cell.alignment = { horizontal: 'center', vertical: 'middle' }
+        } else {
+          cell.alignment = { horizontal: 'left', vertical: 'middle' }
+        }
+      })
+
+      if (p.is_qa) {
+        excelRow.eachCell((cell: any) => {
+          cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FFE0F2FE' }
+          }
+        })
+      }
+    })
+
+    // ═══════════════════════════════════════
+    // SHEET 3: Summary
+    // ═══════════════════════════════════════
+    const ws3 = workbook.addWorksheet('Summary')
+    const summaryHeaders = ['SWBin', 'HWBin', 'Bin Name', 'SBL管控']
+
+    const headerRow3 = ws3.addRow(summaryHeaders)
+    headerRow3.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+    headerRow3.alignment = { horizontal: 'center', vertical: 'middle' }
+    headerRow3.eachCell((cell: any) => {
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF4F81BD' }
+      }
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+        left: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+        bottom: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+        right: { style: 'thin', color: { argb: 'FFD3D3D3' } }
+      }
+    })
+
+    displaySummaryRows.value.forEach((s: any) => {
+      const rowData = [
+        s.sw_bin ?? '',
+        s.hw_bin ?? '',
+        s.bin_name || '',
+        sblLimits.value[s.sw_bin] ?? ''
+      ]
+      const excelRow = ws3.addRow(rowData)
+
+      excelRow.eachCell((cell: any, colNumber: number) => {
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+          left: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+          bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+          right: { style: 'thin', color: { argb: 'FFE0E0E0' } }
+        }
+        if ([1, 2, 4].includes(colNumber)) {
+          cell.alignment = { horizontal: 'center', vertical: 'middle' }
+        } else {
+          cell.alignment = { horizontal: 'left', vertical: 'middle' }
+        }
+      })
+    })
+
+    // Adjust column widths for all sheets
+    ;[ws1, ws2, ws3].forEach(ws => {
+      if (ws.columns) {
+        ws.columns.forEach((col: any) => {
+          if (col) {
+            let maxLen = 0
+            col.eachCell({ includeEmpty: true }, (cell: any) => {
+              const valStr = cell.value ? String(cell.value) : ''
+              const rowObj = ws.getRow(cell.row)
+              if (rowObj && (rowObj as any).isCategory) {
+                return
+              }
+              if (valStr.length > maxLen) {
+                maxLen = valStr.length
+              }
+            })
+            col.width = Math.max(12, Math.min(40, maxLen + 4))
+          }
+        })
+      }
+    })
+
+    const buffer = await workbook.xlsx.writeBuffer()
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const progVer = currentPgs.value?.program_version || 'Program'
+    const filename = `${productName.value}_${progVer}_Report_${new Date().getTime()}.xlsx`
+    saveAs(blob, filename)
+  } catch (err: any) {
+    alert('导出失败: ' + (err?.message || err))
+  } finally {
+    loading.value = false
   }
 }
 
@@ -1284,6 +2196,18 @@ function toCppLines(content: string | undefined): CppLine[] {
 const cppLines = computed(() => toCppLines(cppEditMode.value ? cppModifiedContent.value : cppFile.value?.content))
 const vsCppLines = computed(() => toCppLines(vsCppFile.value?.content))
 
+const paramCppFunctionNames = computed(() => {
+  const seen = new Set<string>()
+  const names: string[] = []
+  for (const row of params.value) {
+    const name = String(row?.function ?? '').trim()
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    names.push(name)
+  }
+  return names
+})
+
 function parseDutFunctionName(text: string): string | null {
   const trimmed = text.trim()
   if (!trimmed.startsWith('DUT_API')) return null
@@ -1295,10 +2219,19 @@ function parseDutFunctionName(text: string): string | null {
   return match?.[1] ?? null
 }
 
+function parseCppClassFunctionName(text: string): string | null {
+  const trimmed = text.trim()
+  if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) return null
+  const match = trimmed.match(/^(?:[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?[\w:<>,\s*&~]*\s+)?([A-Za-z_]\w*)::([A-Za-z_]\w*)\s*\(/)
+  const className = match?.[1] ?? ''
+  if (['std', 'OFCStringUtils', 'rdk', 'ATCP_Base', 'Ips_Library_Base'].includes(className)) return null
+  return match?.[2] ?? null
+}
+
 function parseCppFunctions(lines: CppLine[]): CppFunction[] {
   const starts: Array<{ name: string; idx: number; line: number }> = []
   for (let idx = 0; idx < lines.length; idx += 1) {
-    const name = parseDutFunctionName(lines[idx]!.text)
+    const name = parseDutFunctionName(lines[idx]!.text) ?? parseCppClassFunctionName(lines[idx]!.text)
     if (name) starts.push({ name, idx, line: lines[idx]!.no })
   }
   return starts.map((fn, idx) => ({
@@ -1321,11 +2254,27 @@ function functionMap(functions: CppFunction[]): Map<string, CppFunction> {
   return map
 }
 
+function navigationFunctions(sourceFunctions: CppFunction[], paramNames: string[]): CppFunction[] {
+  if (!paramNames.length) return sourceFunctions
+  const sourceMap = functionMap(sourceFunctions)
+  return paramNames.map((name, idx) => {
+    const source = sourceMap.get(name)
+    return source
+      ? { ...source, index: idx + 1 }
+      : { index: idx + 1, name, line: 0, start: -1, end: -1 }
+  })
+}
+
+const cppNavigationFunctions = computed(() =>
+  navigationFunctions(cppFunctions.value, paramCppFunctionNames.value)
+)
+
 function nonBlankKey(line: CppLine): string {
   return line.text.trim().replace(/\s+/g, ' ')
 }
 
 function functionLines(lines: CppLine[], fn: CppFunction): CppLine[] {
+  if (fn.start < 0 || fn.end < fn.start) return []
   return lines.slice(fn.start, fn.end + 1)
 }
 
@@ -1957,11 +2906,13 @@ function areFunctionsDifferent(leftFn: CppFunction, rightFn: CppFunction | undef
 const cppOutline = computed<CppOutlineItem[]>(() => {
   const rightMap = functionMap(vsCppFunctions.value)
   const viResults = viCheckResults.value
-  return cppFunctions.value.map(fn => ({
+  return cppNavigationFunctions.value.map(fn => ({
     index: fn.index,
     name: fn.name,
     line: fn.line,
-    mismatch: vsMode.value && Boolean(vsTargetId.value) ? areFunctionsDifferent(fn, rightMap.get(fn.name)) : false,
+    mismatch: fn.line > 0 && vsMode.value && Boolean(vsTargetId.value)
+      ? areFunctionsDifferent(fn, rightMap.get(fn.name))
+      : false,
     viFlowIssue: viResults.get(fn.name)?.hasFlowIssue ?? false,
     viRangeIssue: viResults.get(fn.name)?.hasRangeIssue ?? false,
   }))
@@ -2039,8 +2990,8 @@ const cppDisplayRows = computed<CppDisplayRow[]>(() => {
 async function scrollToCppFunction(functionName: string) {
   activeCppFunctionName.value = functionName
   await nextTick()
+  const fn = cppFunctions.value.find(item => item.name === functionName)
   if (cppEditMode.value) {
-    const fn = cppFunctions.value.find(item => item.name === functionName)
     if (fn) scrollCppEditorToLine(fn.line)
     return
   }
@@ -2051,7 +3002,6 @@ async function scrollToCppFunction(functionName: string) {
     scrollPaneToChild(cppRightPane.value, rightTarget)
     return
   }
-  const fn = cppFunctions.value.find(item => item.name === functionName)
   if (fn) scrollCppEditorToLine(fn.line)
 }
 
@@ -2106,7 +3056,7 @@ function scrollCppEditorToLine(lineNo: number) {
   const line = view.state.doc.line(lineNo)
   const effects = [
     setCmHighlightLine.of(lineNo),
-    EditorView.scrollIntoView(line.from, { y: 'center' }),
+    EditorView.scrollIntoView(line.from, { y: 'start' }),
   ]
   view.dispatch({
     selection: { anchor: line.from },
@@ -2330,12 +3280,38 @@ function numericRowNo(row: any | null): number {
   return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER
 }
 
+function normVal(val: any) {
+  if (val == null || val === '') return null
+  const n = Number(val)
+  if (isNaN(n)) return String(val)
+
+  const s = String(val).trim()
+  const dotIdx = s.indexOf('.')
+  let decPlaces = 0
+  if (dotIdx !== -1) {
+    const eIdx = s.toLowerCase().indexOf('e')
+    if (eIdx !== -1) {
+      const base = s.slice(0, eIdx)
+      const exp = parseInt(s.slice(eIdx + 1), 10)
+      const baseDec = base.indexOf('.') !== -1 ? base.split('.')[1].length : 0
+      decPlaces = exp < 0 ? baseDec - exp : Math.max(0, baseDec - exp)
+    } else {
+      decPlaces = s.length - dotIdx - 1
+    }
+  }
+
+  if (decPlaces > 3) {
+    return Math.round(n * 1000) / 1000
+  }
+  return n
+}
+
 const vsRows = computed<VsRow[]>(() => {
   if (!vsTargetId.value || !vsParams.value.length) return []
 
   const rightQueues = new Map<string, any[]>()
   for (const p of vsParams.value) {
-    const key = `${p.function}|${p.symbol}`
+    const key = p.symbol || p.param || ''
     if (!rightQueues.has(key)) rightQueues.set(key, [])
     rightQueues.get(key)!.push(p)
   }
@@ -2353,12 +3329,9 @@ const vsRows = computed<VsRow[]>(() => {
       type = 'removed'
     } else if (left && right) {
       const limChanged =
-        left.min    !== right.min ||
-        left.max    !== right.max
-      const binChanged =
-        left.sw_bin !== right.sw_bin ||
-        left.hw_bin !== right.hw_bin
-      if (limChanged || binChanged) type = 'changed'
+        normVal(left.min) !== normVal(right.min) ||
+        normVal(left.max) !== normVal(right.max)
+      if (limChanged) type = 'changed'
     }
 
     return { key, left, right, type }
@@ -2366,7 +3339,7 @@ const vsRows = computed<VsRow[]>(() => {
 
   const rows: VsRow[] = []
   for (const left of params.value) {
-    const key = `${left.function}|${left.symbol}`
+    const key = left.symbol || left.param || ''
     const queue = rightQueues.get(key)
     const right = queue?.shift() ?? null
     rows.push(makeRow(key, left, right))
@@ -2385,20 +3358,36 @@ const vsRows = computed<VsRow[]>(() => {
 
 function isLimitLoose(row: VsRow): boolean {
   if (!row.left || !row.right) return false
-  const lMin = Number(row.left.min),  rMin = Number(row.right.min)
-  const lMax = Number(row.left.max),  rMax = Number(row.right.max)
-  const hasMin = row.left.min != null && row.right.min != null
-  const hasMax = row.left.max != null && row.right.max != null
-  return (hasMin && lMin < rMin) || (hasMax && lMax > rMax)
+  const getMin = (val: any) => {
+    const nv = normVal(val)
+    return (nv == null || typeof nv !== 'number') ? -Infinity : nv
+  }
+  const getMax = (val: any) => {
+    const nv = normVal(val)
+    return (nv == null || typeof nv !== 'number') ? Infinity : nv
+  }
+
+  const lMin = getMin(row.left.min),  rMin = getMin(row.right.min)
+  const lMax = getMax(row.left.max),  rMax = getMax(row.right.max)
+
+  return (lMin < rMin) || (lMax > rMax)
 }
 
 function isLimitTight(row: VsRow): boolean {
   if (!row.left || !row.right) return false
-  const lMin = Number(row.left.min),  rMin = Number(row.right.min)
-  const lMax = Number(row.left.max),  rMax = Number(row.right.max)
-  const hasMin = row.left.min != null && row.right.min != null
-  const hasMax = row.left.max != null && row.right.max != null
-  return (hasMin && lMin > rMin) || (hasMax && lMax < rMax)
+  const getMin = (val: any) => {
+    const nv = normVal(val)
+    return (nv == null || typeof nv !== 'number') ? -Infinity : nv
+  }
+  const getMax = (val: any) => {
+    const nv = normVal(val)
+    return (nv == null || typeof nv !== 'number') ? Infinity : nv
+  }
+
+  const lMin = getMin(row.left.min),  rMin = getMin(row.right.min)
+  const lMax = getMax(row.left.max),  rMax = getMax(row.right.max)
+
+  return (lMin > rMin) || (lMax < rMax)
 }
 
 const vsStats = computed(() => {
@@ -2468,9 +3457,12 @@ function leftMinClass(row: VsRow): string {
   if (!row.left || !row.right) return ''
   const l = row.left.min,  r = row.right.min
   if (l == null || r == null) return ''
-  const lv = Number(l), rv = Number(r)
-  if (lv < rv && isLimitLoose(row)) return 'limit-loose'
-  if (lv > rv && isLimitTight(row)) return 'limit-tight'
+  const lv = normVal(l), rv = normVal(r)
+  if (lv === rv) return '' // Same after rounding, don't highlight!
+  if (typeof lv === 'number' && typeof rv === 'number') {
+    if (lv < rv && isLimitLoose(row)) return 'limit-loose'
+    if (lv > rv && isLimitTight(row)) return 'limit-tight'
+  }
   return ''
 }
 
@@ -2483,9 +3475,12 @@ function leftMaxClass(row: VsRow): string {
   if (!row.left || !row.right) return ''
   const l = row.left.max,  r = row.right.max
   if (l == null || r == null) return ''
-  const lv = Number(l), rv = Number(r)
-  if (lv > rv && isLimitLoose(row)) return 'limit-loose'
-  if (lv < rv && isLimitTight(row)) return 'limit-tight'
+  const lv = normVal(l), rv = normVal(r)
+  if (lv === rv) return '' // Same after rounding, don't highlight!
+  if (typeof lv === 'number' && typeof rv === 'number') {
+    if (lv > rv && isLimitLoose(row)) return 'limit-loose'
+    if (lv < rv && isLimitTight(row)) return 'limit-tight'
+  }
   return ''
 }
 
@@ -2500,7 +3495,7 @@ function fmtLimit(v: any): string {
 }
 
 // ─── API ───
-async function switchTab(nextTab: 'param' | 'summary' | 'cpp') {
+async function switchTab(nextTab: 'param' | 'summary' | 'cpp' | 'datasheet') {
   if (nextTab === 'cpp' && isDataProgram.value) return
   tab.value = nextTab
   if (nextTab === 'cpp') {
@@ -2509,7 +3504,185 @@ async function switchTab(nextTab: 'param' | 'summary' | 'cpp') {
   } else {
     destroyCppCodeMirrorViews()
   }
+  if (nextTab === 'datasheet') {
+    await loadDatasheetReport()
+  }
 }
+
+// ─── Datasheet Comparison Logic ───
+async function loadDatasheetReport() {
+  datasheetLoading.value = true
+  try {
+    const res: any = await api.get(`/spec/comparison-report`, {
+      params: {
+        product_name: productName.value,
+        upload_id: currentId.value
+      }
+    })
+    datasheetInfo.value = res.datasheet
+    datasheetRows.value = res.comparison_rows || []
+  } catch (err: any) {
+    console.error(err)
+    datasheetInfo.value = null
+    datasheetRows.value = []
+  } finally {
+    datasheetLoading.value = false
+  }
+}
+
+function triggerChecklistSelect() {
+  if (xlsxInput.value) xlsxInput.value.click()
+}
+
+function triggerDatasheetSelect() {
+  if (docxInput.value) docxInput.value.click()
+}
+
+async function handleChecklistUpload(e: Event) {
+  const target = e.target as HTMLInputElement
+  if (!target.files || target.files.length === 0) return
+  const file = target.files[0]
+  
+  const formData = new FormData()
+  formData.append('product_name', productName.value)
+  formData.append('file', file)
+  
+  datasheetLoading.value = true
+  try {
+    await api.post('/spec/upload-checklist', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    })
+    await loadDatasheetReport()
+  } catch (err: any) {
+    alert('Upload checklist failed: ' + err)
+  } finally {
+    datasheetLoading.value = false
+    if (xlsxInput.value) xlsxInput.value.value = ''
+  }
+}
+
+async function handleDatasheetUpload(e: Event) {
+  const target = e.target as HTMLInputElement
+  if (!target.files || target.files.length === 0) return
+  const file = target.files[0]
+  
+  const formData = new FormData()
+  formData.append('product_name', productName.value)
+  formData.append('file', file)
+  
+  datasheetLoading.value = true
+  try {
+    await api.post('/spec/upload-datasheet', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    })
+    await loadDatasheetReport()
+  } catch (err: any) {
+    alert('Upload datasheet failed: ' + err)
+  } finally {
+    datasheetLoading.value = false
+    if (docxInput.value) docxInput.value.value = ''
+  }
+}
+
+function formatDate(isoStr: string): string {
+  if (!isoStr) return '-'
+  const d = new Date(isoStr)
+  return d.toLocaleString()
+}
+
+function getStatusLabel(st: string): string {
+  switch (st) {
+    case 'all': return '全部'
+    case 'out_of_spec': return '超规格 (OOS)'
+    case 'warning': return '双限警告 (Warning)'
+    case 'unmapped': return '未映射 (Unmapped)'
+    case 'normal': return '正常 (Pass)'
+    case 'missing_ate': return 'ATE 缺失'
+    case 'missing_ds': return '规格缺失'
+    case 'category': return '说明/类别'
+    default: return st
+  }
+}
+
+function getStatusCount(st: string): number {
+  if (st === 'all') return datasheetRows.value.length
+  return datasheetRows.value.filter(r => r.status === st).length
+}
+
+function fmtLimitVal(val: any): string {
+  if (val == null) return '-'
+  const n = Number(val)
+  if (isNaN(n)) return String(val)
+  return parseFloat(n.toPrecision(6)).toString()
+}
+
+function splitSpecStr(val: string | null | undefined): string[] {
+  if (val === null || val === undefined || val === '') return ['-']
+  const str = String(val).trim()
+  if (!str) return ['-']
+  
+  // First, split by standard separators like commas, semicolons, slashes, vertical bars, or newlines
+  const primaryParts = str.split(/[,\/;，；|]|\r?\n/)
+  
+  const finalParts: string[] = []
+  for (const part of primaryParts) {
+    const trimmed = part.trim()
+    if (!trimmed) continue
+    
+    // Within each part, split by space(s) ONLY if followed by a digit or +/- sign and a digit.
+    // This splits "6 6.8 12" -> ["6", "6.8", "12"] but keeps "1.2 V" together.
+    const spaceSplit = trimmed.split(/\s+(?=[+-]?\d)/)
+    for (const subPart of spaceSplit) {
+      const subTrimmed = subPart.trim()
+      if (subTrimmed) {
+        finalParts.push(subTrimmed)
+      }
+    }
+  }
+  
+  return finalParts.length > 0 ? finalParts : ['-']
+}
+
+function isValViolated(row: any, field: string): boolean {
+  if (!row.message || row.status === 'normal' || row.status === 'unmapped') return false
+  const msg = row.message.toLowerCase()
+  if (field === 'ft_min' && msg.includes('ft min') && msg.includes('ds min')) return true
+  if (field === 'ft_max' && msg.includes('ft max') && msg.includes('ds max')) return true
+  if (field === 'qa_min') {
+    if (msg.includes('qa min') && msg.includes('ds min')) return true
+    if (msg.includes('qa min') && msg.includes('ft min')) return true
+  }
+  if (field === 'qa_max') {
+    if (msg.includes('qa max') && msg.includes('ds max')) return true
+    if (msg.includes('qa max') && msg.includes('ft max')) return true
+  }
+  return false
+}
+
+const filteredDsRows = computed(() => {
+  let list = datasheetRows.value
+  
+  if (datasheetStatusFilter.value !== 'all') {
+    list = list.filter(r => r.status === datasheetStatusFilter.value)
+  }
+  
+  if (datasheetFilter.value.trim()) {
+    const q = datasheetFilter.value.toLowerCase().trim()
+    list = list.filter(r => 
+      (r.datasheet_symbol && r.datasheet_symbol.toLowerCase().includes(q)) ||
+      (r.ate_symbol && r.ate_symbol.toLowerCase().includes(q)) ||
+      (r.parameter_name && r.parameter_name.toLowerCase().includes(q)) ||
+      (r.condition && r.condition.toLowerCase().includes(q)) ||
+      (r.message && r.message.toLowerCase().includes(q))
+    )
+  }
+  
+  return list
+})
 
 async function loadData() {
   loading.value = true
@@ -2540,6 +3713,10 @@ async function loadData() {
     pgsList.value  = list as unknown as any[]
     dataProgramList.value = dataList as unknown as any[]
     currentPgs.value = (list as unknown as any[]).find((r: any) => r.id === currentId.value) ?? null
+    if (!isDataProgram.value && currentPgs.value) {
+      sblInputText.value = currentPgs.value.sbl_input || ''
+      parseSbl()
+    }
   } catch (e: any) {
     alert('加载失败：' + (e?.message ?? '未知错误'))
     router.back()
@@ -2781,6 +3958,15 @@ onBeforeUnmount(() => { destroyCppCodeMirrorViews() })
 }
 .ptab:hover { background: rgba(24,144,255,0.1); color: #1890ff; }
 .ptab-active { background: #1890ff !important; color: white !important; }
+.ptab-excel {
+  margin-left: 12px;
+  background: #16a34a !important;
+  color: white !important;
+}
+.ptab-excel:hover {
+  background: #15803d !important;
+  color: white !important;
+}
 
 /* ── VS 对比栏 ── */
 /* ── VS 内联选择（Header 内） ── */
@@ -2912,7 +4098,7 @@ onBeforeUnmount(() => { destroyCppCodeMirrorViews() })
 .filter-input:focus { border-color: #1890ff; }
 
 /* ── Table wrapper ── */
-.table-wrap { flex: 1; overflow: auto; }
+.table-wrap { flex: 1; overflow: auto; min-height: 0; }
 
 /* ── Param 表格 ── */
 .param-tbl {
@@ -3742,5 +4928,649 @@ onBeforeUnmount(() => { destroyCppCodeMirrorViews() })
   padding: 48px;
   color: #94a3b8;
   text-align: center;
+}
+
+/* ── Datasheet Comparison View Styles ── */
+.datasheet-body {
+  padding: 16px 20px;
+  background: #f8fafc;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.ds-loading {
+  padding: 40px;
+  text-align: center;
+  font-size: 15px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.ds-header-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: white;
+  border-radius: 12px;
+  padding: 18px 24px;
+  margin-bottom: 16px;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+  border: 1px solid #f1f5f9;
+}
+
+.ds-meta-info {
+  flex: 1;
+}
+
+.ds-status-ok {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.status-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+  text-transform: uppercase;
+}
+
+.status-badge.active {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.status-badge.empty {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.info-item {
+  font-size: 13px;
+  color: #475569;
+}
+
+.info-item strong {
+  color: #0f172a;
+}
+
+.ds-status-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.warning-text {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.upload-btn-group {
+  display: flex;
+  gap: 12px;
+}
+
+.btn-action {
+  background: white;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+}
+
+.btn-action:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+.ds-filter-panel {
+  background: white;
+  border-radius: 12px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.05);
+  border: 1px solid #f1f5f9;
+}
+
+.filter-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.filter-input-ds {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  outline: none;
+  font-size: 13px;
+  width: 280px;
+  transition: all 0.2s ease;
+}
+
+.filter-input-ds:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.status-selector {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.st-btn {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #475569;
+  transition: all 0.2s ease;
+}
+
+.st-btn:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.st-btn.active {
+  border-color: #0f172a;
+  background: #0f172a;
+  color: white;
+}
+
+.st-btn.out_of_spec.active {
+  background: #ef4444;
+  border-color: #ef4444;
+  color: white;
+}
+
+.st-btn.warning.active {
+  background: #f59e0b;
+  border-color: #f59e0b;
+  color: white;
+}
+
+.st-btn.unmapped.active {
+  background: #64748b;
+  border-color: #64748b;
+  color: white;
+}
+
+.st-btn.normal.active {
+  background: #10b981;
+  border-color: #10b981;
+  color: white;
+}
+
+/* ── Table Styling ── */
+.ds-report-tbl {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  text-align: left;
+  background: white;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ds-report-tbl th {
+  background: #f1f5f9;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 10px 14px;
+  border: 1px solid #e2e8f0;
+  text-align: center;
+}
+
+.ds-report-tbl td {
+  padding: 12px 14px;
+  border: 1px solid #f1f5f9;
+  font-size: 13px;
+  color: #334155;
+}
+
+.ds-report-tbl tr:hover td {
+  background-color: #f8fafc;
+}
+
+.hdr-group {
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+.ds-hdr {
+  background: #e0f2fe !important;
+  color: #0369a1 !important;
+}
+
+.ate-ft-hdr {
+  background: #fef3c7 !important; /* Soft warm amber/yellow */
+  color: #b45309 !important; /* Dark amber text */
+}
+
+.ate-qa-hdr {
+  background: #f0f9ff !important;
+  color: #0369a1 !important;
+}
+
+.ds-row.status-out_of_spec {
+  background-color: rgba(254, 226, 226, 0.25);
+}
+
+.ds-row.status-warning {
+  background-color: rgba(254, 243, 199, 0.25);
+}
+
+.ds-row.status-unmapped {
+  background-color: rgba(241, 245, 249, 0.5);
+  color: #64748b;
+}
+
+.ds-row.status-unmapped td {
+  color: #64748b;
+}
+
+.ds-row.status-missing_ate {
+  background-color: rgba(255, 237, 213, 0.2);
+}
+
+.col-no { width: 45px; text-align: center; }
+.col-sym { font-weight: 600; font-size: 12.5px; word-break: break-all; }
+.col-ds-sym { font-weight: 600; font-size: 12.5px; word-break: break-all; }
+.col-desc { line-height: 1.4; }
+.p-name { font-weight: 500; color: #1e293b; }
+.p-cond { font-size: 11px; color: #64748b; margin-top: 4px; font-style: italic; }
+.col-unit { width: 60px; text-align: center; }
+.col-num { width: 90px; text-align: right; }
+.ds-report-tbl .col-num { width: 50px; }
+.spec-val-line { line-height: 1.3; white-space: nowrap; }
+.col-mult { width: 60px; text-align: center; }
+.col-status { width: 100px; text-align: center; }
+.col-msg { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.col-msg.out_of_spec { color: #dc2626; font-weight: 600; }
+.col-msg.warning { color: #d97706; font-weight: 600; }
+.col-msg.missing_ate { color: #ea580c; }
+.col-msg.unmapped { color: #64748b; }
+
+.spec-cell {
+  background: rgba(224, 242, 254, 0.1);
+  font-weight: 500;
+}
+
+.ft-cell {
+  background: rgba(254, 243, 199, 0.45); /* Soft amber/yellow background */
+}
+
+.qa-cell {
+  background: rgba(240, 249, 255, 0.25);
+}
+
+.scaled-val {
+  display: block;
+  font-size: 10px;
+  color: #64748b;
+  font-family: monospace;
+  margin-top: 2px;
+}
+
+/* Violation highlights */
+.violates {
+  background-color: #fee2e2 !important;
+  color: #b91c1c !important;
+  font-weight: 700;
+}
+
+.status-tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.status-tag.normal { background: #d1fae5; color: #065f46; }
+.status-tag.out_of_spec { background: #fee2e2; color: #991b1b; }
+.status-tag.warning { background: #fef3c7; color: #92400e; }
+.status-tag.unmapped { background: #e2e8f0; color: #475569; }
+.status-tag.missing_ate { background: #ffedd5; color: #9a3412; }
+.status-tag.missing_ds { background: #f3e8ff; color: #6b21a8; }
+
+.ds-empty-msg {
+  padding: 32px;
+  text-align: center;
+  font-size: 14px;
+  color: #64748b;
+  background: white;
+  border-radius: 12px;
+}
+
+.ds-empty-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 40px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.05);
+  border: 1px solid #f1f5f9;
+  text-align: center;
+  max-width: 680px;
+  margin: 40px auto;
+}
+
+.placeholder-icon {
+  font-size: 48px;
+  margin-bottom: 20px;
+}
+
+.ds-empty-placeholder h3 {
+  font-size: 18px;
+  color: #0f172a;
+  margin-bottom: 12px;
+  font-weight: 700;
+}
+
+.ds-empty-placeholder p {
+  font-size: 14px;
+  color: #64748b;
+  margin-bottom: 24px;
+  line-height: 1.5;
+}
+
+.ds-empty-placeholder ol {
+  text-align: left;
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.8;
+  margin-bottom: 0;
+  padding-left: 20px;
+}
+
+.ds-empty-placeholder li strong {
+  color: #0f172a;
+}
+/* Sticky Header for Datasheet Table */
+.ds-report-tbl thead th {
+  position: sticky;
+  z-index: 10;
+  background: #f1f5f9;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.ds-report-tbl thead tr:first-child th {
+  top: 0;
+  z-index: 12;
+}
+
+.ds-report-tbl thead tr:last-child th {
+  top: 37px;
+  z-index: 11;
+}
+
+/* Category/Description Rows */
+.ds-row.status-category {
+  background-color: #f8fafc !important;
+}
+
+.col-category-title {
+  font-weight: 700;
+  color: #1e293b;
+  text-align: left;
+  background-color: #f1f5f9;
+  padding-left: 20px !important;
+  font-size: 13.5px;
+}
+
+/* Checkbox alignment */
+.hide-col-cb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #475569;
+  cursor: pointer;
+  user-select: none;
+  font-weight: 500;
+}
+
+.hide-col-cb input {
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+}
+
+/* Resizable headers */
+.resizable {
+  position: relative;
+}
+
+.resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 15;
+  user-select: none;
+}
+
+.resize-handle:hover {
+  background: rgba(59, 130, 246, 0.4);
+}
+
+/* Modal Backdrop */
+.modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.mapping-modal-card {
+  background: white;
+  width: 550px;
+  max-width: 90%;
+  border-radius: 16px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+}
+
+.modal-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #f1f5f9;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.close-btn:hover {
+  color: #475569;
+}
+
+.modal-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  overflow: hidden;
+}
+
+.modal-tip {
+  font-size: 13px;
+  color: #475569;
+  margin: 0;
+}
+
+.modal-search-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  outline: none;
+  font-size: 13.5px;
+}
+
+.modal-search-input:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.modal-list-container {
+  flex: 1;
+  overflow-y: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.list-item {
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #334155;
+  cursor: pointer;
+  border-bottom: 1px solid #f1f5f9;
+  transition: all 0.2s ease;
+  font-family: monospace;
+}
+
+.list-item:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.list-item.selected {
+  background: #eff6ff;
+  color: #2563eb;
+  font-weight: 600;
+}
+
+.modal-footer {
+  padding: 14px 20px;
+  border-top: 1px solid #f1f5f9;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  background: #f8fafc;
+}
+
+/* Editable cells hover cues */
+.editable-cell {
+  cursor: pointer;
+  position: relative;
+}
+
+.editable-cell:hover {
+  background: #f0f7ff !important;
+  color: #2563eb !important;
+}
+
+
+
+/* Remark columns styling */
+.col-remark {
+}
+
+.remark-text-cell {
+  min-height: 20px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: #475569;
+  word-break: break-all;
+}
+
+.remark-text-cell:hover {
+  color: #0f172a;
+  text-decoration: underline dotted;
+}
+
+.remark-input-inline {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.remark-input-inline:focus {
+  border-color: #3b82f6;
+}
+
+.spec-edit-wrap {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 50;
+}
+
+.spec-input-inline {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  transform: translateY(-50%);
+  width: 240px;
+  z-index: 60;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  font-size: 12.5px;
+  border: 1px solid #3b82f6;
+  border-radius: 4px;
+  background: white;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.15);
+  outline: none;
+  text-align: right;
 }
 </style>

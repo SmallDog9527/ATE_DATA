@@ -9,6 +9,7 @@
       <div class="header-actions">
         <button v-if="activeTab === 'pgm'" class="btn btn-primary" @click="triggerPgsUpload">⬆ 上传程序</button>
         <input ref="pgsInput" type="file" accept=".zip,.rar,.7z" multiple hidden @change="onPgsSelected" />
+        <input ref="rowDsInput" type="file" accept=".docx,.doc" style="display: none" @change="onRowDsFileChange" />
         <label v-if="activeTab === 'data'" class="months-filter">
           <span>近</span>
           <input
@@ -195,6 +196,7 @@
             <th>上传日期</th>
             <th>解析状态</th>
             <th>数据来源</th>
+            <th>Datasheet</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -229,6 +231,16 @@
               <span v-if="row.parse_status === 'error'" class="parse-err-tip" :title="row.parse_error">⚠</span>
             </td>
             <td><span class="src-badge src-pgm">PGM</span></td>
+            <td class="td-ds">
+              <div v-if="row.datasheet_filename" class="ds-row-actions">
+                <span class="ds-icon-span" :title="row.datasheet_filename">📄</span>
+                <button class="icon-action-btn" @click="downloadRowDatasheet(row)" title="下载 Datasheet">📥</button>
+                <button class="icon-action-btn delete-icon" @click="deleteRowDatasheet(row)" title="删除 Datasheet">🗑</button>
+              </div>
+              <div v-else class="ds-row-actions">
+                <button class="icon-action-btn upload-icon" @click="triggerRowDsUpload(row)" title="上传 Datasheet">📤</button>
+              </div>
+            </td>
             <td class="td-raw">
               <div class="pgm-actions">
                 <button class="raw-btn del-btn" @click="deletePgs(row)">🗑 删除</button>
@@ -237,7 +249,7 @@
             </td>
           </tr>
           <tr v-if="!pgmRows.length && !pgmLoading">
-            <td colspan="11" class="td-empty">
+            <td colspan="12" class="td-empty">
               暂无 PGM 数据，请点击「上传程序」上传 .zip/.rar/.7z 文件
             </td>
           </tr>
@@ -357,13 +369,48 @@
         <div class="dialog-header">
           <h3>上传程序文件</h3>
         </div>
-        <p class="file-hint">文件：<strong>{{ pgsUpload.filename }}</strong></p>
-        <p v-if="pgsUpload.total > 1" class="file-hint">进度：<strong>{{ pgsUpload.current }}/{{ pgsUpload.total }}</strong></p>
-        <p class="file-hint">产品名：<strong>{{ productName }}</strong></p>
-        <div class="upload-progress">
+        
+        <div v-if="pgsUpload.uploading" class="upload-progress">
           <div class="progress-bar"><div class="progress-fill"></div></div>
           <span>{{ pgsUpload.total > 1 ? `正在解析 ${pgsUpload.currentName}...` : '解析中，请稍候...' }}</span>
         </div>
+        
+        <template v-else>
+          <p class="file-hint">程序文件：<strong>{{ pgsUpload.filename }}</strong></p>
+          <p class="file-hint">产品名：<strong>{{ productName }}</strong></p>
+          
+          <!-- Tester Dropdown -->
+          <div v-if="pgsUpload.testerChoices.length >= 2" class="field">
+            <label>Tester *</label>
+            <select v-model="pgsUpload.selectedTester" class="field-input">
+              <option v-for="tester in pgsUpload.testerChoices" :key="tester" :value="tester">{{ tester }}</option>
+            </select>
+          </div>
+          
+          <!-- Datasheet Selection -->
+          <div class="field">
+            <label>Datasheet (.docx, .doc) (可选)</label>
+            <div class="file-picker-row">
+              <button class="btn btn-action" @click="triggerUploadDsSelect">📂 选择 Datasheet 文件</button>
+              <span class="ds-file-name" :title="pgsUpload.datasheetFile?.name">
+                {{ pgsUpload.datasheetFile?.name || '未选择文件' }}
+              </span>
+              <button v-if="pgsUpload.datasheetFile" class="btn-clear" @click="clearUploadDsFile">✕</button>
+            </div>
+            <input ref="uploadDsInput" type="file" accept=".docx,.doc" style="display: none" @change="onUploadDsFileChange" />
+          </div>
+          
+          <div class="dialog-actions">
+            <button class="btn" @click="resetPgsUpload">取消</button>
+            <button 
+              class="btn btn-primary" 
+              :disabled="pgsUpload.testerChoices.length >= 2 && !pgsUpload.selectedTester" 
+              @click="submitPgs"
+            >
+              确认上传
+            </button>
+          </div>
+        </template>
       </div>
     </div>
   </div>
@@ -382,6 +429,8 @@ const productName = computed(() => route.params.productName as string)
 // ─── Data Tab ───
 const rows = ref<any[]>([])
 const loading = ref(false)
+const dataSnapshotLoaded = ref(false)
+let dataSnapshotPromise: Promise<void> | null = null
 const activeTab = ref<'data' | 'pgm'>('pgm')
 const dataMonthsInput = ref('1')
 const testerFilter = ref('')
@@ -430,6 +479,10 @@ const pgsUpload = reactive({
   current: 0,
   total: 0,
   uploading: false,
+  awaitingTester: false,
+  selectedTester: '',
+  testerChoices: [] as string[],
+  datasheetFile: null as File | null,
 })
 
 // ─── 工具函数 ───
@@ -477,13 +530,22 @@ function limitHl(r: any, side: string, ver: string) {
 
 // ─── API ───
 async function fetchDataSnapshot() {
-  try {
-    const data = await api.get(`/programs/data_list/${encodeURIComponent(productName.value)}`)
-    rows.value = ((data as unknown as any[]) || []).filter((row: any) => !isQaDataRow(row))
-    if (testerFilter.value && !testerOptions.value.includes(testerFilter.value)) {
-      testerFilter.value = ''
+  if (dataSnapshotPromise) return dataSnapshotPromise
+  dataSnapshotPromise = (async () => {
+    try {
+      const data = await api.get(`/programs/data_list/${encodeURIComponent(productName.value)}`)
+      rows.value = ((data as unknown as any[]) || []).filter((row: any) => !isQaDataRow(row))
+      dataSnapshotLoaded.value = true
+      if (testerFilter.value && !testerOptions.value.includes(testerFilter.value)) {
+        testerFilter.value = ''
+      }
+    } catch (e) {
+      console.error(e)
+    } finally {
+      dataSnapshotPromise = null
     }
-  } catch (e) { console.error(e) }
+  })()
+  return dataSnapshotPromise
 }
 
 async function fetchData(showLoading = false) {
@@ -494,6 +556,7 @@ async function fetchData(showLoading = false) {
       params: { days: dataMonthsToDays(dataMonthsInput.value) },
     })
     rows.value = ((data as unknown as any[]) || []).filter((row: any) => !isQaDataRow(row))
+    dataSnapshotLoaded.value = true
     if (testerFilter.value && !testerOptions.value.includes(testerFilter.value)) {
       testerFilter.value = ''
     }
@@ -545,6 +608,22 @@ function dataMonthsToDays(value: string): number {
 }
 
 function triggerPgsUpload() { pgsInput.value?.click() }
+
+function resetPgsUpload() {
+  pgsUpload.uploading = false
+  pgsUpload.show = false
+  pgsUpload.files = []
+  pgsUpload.filename = ''
+  pgsUpload.currentName = ''
+  pgsUpload.current = 0
+  pgsUpload.total = 0
+  pgsUpload.awaitingTester = false
+  pgsUpload.selectedTester = ''
+  pgsUpload.testerChoices = []
+  pgsUpload.datasheetFile = null
+  if (uploadDsInput.value) uploadDsInput.value.value = ''
+}
+
 async function onPgsSelected(e: Event) {
   const input = e.target as HTMLInputElement
   const selectedFiles = Array.from(input.files ?? [])
@@ -557,17 +636,25 @@ async function onPgsSelected(e: Event) {
     return
   }
 
+  if (!dataSnapshotLoaded.value) {
+    await fetchDataSnapshot()
+  }
+
   pgsUpload.files = selectedFiles
   pgsUpload.filename = selectedFiles.length === 1 ? selectedFiles[0]!.name : `${selectedFiles.length} 个文件`
   pgsUpload.currentName = selectedFiles[0]!.name
   pgsUpload.current = 0
   pgsUpload.total = selectedFiles.length
   pgsUpload.uploading = false
+  pgsUpload.testerChoices = testerOptions.value
+  pgsUpload.selectedTester = pgsUpload.testerChoices.length === 1 ? pgsUpload.testerChoices[0]! : ''
+  pgsUpload.awaitingTester = pgsUpload.testerChoices.length >= 2
+  pgsUpload.datasheetFile = null
   pgsUpload.show = true
-  await submitPgs()  // 选文件后直接上传，无需确认
 }
 async function submitPgs() {
   if (!pgsUpload.files.length) return
+  if (pgsUpload.awaitingTester && !pgsUpload.selectedTester) return
   pgsUpload.uploading = true
   const failedMessages: string[] = []
   try {
@@ -579,6 +666,12 @@ async function submitPgs() {
         const form = new FormData()
         form.append('file', file)
         form.append('product_name', productName.value)
+        if (pgsUpload.selectedTester) {
+          form.append('tester', pgsUpload.selectedTester)
+        }
+        if (pgsUpload.datasheetFile) {
+          form.append('datasheet_file', pgsUpload.datasheetFile)
+        }
         const result: any = await api.post('/programs/upload_pgs', form)
         if (result.parse_status !== 'ok') {
           failedMessages.push(`${file.name}: ${result.parse_error ?? '未知错误'}`)
@@ -593,15 +686,96 @@ async function submitPgs() {
       alert(`以下文件上传/解析失败：\n${failedMessages.join('\n')}`)
     }
   } finally {
-    pgsUpload.uploading = false
-    pgsUpload.show = false
-    pgsUpload.files = []
-    pgsUpload.filename = ''
-    pgsUpload.currentName = ''
-    pgsUpload.current = 0
-    pgsUpload.total = 0
+    resetPgsUpload()
   }
 }
+
+// ─── Modal Datasheet Select ───
+const uploadDsInput = ref<HTMLInputElement | null>(null)
+function triggerUploadDsSelect() {
+  if (uploadDsInput.value) uploadDsInput.value.click()
+}
+function onUploadDsFileChange(e: Event) {
+  const target = e.target as HTMLInputElement
+  if (target.files && target.files.length > 0) {
+    pgsUpload.datasheetFile = target.files[0]
+  }
+}
+function clearUploadDsFile() {
+  pgsUpload.datasheetFile = null
+  if (uploadDsInput.value) uploadDsInput.value.value = ''
+}
+
+// ─── Row-level Datasheet Actions ───
+const rowDsInput = ref<HTMLInputElement | null>(null)
+const activeUploadRow = ref<any>(null)
+
+function triggerRowDsUpload(row: any) {
+  activeUploadRow.value = row
+  if (rowDsInput.value) rowDsInput.value.click()
+}
+
+async function onRowDsFileChange(e: Event) {
+  const target = e.target as HTMLInputElement
+  if (!target.files || target.files.length === 0 || !activeUploadRow.value) return
+  const file = target.files[0]
+  target.value = ''
+  
+  const formData = new FormData()
+  formData.append('upload_id', activeUploadRow.value.id.toString())
+  formData.append('file', file)
+  
+  pgmLoading.value = true
+  try {
+    await api.post('/spec/upload-datasheet-to-pgs', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    })
+    await fetchPgmData()
+    alert('Datasheet 上传并关联成功！')
+  } catch (err: any) {
+    alert('Datasheet 上传失败: ' + err)
+  } finally {
+    pgmLoading.value = false
+    activeUploadRow.value = null
+  }
+}
+
+async function downloadRowDatasheet(row: any) {
+  pgmLoading.value = true
+  try {
+    const response: any = await api.get(`/spec/download-datasheet/${row.id}`, {
+      responseType: 'blob'
+    })
+    const blob = new Blob([response], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+    const link = document.createElement('a')
+    link.href = window.URL.createObjectURL(blob)
+    link.download = row.datasheet_filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  } catch (err: any) {
+    alert('下载失败: ' + err)
+  } finally {
+    pgmLoading.value = false
+  }
+}
+
+async function deleteRowDatasheet(row: any) {
+  if (!confirm(`确定要删除此版本的 Datasheet: ${row.datasheet_filename} 吗？`)) return
+  pgmLoading.value = true
+  try {
+    await api.delete(`/spec/delete-datasheet/${row.id}`)
+    await fetchPgmData()
+    alert('删除成功')
+  } catch (err: any) {
+    alert('删除失败: ' + err)
+  } finally {
+    pgmLoading.value = false
+  }
+}
+
 
 async function downloadPgs(row: any) {
   try {
@@ -845,5 +1019,104 @@ onMounted(() => { fetchDataSnapshot(); fetchPgmData(); fetchSuggestions() })
 .dialog-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .dialog-header h3 { margin: 0; font-size: 16px; }
 .file-hint { font-size: 13px; color: #555; margin-bottom: 8px; }
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; }
+.field-input {
+  width: 100%; border: 1px solid #d9d9d9; border-radius: 4px;
+  padding: 7px 10px; font-size: 13px; outline: none;
+}
+.field-input:focus { border-color: #1890ff; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+/* ── Datasheet upload button & actions in program view ── */
+.file-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #f8fafc;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px dashed #cbd5e1;
+}
+
+.ds-file-name {
+  font-size: 12px;
+  color: #334155;
+  font-weight: 600;
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-clear {
+  background: #ef4444;
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  cursor: pointer;
+  transition: background 0.2s;
+  padding: 0;
+}
+
+.btn-clear:hover {
+  background: #dc2626;
+}
+
+.td-ds {
+  text-align: center;
+}
+
+.ds-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.ds-icon-span {
+  font-size: 14px;
+  cursor: default;
+}
+
+.icon-action-btn {
+  background: none;
+  border: none;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, transform 0.1s;
+}
+
+.icon-action-btn:hover {
+  background: #f1f5f9;
+  transform: scale(1.1);
+}
+
+.icon-action-btn.delete-icon:hover {
+  background: #fee2e2;
+}
+
+.icon-action-btn.upload-icon {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.icon-action-btn.upload-icon:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
 </style>

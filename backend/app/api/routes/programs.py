@@ -899,6 +899,90 @@ def _write_cached_file(path: str, raw_bytes: bytes) -> None:
 def _cache_program_files(path: str, filename: str) -> dict:
     cached: dict = {}
 
+    ext = os.path.splitext(os.path.basename(filename))[1].lower()
+    is_t2k = False
+
+    if ext == ".zip":
+        try:
+            with zipfile.ZipFile(path, "r") as zf:
+                names = [info.filename.lower() for info in zf.infolist() if not info.is_dir()]
+                has_pgs = any(name.endswith(".pgs") for name in names)
+                has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
+                if not has_pgs and has_t2k:
+                    is_t2k = True
+        except Exception:
+            pass
+    elif ext == ".rar":
+        try:
+            import rarfile
+            with rarfile.RarFile(path, "r") as rf:
+                names = [info.filename.lower() for info in rf.infolist() if not info.isdir()]
+                has_pgs = any(name.endswith(".pgs") for name in names)
+                has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
+                if not has_pgs and has_t2k:
+                    is_t2k = True
+        except Exception:
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    _extract_with_unar(path, tmpdir, ext)
+                    files = _walk_extracted_files(tmpdir)
+                    names = [item[0].lower() for item in files]
+                    has_pgs = any(name.endswith(".pgs") for name in names)
+                    has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
+                    if not has_pgs and has_t2k:
+                        is_t2k = True
+            except Exception:
+                pass
+    elif ext == ".7z":
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                _extract_with_unar(path, tmpdir, ext)
+                files = _walk_extracted_files(tmpdir)
+                names = [item[0].lower() for item in files]
+                has_pgs = any(name.endswith(".pgs") for name in names)
+                has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
+                if not has_pgs and has_t2k:
+                    is_t2k = True
+        except Exception:
+            pass
+
+    if is_t2k:
+        dest_dir = _extract_cache_dir(filename)
+        if not os.path.exists(dest_dir):
+            os.makedirs(dest_dir, exist_ok=True)
+            if ext == ".zip":
+                with zipfile.ZipFile(path, "r") as zf:
+                    zf.extractall(dest_dir)
+            elif ext == ".rar":
+                try:
+                    import rarfile
+                    with rarfile.RarFile(path, "r") as rf:
+                        rf.extractall(dest_dir)
+                except Exception:
+                    res = _extract_with_unar(path, dest_dir, ext)
+                    if res.returncode != 0:
+                        raise ValueError("Failed to extract RAR archive")
+            elif ext == ".7z":
+                res = _extract_with_unar(path, dest_dir, ext)
+                if res.returncode != 0:
+                    raise ValueError("Failed to extract 7Z archive")
+
+        try:
+            from app.services.parsers.t2k_parser import find_t2k_main_cpp, _collect_program_files
+            _, _, all_cpps = _collect_program_files(dest_dir)
+            picked_cpp = find_t2k_main_cpp(all_cpps)
+            if picked_cpp and os.path.exists(picked_cpp):
+                cpp_dest_path = _cached_cpp_path(filename)
+                os.makedirs(os.path.dirname(cpp_dest_path), exist_ok=True)
+                shutil.copy2(picked_cpp, cpp_dest_path)
+                cached["cpp_path"] = cpp_dest_path
+                cached["cpp_archive_path"] = os.path.relpath(picked_cpp, dest_dir).replace("\\", "/")
+            else:
+                cached["cpp_error"] = "No main cpp file found"
+        except Exception as exc:
+            cached["cpp_error"] = str(exc)
+        return cached
+
     pgs_bytes, pgs_filename = _read_pgs_from_archive(path, filename)
     pgs_path = _cached_pgs_path(filename)
     _write_cached_file(pgs_path, pgs_bytes)
@@ -1206,6 +1290,8 @@ def get_lot_compare(lot_id: int, db: Session = Depends(get_db)):
 async def upload_pgs(
     file: UploadFile = File(...),
     product_name: str = Form(...),
+    tester: Optional[str] = Form(None),
+    datasheet_file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1234,18 +1320,152 @@ async def upload_pgs(
 
     try:
         saved_filename = os.path.basename(save_path)
-        cached = _cache_program_files(save_path, saved_filename)
-        with open(cached["pgs_path"], "rb") as fp:
-            text = _decode_pgs_bytes(fp.read())
-        result = parse_pgs(text, cached["pgs_filename"])
-        pgs_version = result.get("pgs_version")
-        program_version = result.get("program_version")
+        is_t2k = (tester == "T2K")
+        if not is_t2k:
+            if ext == ".zip":
+                try:
+                    with zipfile.ZipFile(save_path, "r") as zf:
+                        names = [info.filename.lower() for info in zf.infolist() if not info.is_dir()]
+                        has_pgs = any(name.endswith(".pgs") for name in names)
+                        has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
+                        if not has_pgs and has_t2k:
+                            is_t2k = True
+                except Exception:
+                    pass
+            elif ext == ".rar":
+                try:
+                    import rarfile
+                    with rarfile.RarFile(save_path, "r") as rf:
+                        names = [info.filename.lower() for info in rf.infolist() if not info.isdir()]
+                        has_pgs = any(name.endswith(".pgs") for name in names)
+                        has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
+                        if not has_pgs and has_t2k:
+                            is_t2k = True
+                except Exception:
+                    try:
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            _extract_with_unar(save_path, tmpdir, ext)
+                            files = _walk_extracted_files(tmpdir)
+                            names = [item[0].lower() for item in files]
+                            has_pgs = any(name.endswith(".pgs") for name in names)
+                            has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
+                            if not has_pgs and has_t2k:
+                                is_t2k = True
+                    except Exception:
+                        pass
+            elif ext == ".7z":
+                try:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        _extract_with_unar(save_path, tmpdir, ext)
+                        files = _walk_extracted_files(tmpdir)
+                        names = [item[0].lower() for item in files]
+                        has_pgs = any(name.endswith(".pgs") for name in names)
+                        has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
+                        if not has_pgs and has_t2k:
+                            is_t2k = True
+                except Exception:
+                    pass
+
+        if is_t2k:
+            from app.services.parsers.t2k_parser import parse_t2k_folder
+            dest_dir = _extract_cache_dir(saved_filename)
+            if os.path.exists(dest_dir):
+                shutil.rmtree(dest_dir)
+            os.makedirs(dest_dir, exist_ok=True)
+            
+            if ext == ".zip":
+                with zipfile.ZipFile(save_path, "r") as zf:
+                    zf.extractall(dest_dir)
+            elif ext == ".rar":
+                try:
+                    import rarfile
+                    with rarfile.RarFile(save_path, "r") as rf:
+                        rf.extractall(dest_dir)
+                except Exception:
+                    res = _extract_with_unar(save_path, dest_dir, ext)
+                    if res.returncode != 0:
+                        raise ValueError("Failed to extract RAR archive")
+            elif ext == ".7z":
+                res = _extract_with_unar(save_path, dest_dir, ext)
+                if res.returncode != 0:
+                    raise ValueError("Failed to extract 7Z archive")
+            else:
+                raise ValueError(f"Unsupported archive extension: {ext}")
+            
+            result = parse_t2k_folder(dest_dir)
+            program_version = result.get("program_version")
+            pgs_version = None
+            
+            from app.services.parsers.t2k_parser import find_t2k_main_cpp, _collect_program_files
+            _, _, all_cpps = _collect_program_files(dest_dir)
+            picked_cpp = find_t2k_main_cpp(all_cpps)
+            if picked_cpp and os.path.exists(picked_cpp):
+                cpp_dest_path = _cached_cpp_path(saved_filename)
+                os.makedirs(os.path.dirname(cpp_dest_path), exist_ok=True)
+                shutil.copy2(picked_cpp, cpp_dest_path)
+        else:
+            cached = _cache_program_files(save_path, saved_filename)
+            with open(cached["pgs_path"], "rb") as fp:
+                text = _decode_pgs_bytes(fp.read())
+            result = parse_pgs(text, cached["pgs_filename"])
+            pgs_version = result.get("pgs_version")
+            program_version = result.get("program_version")
+        
+        # ── 自动继承机制：如果解析出的 summary 列表为空，尝试从同产品历史上传的正常 Summary 中继承 Bin Name ──
+        summary_list = result.get("summary", [])
+        if not summary_list and result.get("params"):
+            # 收集当前参数中包含的所有唯一 (sw_bin, hw_bin)
+            distinct_bins = {}
+            for p in result["params"]:
+                sb = p.get("sw_bin")
+                hb = p.get("hw_bin")
+                if sb is not None and hb is not None:
+                    distinct_bins[sb] = hb
+            
+            if distinct_bins:
+                prev_upload = db.query(PgsUpload).filter(
+                    PgsUpload.product_name == product_name,
+                    PgsUpload.parse_status == "ok",
+                    PgsUpload.parsed_summary.isnot(None),
+                    PgsUpload.parsed_summary != "[]"
+                ).order_by(PgsUpload.upload_date.desc()).first()
+                
+                if prev_upload:
+                    try:
+                        prev_summary = json.loads(prev_upload.parsed_summary)
+                        prev_map = {row["sw_bin"]: row.get("bin_name") for row in prev_summary if row.get("bin_name")}
+                        
+                        inherited_summary = []
+                        for sb, hb in sorted(distinct_bins.items()):
+                            bin_name = prev_map.get(sb, "")
+                            inherited_summary.append({
+                                "sw_bin": sb,
+                                "hw_bin": hb,
+                                "bin_name": bin_name
+                            })
+                        
+                        if inherited_summary:
+                            result["summary"] = inherited_summary
+                            print(f"[upload] Inherited {len(inherited_summary)} bin names from previous upload id={prev_upload.id} for product={product_name!r}")
+                    except Exception as e:
+                        print(f"[upload] Failed to inherit bin names: {e}")
+
         parsed_params_json = json.dumps(result["params"], ensure_ascii=False)
         parsed_summary_json = json.dumps(result["summary"], ensure_ascii=False)
         parse_status = "ok"
     except Exception as exc:
         parse_status = "error"
         parse_error = str(exc)
+
+    # ── 自动继承机制：继承上一版的 SBL/SYL 管控输入 ──
+    prev_sbl_upload = db.query(PgsUpload).filter(
+        PgsUpload.product_name == product_name,
+        PgsUpload.parse_status == "ok",
+        PgsUpload.sbl_input.isnot(None),
+        PgsUpload.sbl_input != ""
+    ).order_by(PgsUpload.upload_date.desc()).first()
+    
+    inherited_sbl_input = prev_sbl_upload.sbl_input if prev_sbl_upload else None
 
     record = PgsUpload(
         filename=os.path.basename(save_path),
@@ -1259,10 +1479,36 @@ async def upload_pgs(
         parse_error=parse_error,
         parsed_params=parsed_params_json,
         parsed_summary=parsed_summary_json,
+        sbl_input=inherited_sbl_input,
     )
     db.add(record)
     db.commit()
     db.refresh(record)
+
+    # ── Handle optional Datasheet upload ──
+    if datasheet_file and datasheet_file.filename:
+        base_name = os.path.basename(datasheet_file.filename)
+        if base_name.endswith((".docx", ".doc")):
+            ds_dir = os.path.join(UPLOAD_DIR, "datasheets")
+            os.makedirs(ds_dir, exist_ok=True)
+            ds_save_path = os.path.join(ds_dir, f"ds_{record.id}_{base_name}")
+            
+            ds_bytes = await datasheet_file.read()
+            with open(ds_save_path, "wb") as f:
+                f.write(ds_bytes)
+                
+            record.datasheet_filename = base_name
+            record.datasheet_path = ds_save_path
+            db.commit()
+            
+            # Parse docx datasheet EC table
+            if base_name.endswith(".docx"):
+                try:
+                    from app.services.spec_service import import_docx_datasheet
+                    import_docx_datasheet(db, ds_save_path, product_name)
+                except Exception:
+                    pass
+
 
     return {
         "id": record.id,
@@ -1396,6 +1642,9 @@ def _build_pgs_list(db: Session, product_name: str) -> list:
             "data_source": "PGM",
             "ft_count": sum(1 for p in params if not p.get("is_qa")),
             "qa_count": sum(1 for p in params if p.get("is_qa")),
+            "datasheet_filename": r.datasheet_filename,
+            "datasheet_path": r.datasheet_path,
+            "sbl_input": r.sbl_input,
             "_params": params,
         })
     # 先按版本号升序计算 changes，保证“上一版”含义正确。
@@ -1677,6 +1926,26 @@ def get_pgs_summary(upload_id: int, db: Session = Depends(get_db)):
             detail=f"解析状态：{rec.parse_status}，{rec.parse_error or '数据为空'}"
         )
     return json.loads(rec.parsed_summary)
+
+
+class SblInputUpdate(BaseModel):
+    sbl_input: str
+
+@router.post("/pgs/{upload_id}/sbl")
+def update_pgs_sbl(
+    upload_id: int,
+    payload: SblInputUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """保存或更新程序版本的 SBL/SYL 解析输入框内容"""
+    rec = db.query(PgsUpload).filter(PgsUpload.id == upload_id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    
+    rec.sbl_input = payload.sbl_input.strip()
+    db.commit()
+    return {"status": "success", "message": "SBL input updated successfully"}
 
 
 @router.get("/pgs/{upload_id}/cpp")

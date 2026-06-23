@@ -20,4 +20,8 @@ class PgsUpload(Base):
     parse_error = Column(Text, nullable=True)          # 解析失败时的错误信息
     parsed_params = Column(Text, nullable=True)        # JSON: Param 表数据
     parsed_summary = Column(Text, nullable=True)       # JSON: Summary 表数据
+    datasheet_filename = Column(String, nullable=True)
+    datasheet_path = Column(String, nullable=True)
+    sbl_input = Column(Text, nullable=True)            # 原始 SBL 解析输入框文本
+
 

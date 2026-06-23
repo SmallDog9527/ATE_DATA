@@ -11,7 +11,9 @@ class OsatConfig(Base):
     name = Column(String, unique=True, nullable=False, index=True)   # OSAT 名称，如 CMC
 
     # FTP 连接信息
+    protocol = Column(String, default="ftp")        # ftp / sftp
     ftp_host = Column(String, nullable=False)
+
     ftp_port = Column(Integer, default=21)
     ftp_user = Column(String, nullable=False)
     ftp_pass_enc = Column(String, nullable=False)   # Fernet 加密后的密码

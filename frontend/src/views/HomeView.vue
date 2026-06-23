@@ -316,6 +316,11 @@
             <option value="QA">QA</option>
           </select>
         </template>
+        <template v-else-if="displayEditDialog.field === 'test_machine'">
+          <select v-model="displayEditDialog.value" ref="displayEditInput" class="field-select" @keyup.enter="saveDisplayEdit">
+            <option v-for="opt in uniqueColumnOptions('test_machine')" :key="opt" :value="opt">{{ opt }}</option>
+          </select>
+        </template>
         <template v-else>
           <input
             v-model="displayEditDialog.value"
@@ -364,7 +369,7 @@ const displayEditInput = ref<HTMLInputElement>()
 const displayEditDialog = ref({
   visible: false,
   row: null as any,
-  field: '' as 'filename' | 'lot_id' | 'wafer_id' | 'data_type' | '',
+  field: '' as 'filename' | 'lot_id' | 'wafer_id' | 'data_type' | 'test_machine' | '',
   title: '',
   label: '',
   value: '',
@@ -933,6 +938,7 @@ const columnDefs: ColDef[] = [
     field: 'test_machine',
     width: 100,
     filter: 'agTextColumnFilter',
+    cellClass: 'selectable-cell',
     suppressHeaderFilterButton: true,
     floatingFilterComponent: SelectFloatingFilter,
     floatingFilterComponentParams: {
@@ -1291,12 +1297,13 @@ function onSelectionChanged() {
   selectedRows.value = gridApi.value?.getSelectedRows() || []
 }
 
-function openDisplayEditDialog(row: any, field: 'filename' | 'lot_id' | 'wafer_id' | 'data_type') {
-  const labels: Record<'filename' | 'lot_id' | 'wafer_id' | 'data_type', string> = {
+function openDisplayEditDialog(row: any, field: 'filename' | 'lot_id' | 'wafer_id' | 'data_type' | 'test_machine') {
+  const labels: Record<'filename' | 'lot_id' | 'wafer_id' | 'data_type' | 'test_machine', string> = {
     filename: '数据名',
     lot_id: '批号',
     wafer_id: '晶圆编号',
     data_type: 'Data Type',
+    test_machine: '测试机',
   }
   displayEditDialog.value = {
     visible: true,
@@ -1352,7 +1359,7 @@ async function saveDisplayEdit() {
 
 function onCellDoubleClicked(params: any) {
   const field = params.colDef?.field
-  if (field === 'filename' || field === 'lot_id' || field === 'wafer_id' || field === 'data_type') {
+  if (field === 'filename' || field === 'lot_id' || field === 'wafer_id' || field === 'data_type' || field === 'test_machine') {
     openDisplayEditDialog(params.data, field)
     return
   }

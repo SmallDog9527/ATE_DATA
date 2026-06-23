@@ -21,24 +21,28 @@
       <div class="filter-card ov-filter">
         <div class="ov-filter-row">
           <div class="ov-filter-item">
-            <label>时间范围（最近 N 月）</label>
-            <div class="month-selector">
-              <button
-                v-for="m in [1, 3, 6, 12]"
-                :key="m"
-                :class="['month-btn', { active: ovMonths === m }]"
-                @click="ovMonths = m; fetchOverview(true)"
-              >{{ m }}月</button>
-              <input
-                type="number"
-                v-model.number="ovMonthsCustom"
-                min="1"
-                max="36"
-                class="month-custom-input"
-                placeholder="自定义"
-                @change="ovMonths = ovMonthsCustom; fetchOverview(true)"
-              />
-            </div>
+            <label>筛选范围</label>
+            <select v-model="filterSelection" class="filter-select-dropdown" @change="onFilterSelectionChange">
+              <optgroup label="月">
+                <option value="month-1">1个月</option>
+                <option value="month-3">3个月</option>
+                <option value="month-6">6个月</option>
+                <option value="month-9">9个月</option>
+              </optgroup>
+              <optgroup label="年">
+                <option value="year-1">1年</option>
+                <option value="year-2">2年</option>
+                <option value="year-3">3年</option>
+                <option value="year-4">4年</option>
+              </optgroup>
+              <optgroup label="LOT">
+                <option value="lot-20">20 LOT</option>
+                <option value="lot-40">40 LOT</option>
+                <option value="lot-60">60 LOT</option>
+                <option value="lot-80">80 LOT</option>
+              </optgroup>
+              <option value="all">全部</option>
+            </select>
           </div>
           <div class="ov-filter-item ov-filter-right">
             <button class="btn btn-primary" @click="fetchOverview(true)">刷新</button>
@@ -48,18 +52,23 @@
 
       <!-- Charts row -->
       <div class="charts-row" v-if="!ovLoading">
-        <div class="chart-card">
+        <div class="chart-card" style="flex: 5;">
           <div class="chart-title">📦 产出（Wafers/周）</div>
           <div ref="outputChartRef" class="echart-box"></div>
         </div>
-        <div class="chart-card">
+        <div class="chart-card" style="flex: 3;">
           <div class="chart-title">🥧 产品产出占比（Bin1 K）</div>
           <div ref="pieChartRef" class="echart-box"></div>
         </div>
+        <div class="chart-card" style="flex: 2;">
+          <div class="chart-title">🥧 OSAT 产出占比（Bin1 K）</div>
+          <div ref="osatPieChartRef" class="echart-box"></div>
+        </div>
       </div>
       <div class="charts-row" v-else>
-        <div class="chart-card skeleton-card"><div class="skeleton-shimmer"></div></div>
-        <div class="chart-card skeleton-card"><div class="skeleton-shimmer"></div></div>
+        <div class="chart-card skeleton-card" style="flex: 5;"><div class="skeleton-shimmer"></div></div>
+        <div class="chart-card skeleton-card" style="flex: 3;"><div class="skeleton-shimmer"></div></div>
+        <div class="chart-card skeleton-card" style="flex: 2;"><div class="skeleton-shimmer"></div></div>
       </div>
 
       <!-- Products table (AG Grid) -->
@@ -84,6 +93,10 @@
       <div class="filter-card">
         <div class="filter-row">
           <div class="filter-item">
+            <label>OSAT</label>
+            <input type="text" v-model="filters.osat_name" placeholder="输入 OSAT 名" @input="debouncedSearch" class="filter-input input-osat" />
+          </div>
+          <div class="filter-item">
             <label>Device</label>
             <input type="text" v-model="filters.product_name" placeholder="输入 Device 名" @input="debouncedSearch" class="filter-input input-device" />
           </div>
@@ -94,6 +107,10 @@
           <div class="filter-item">
             <label>WAFER ID</label>
             <input type="text" v-model="filters.wafer_id" placeholder="输入 WAFER ID" @input="debouncedSearch" class="filter-input input-wafer" />
+          </div>
+          <div class="filter-item">
+            <label>PGM</label>
+            <input type="text" v-model="filters.program" placeholder="输入 PGM (程序名)" @input="debouncedSearch" class="filter-input input-pgm" />
           </div>
           <div class="filter-item date-range-item">
             <label>测试日期</label>
@@ -158,7 +175,7 @@
         <div class="ov-filter-row">
           <div class="ov-filter-item">
             <span style="font-size: 16px; font-weight: bold; color: #1e293b;">{{ deviceViewDevice }}</span>
-            <span style="font-size: 12px; color: #64748b; margin-left: 10px;">基于总览的 {{ ovMonths }} 个月筛选条件</span>
+            <span style="font-size: 12px; color: #64748b; margin-left: 10px;">基于总览的 {{ getFilterLabel() }} 筛选条件</span>
           </div>
         </div>
       </div>
@@ -166,12 +183,21 @@
       <!-- Charts row -->
       <div class="charts-row" v-if="!deviceLoading">
         <div class="chart-card">
-          <div class="chart-title">📦 {{ deviceViewDevice }} 产出 (Wafers/周)</div>
-          <div ref="deviceOutputChartRef" class="echart-box"></div>
-        </div>
-        <div class="chart-card">
           <div class="chart-title">📈 LOT Bin1 平均良率趋势</div>
           <div ref="deviceYieldChartRef" class="echart-box"></div>
+        </div>
+        <div class="chart-card">
+          <template v-if="!selectedLotId">
+            <div class="chart-title">📦 {{ deviceViewDevice }} 产出 (Wafers/周)</div>
+            <div ref="deviceOutputChartRef" class="echart-box"></div>
+          </template>
+          <template v-else>
+            <div class="chart-title" style="display: flex; justify-content: space-between; align-items: center;">
+              <span>📈 Wafer 良率趋势 ({{ selectedLotId }})</span>
+              <button @click="selectedLotId = null" style="font-size: 11px; padding: 2px 6px; border: 1px solid #cbd5e1; background: #fff; cursor: pointer; border-radius: 4px; color: #475569;">返回产出图</button>
+            </div>
+            <div ref="waferYieldChartRef" class="echart-box"></div>
+          </template>
         </div>
       </div>
       <div class="charts-row" v-else>
@@ -189,6 +215,7 @@
           :defaultColDef="defaultColDef"
           style="width: 100%; flex: 1; min-height: 0;"
           :suppressScrollOnNewData="true"
+          @cell-mouse-over="onCellMouseOver"
         />
       </div>
     </div>
@@ -200,10 +227,12 @@ import { ref, shallowRef } from 'vue'
 
 // ── Global Caches to prevent re-fetching on view swap ──
 const globalOvLoaded = ref(false)
-const globalOvMonths = ref(3)
-const globalOvMonthsCustom = ref<number | null>(null)
+const globalRangeType = ref('month')
+const globalRangeValue = ref(3)
+const globalFilterSelection = ref('month-3')
 const globalOvProducts = shallowRef<any[]>([])
 const globalOvWeeklyOutput = ref<any[]>([])
+const globalOvOsats = ref<any[]>([])
 
 export default {
   name: 'DataAnalysisView'
@@ -211,7 +240,7 @@ export default {
 </script>
 
 <script setup lang="ts">
-import { reactive, computed, onMounted, nextTick } from 'vue'
+import { reactive, computed, onMounted, nextTick, watch } from 'vue'
 import * as echarts from 'echarts'
 import api from '@/api'
 import { AgGridVue } from 'ag-grid-vue3'
@@ -220,27 +249,53 @@ import 'ag-grid-community/styles/ag-theme-alpine.css'
 
 // Bind global cache
 const ovLoaded = globalOvLoaded
-const ovMonths = globalOvMonths
-const ovMonthsCustom = globalOvMonthsCustom
+const rangeType = globalRangeType
+const rangeValue = globalRangeValue
+const filterSelection = globalFilterSelection
 const ovProducts = globalOvProducts
 const ovWeeklyOutput = globalOvWeeklyOutput
+const ovOsats = globalOvOsats
+
+function onFilterSelectionChange() {
+  const parts = filterSelection.value.split('-')
+  rangeType.value = parts[0]
+  if (parts.length > 1) {
+    rangeValue.value = parseInt(parts[1], 10)
+  } else {
+    rangeValue.value = null
+  }
+  fetchOverview(true)
+}
+
+function getFilterLabel() {
+  if (rangeType.value === 'month') return `${rangeValue.value}个月`
+  if (rangeType.value === 'year') return `${rangeValue.value}年`
+  if (rangeType.value === 'lot') return `${rangeValue.value} LOT`
+  if (rangeType.value === 'all') return '全部'
+  return ''
+}
 
 // ── View switching ───────────────────────────────────────────────────────────
 const activeView = ref<'overview' | 'detail' | 'device'>('overview')
 const deviceViewDevice = ref('')
+const deviceViewOsat = ref('')
+const deviceViewTester = ref('')
 
 function switchView(view: 'overview' | 'detail' | 'device') {
   activeView.value = view
   if (view === 'overview') {
     nextTick(() => renderOverviewCharts())
   } else if (view === 'device') {
+    selectedLotId.value = null // Reset selected lot when entering device tab
     nextTick(() => renderDeviceCharts())
   }
 }
 
 if (typeof window !== 'undefined') {
-  (window as any).goToDeviceDetail = (deviceName: string) => {
+  (window as any).goToDeviceDetail = (deviceName: string, osat?: string, tester?: string) => {
     deviceViewDevice.value = deviceName
+    deviceViewOsat.value = osat || ''
+    deviceViewTester.value = tester || ''
     switchView('device')
     fetchDeviceData()
   }
@@ -277,7 +332,8 @@ const SingleBinRenderer = (p: any) => {
 
 const DeviceLinkRenderer = (p: any) => {
   if (!p.value) return '';
-  return `<button class="device-link" onclick="if(window.goToDeviceDetail) window.goToDeviceDetail('${p.value}')">${p.value}</button>`;
+  const osat = p.data ? (p.data.osat || '') : '';
+  return `<button class="device-link" onclick="if(window.goToDeviceDetail) window.goToDeviceDetail('${p.value}', '${osat}')">${p.value}</button>`;
 }
 
 const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#f97316'];
@@ -288,13 +344,16 @@ const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b
 const ovLoading = ref(false)
 const outputChartRef = ref<HTMLElement | null>(null)
 const pieChartRef   = ref<HTMLElement | null>(null)
+const osatPieChartRef = ref<HTMLElement | null>(null)
 
 let outputChart: any = null
 let pieChart: any = null
+let osatPieChart: any = null
 
 const failBinCols = []
 for(let i=0; i<5; i++) {
   failBinCols.push({
+    colId: `fail_bin_${i}`,
     headerName: `Fail Bin ${i+1}`,
     valueGetter: (p: any) => p.data.top5_fail_bins ? p.data.top5_fail_bins[i] : null,
     cellRenderer: SingleBinRenderer,
@@ -305,6 +364,7 @@ for(let i=0; i<5; i++) {
 const ovColDefs = [
   { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
   { field: 'product_name', headerName: 'Device（产品名）', width: 180, pinned: 'left', cellRenderer: DeviceLinkRenderer },
+  { field: 'osat', headerName: 'OSAT', width: 110, pinned: 'left' },
   { field: 'wafers', headerName: 'Wafers', width: 90, type: 'numericColumn' },
   { field: 'avg_wafer_time_h', headerName: 'Time(h)', width: 90, type: 'numericColumn' },
   { field: 'bin1_k', headerName: 'Bin1(K)', width: 90, type: 'numericColumn' },
@@ -321,10 +381,14 @@ async function fetchOverview(force = false) {
   
   ovLoading.value = true
   try {
-    const params: any = { months: ovMonths.value }
+    const params: any = {
+      range_type: rangeType.value,
+      range_value: rangeType.value === 'all' ? null : rangeValue.value
+    }
     const resp: any = await api.get('/lots/mp-yield/overview', { params })
     ovProducts.value = resp.products || []
     ovWeeklyOutput.value = resp.weekly_output || []
+    ovOsats.value = resp.osats || []
     ovLoaded.value = true
     nextTick(() => renderOverviewCharts())
   } catch (error) {
@@ -370,13 +434,28 @@ function renderOverviewCharts() {
     else pieChart.resize()
     
     const totalBin1 = ovProducts.value.reduce((s: number, p: any) => s + (p.bin1_k || 0), 0)
-    const pieData = ovProducts.value
+    
+    // 排序并限制前9个产品，第10个及以后合并为 others
+    const sortedProducts = [...ovProducts.value]
       .filter((p: any) => p.bin1_k > 0)
-      .map((p: any, i: number) => ({
-        name: p.product_name,
-        value: p.bin1_k,
-        itemStyle: { color: PIE_COLORS[i % PIE_COLORS.length] },
-      }))
+      .sort((a: any, b: any) => b.bin1_k - a.bin1_k)
+
+    const top9Data = sortedProducts.slice(0, 9).map((p: any, i: number) => ({
+      name: p.product_name,
+      value: p.bin1_k,
+      itemStyle: { color: PIE_COLORS[i % PIE_COLORS.length] },
+    }))
+
+    const restSum = sortedProducts.slice(9).reduce((sum: number, p: any) => sum + p.bin1_k, 0)
+    if (restSum > 0) {
+      top9Data.push({
+        name: 'others',
+        value: restSum,
+        itemStyle: { color: '#9e9e9e' },
+      })
+    }
+    const pieData = top9Data
+
     pieChart.setOption({
       tooltip: {
         trigger: 'item',
@@ -385,22 +464,96 @@ function renderOverviewCharts() {
       },
       legend: {
         orient: 'vertical',
-        right: 8,
+        left: 0,
+        width: 100,
         top: 'middle',
-        textStyle: { fontSize: 11 },
+        itemGap: 5,
+        itemWidth: 12,
+        itemHeight: 12,
+        textStyle: { fontSize: 10 },
         formatter: (name: string) => {
-          const prod = ovProducts.value.find((p: any) => p.product_name === name)
-          const pct = totalBin1 > 0 ? ((prod?.bin1_k || 0) / totalBin1 * 100).toFixed(1) : '0'
+          const item = pieData.find((p: any) => p.name === name)
+          const pct = totalBin1 > 0 ? ((item?.value || 0) / totalBin1 * 100).toFixed(1) : '0'
           return `${name}  ${pct}%`
         },
       },
       series: [{
         type: 'pie',
-        radius: ['38%', '68%'],
-        center: ['36%', '50%'],
+        radius: ['35%', '85%'],
+        center: ['67%', '50%'],
         data: pieData,
-        label: { show: pieData.length <= 6, formatter: '{b}' },
-        labelLine: { length: 8, length2: 6 },
+        label: {
+          show: true,
+          position: 'outside',
+          formatter: '{b}',
+          fontSize: 10,
+        },
+        labelLine: {
+          show: true,
+          length: 6,
+          length2: 5,
+        },
+        emphasis: {
+          itemStyle: { shadowBlur: 8, shadowColor: 'rgba(0,0,0,0.2)' },
+          scale: true, scaleSize: 4,
+        },
+      }],
+    }, true)
+  }
+
+  if (osatPieChartRef.value) {
+    if (osatPieChart && osatPieChart.getDom() !== osatPieChartRef.value) { osatPieChart.dispose(); osatPieChart = null; }
+    if (!osatPieChart) osatPieChart = echarts.init(osatPieChartRef.value)
+    else osatPieChart.resize()
+    
+    const totalOsatBin1 = ovOsats.value.reduce((s: number, p: any) => s + (p.bin1_k || 0), 0)
+    
+    const sortedOsats = [...ovOsats.value]
+      .filter((p: any) => p.bin1_k > 0)
+      .sort((a: any, b: any) => b.bin1_k - a.bin1_k)
+
+    const pieData = sortedOsats.map((p: any, i: number) => ({
+      name: p.osat_name,
+      value: p.bin1_k,
+      itemStyle: { color: PIE_COLORS[i % PIE_COLORS.length] },
+    }))
+
+    osatPieChart.setOption({
+      tooltip: {
+        trigger: 'item',
+        formatter: (p: any) =>
+          `${p.name}<br/>Bin1: <b>${p.value.toLocaleString()}K</b><br/>占比: <b>${p.percent}%</b>`,
+      },
+      legend: {
+        orient: 'vertical',
+        right: 4,
+        top: 'middle',
+        itemGap: 5,
+        itemWidth: 12,
+        itemHeight: 12,
+        textStyle: { fontSize: 10 },
+        formatter: (name: string) => {
+          const item = pieData.find((p: any) => p.name === name)
+          const pct = totalOsatBin1 > 0 ? ((item?.value || 0) / totalOsatBin1 * 100).toFixed(1) : '0'
+          return `${name}  ${pct}%`
+        },
+      },
+      series: [{
+        type: 'pie',
+        radius: ['35%', '85%'],
+        center: ['33%', '50%'],
+        data: pieData,
+        label: {
+          show: true,
+          position: 'outside',
+          formatter: '{b}',
+          fontSize: 10,
+        },
+        labelLine: {
+          show: true,
+          length: 6,
+          length2: 5,
+        },
         emphasis: {
           itemStyle: { shadowBlur: 8, shadowColor: 'rgba(0,0,0,0.2)' },
           scale: true, scaleSize: 4,
@@ -416,9 +569,11 @@ function renderOverviewCharts() {
 const loading = ref(false)
 const items = shallowRef<any[]>([])
 const filters = reactive({
+  osat_name: '',
   product_name: '',
   lot_id: '',
   wafer_id: '',
+  program: '',
   test_date_from: '',
   test_date_to: ''
 })
@@ -447,7 +602,7 @@ for (let i = 1; i <= 130; i++) {
   detailColDefs.push({ 
     field: 'sbin' + i, 
     headerName: 'Sbin' + i, 
-    width: 70,
+    width: 75,
     type: 'numericColumn',
     valueFormatter: (p: any) => p.value === 0 ? '' : p.value
   })
@@ -457,9 +612,11 @@ async function fetchData() {
   loading.value = true
   try {
     const params: any = { page: page.value, page_size: pageSize.value }
+    if (filters.osat_name) params.osat_name = filters.osat_name
     if (filters.product_name) params.product_name = filters.product_name
     if (filters.lot_id) params.lot_id = filters.lot_id
     if (filters.wafer_id) params.wafer_id = filters.wafer_id
+    if (filters.program) params.program = filters.program
     if (filters.test_date_from) params.test_date_from = filters.test_date_from
     if (filters.test_date_to) params.test_date_to = filters.test_date_to
 
@@ -489,9 +646,11 @@ function debouncedSearch() {
 }
 
 function handleReset() {
+  filters.osat_name = ''
+  filters.product_name = ''
   filters.lot_id = ''
   filters.wafer_id = ''
-  filters.product_name = ''
+  filters.program = ''
   filters.test_date_from = ''
   filters.test_date_to = ''
   handleSearch()
@@ -503,12 +662,18 @@ function handleReset() {
 const deviceLoading = ref(false)
 const deviceLots = shallowRef<any[]>([])
 const deviceWeeklyOutput = ref<any[]>([])
+const deviceWafers = shallowRef<any[]>([]) // Store all wafer data for the active device
+const selectedLotId = ref<string | null>(null) // Selected LOT ID for wafer-level drill-down
+const productTop5Bins = ref<any[]>([]) // Top 5 failing bins for the active device
+const selectedBins = ref<Record<string, boolean>>({}) // Legend selection states for charts
 
 const deviceOutputChartRef = ref<HTMLElement | null>(null)
 const deviceYieldChartRef = ref<HTMLElement | null>(null)
+const waferYieldChartRef = ref<HTMLElement | null>(null) // Wafer yield chart DOM ref
 
 let deviceOutputChart: any = null
 let deviceYieldChart: any = null
+let waferYieldChart: any = null // Wafer yield chart instance
 
 const deviceColDefs = [
   { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
@@ -534,10 +699,6 @@ function getWeekString(dateStr: string) {
 async function fetchDeviceData() {
   deviceLoading.value = true
   try {
-    const date = new Date()
-    date.setMonth(date.getMonth() - ovMonths.value)
-    const test_date_from = date.toISOString().split('T')[0]
-    
     // Fetch ALL pages to correctly aggregate LOTs for this device
     let allWafers: any[] = []
     let p = 1
@@ -545,15 +706,53 @@ async function fetchDeviceData() {
     while (p <= totalP) {
         const params: any = { 
           product_name: deviceViewDevice.value,
-          test_date_from: test_date_from,
+          range_type: rangeType.value,
+          range_value: rangeType.value === 'all' ? null : rangeValue.value,
           page: p,
           page_size: 200
+        }
+        if (deviceViewOsat.value) {
+          params.osat_name = deviceViewOsat.value
+        }
+        if (deviceViewTester.value) {
+          params.mp_tester = deviceViewTester.value
         }
         const resp: any = await api.get('/lots/mp-yield/list', { params })
         allWafers = allWafers.concat(resp.items || [])
         totalP = Math.ceil((resp.total || 0) / 200)
         p++
     }
+    deviceWafers.value = allWafers // Store all wafers for wafer-level yield lookup
+
+    // Compute overall top 5 failing bins for this device across all fetched wafers
+    const overallSbinSums: Record<number, number> = {}
+    for (const w of allWafers) {
+      for (let i = 3; i <= 130; i++) {
+        overallSbinSums[i] = (overallSbinSums[i] || 0) + (w['sbin' + i] || 0)
+      }
+    }
+    const overallSbinArr = []
+    for (let i = 3; i <= 130; i++) {
+      if (overallSbinSums[i] > 0) {
+        overallSbinArr.push({
+          binNumber: i,
+          bin: `Sbin${i}`,
+          count: overallSbinSums[i]
+        })
+      }
+    }
+    overallSbinArr.sort((a, b) => b.count - a.count)
+    productTop5Bins.value = overallSbinArr.slice(0, 5)
+
+    // Initialize selectedBins: default only display '平均良率', 'Wafer良率' and Top 1 failing bin
+    const initSelected: Record<string, boolean> = {
+      '平均良率': true,
+      'Wafer良率': true
+    }
+    productTop5Bins.value.forEach((topBin, idx) => {
+      initSelected[topBin.bin] = (idx === 0)
+    })
+    selectedBins.value = initSelected
 
     // Group by LOT ID
     const lotGroups: Record<string, any[]> = {}
@@ -614,6 +813,12 @@ async function fetchDeviceData() {
       }
       sbinArr.sort((a, b) => b.count - a.count)
 
+      const top5FailRates: Record<string, number> = {}
+      for (const topBin of productTop5Bins.value) {
+        const binVal = sbinSums[topBin.binNumber] || 0
+        top5FailRates[topBin.bin] = totalTotal > 0 ? (binVal / totalTotal) * 100 : 0
+      }
+
       compiledLots.push({
         lot_id: lot_id,
         wafers: wList.length,
@@ -621,6 +826,7 @@ async function fetchDeviceData() {
         bin1_k: bin1k.toFixed(1),
         avg_yield: avgYield,
         top5_fail_bins: sbinArr.slice(0, 5),
+        top5_fail_rates: top5FailRates,
         test_start: minTestStart
       })
     }
@@ -679,36 +885,355 @@ function renderDeviceCharts() {
   }
 
   if (deviceYieldChartRef.value) {
-    if (deviceYieldChart && deviceYieldChart.getDom() !== deviceYieldChartRef.value) { deviceYieldChart.dispose(); deviceYieldChart = null; }
-    if (!deviceYieldChart) deviceYieldChart = echarts.init(deviceYieldChartRef.value)
-    else deviceYieldChart.resize()
+    if (deviceYieldChart && deviceYieldChart.getDom() !== deviceYieldChartRef.value) {
+      deviceYieldChart.dispose()
+      deviceYieldChart = null
+    }
+    if (!deviceYieldChart) {
+      deviceYieldChart = echarts.init(deviceYieldChartRef.value)
+    } else {
+      deviceYieldChart.resize()
+    }
     
     const lotIds = deviceLots.value.map(l => l.lot_id)
     const yields = deviceLots.value.map(l => l.avg_yield.toFixed(2))
 
-    deviceYieldChart.setOption({
-      tooltip: { trigger: 'axis', formatter: '{b}<br/>Avg Yield: {c}%' },
-      grid: { left: 48, right: 16, top: 12, bottom: 40 },
-      xAxis: { type: 'category', data: lotIds, axisLabel: { fontSize: 11, rotate: 30 } },
-      yAxis: {
-        type: 'value',
-        min: 'dataMin',
-        axisLabel: { formatter: '{value}%' },
-        nameTextStyle: { fontSize: 11, color: '#6b7280' },
-      },
-      series: [{
-        data: yields, 
-        type: 'line', 
+    // Listen to axis pointer updates to dynamically sync wafer yield chart on hover
+    deviceYieldChart.off('updateAxisPointer')
+    deviceYieldChart.on('updateAxisPointer', (event: any) => {
+      const axesInfo = event.axesInfo
+      if (axesInfo && axesInfo.length > 0) {
+        const dataIndex = axesInfo[0].value
+        if (typeof dataIndex === 'number' && dataIndex >= 0 && dataIndex < lotIds.length) {
+          const hoveredLotId = lotIds[dataIndex]
+          if (hoveredLotId && selectedLotId.value !== hoveredLotId) {
+            selectedLotId.value = hoveredLotId
+          }
+        }
+      }
+    })
+
+    let rightMax = 0
+    const top1BinName = productTop5Bins.value[0]?.bin
+    if (top1BinName) {
+      for (const lot of deviceLots.value) {
+        const val = lot.top5_fail_rates?.[top1BinName] || 0
+        if (val > rightMax) {
+          rightMax = val
+        }
+      }
+    }
+    if (rightMax <= 0) {
+      rightMax = 5
+    }
+
+    const series: any[] = [
+      {
+        name: '平均良率',
+        data: yields,
+        type: 'line',
         smooth: true,
+        yAxisIndex: 0,
         itemStyle: { color: '#f59e0b' },
+        lineStyle: { width: 3 },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(245, 158, 11, 0.3)' },
-            { offset: 1, color: 'rgba(245, 158, 11, 0.05)' }
+            { offset: 0, color: 'rgba(245, 158, 11, 0.2)' },
+            { offset: 1, color: 'rgba(245, 158, 11, 0.02)' }
           ])
         },
-      }]
+        z: 10
+      }
+    ]
+
+    const top5Colors = ['#3b82f6', '#10b981', '#ec4899', '#8b5cf6', '#06b6d4']
+    productTop5Bins.value.forEach((topBin, idx) => {
+      const binName = topBin.bin
+      const binData = deviceLots.value.map(l => {
+        const val = l.top5_fail_rates?.[binName]
+        return val !== undefined ? parseFloat(val.toFixed(3)) : 0
+      })
+
+      series.push({
+        name: binName,
+        data: binData,
+        type: 'line',
+        smooth: true,
+        yAxisIndex: 1,
+        itemStyle: { color: top5Colors[idx] },
+        showSymbol: false,
+        lineStyle: { width: 1.5, type: 'dashed' }
+      })
+    })
+
+    deviceYieldChart.setOption({
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: any) => {
+          let html = `<b>${params[0].name}</b><br/>`;
+          params.forEach((p: any) => {
+            const val = parseFloat(p.value);
+            if (p.seriesName === '平均良率') {
+              html += `${p.marker} 平均良率: <b>${val.toFixed(2)}%</b><br/>`;
+            } else {
+              html += `${p.marker} ${p.seriesName} 失效: <b>${val.toFixed(3)}%</b><br/>`;
+            }
+          });
+          return html;
+        }
+      },
+      legend: {
+        data: ['平均良率', ...productTop5Bins.value.map(b => b.bin)],
+        selected: selectedBins.value,
+        top: 0,
+        textStyle: { fontSize: 11, color: '#374151' }
+      },
+      grid: { left: 50, right: 50, top: 35, bottom: 40 },
+      xAxis: { type: 'category', data: lotIds, axisLabel: { fontSize: 11, rotate: 30 } },
+      yAxis: [
+        {
+          type: 'value',
+          min: 50,
+          max: 100,
+          interval: 10,
+          axisLabel: { formatter: '{value}%' },
+          nameTextStyle: { fontSize: 11, color: '#6b7280' },
+        },
+        {
+          type: 'value',
+          name: 'Top5失效',
+          min: 0,
+          max: rightMax,
+          interval: rightMax / 5,
+          axisLabel: {
+            formatter: (val: number) => val.toFixed(2) + '%'
+          },
+          nameTextStyle: { fontSize: 11, color: '#6b7280' },
+          splitLine: { show: false }
+        }
+      ],
+      series: series
     }, true)
+
+    // Listen to legend selections to dynamically synchronize with the wafer chart
+    deviceYieldChart.off('legendselectchanged')
+    deviceYieldChart.on('legendselectchanged', (event: any) => {
+      selectedBins.value = { ...event.selected }
+      if (waferYieldChart) {
+        waferYieldChart.setOption({
+          legend: {
+            selected: selectedBins.value
+          }
+        })
+      }
+    })
+  }
+}
+
+function renderWaferYieldChart() {
+  if (activeView.value !== 'device' || !selectedLotId.value || !waferYieldChartRef.value) return
+
+  if (waferYieldChart && waferYieldChart.getDom() !== waferYieldChartRef.value) {
+    waferYieldChart.dispose()
+    waferYieldChart = null
+  }
+  if (!waferYieldChart) {
+    waferYieldChart = echarts.init(waferYieldChartRef.value)
+  } else {
+    waferYieldChart.resize()
+  }
+
+  // Filter wafer data belonging to the selected LOT
+  const lotWafers = deviceWafers.value.filter((w: any) => w.lot_id === selectedLotId.value)
+
+  // Map wafer data to fixed slots from 1 to 25
+  const waferData = Array(25).fill(null)
+  for (const w of lotWafers) {
+    const wId = parseInt(w.wafer_id, 10)
+    if (wId >= 1 && wId <= 25) {
+      waferData[wId - 1] = w.yield_rate
+    }
+  }
+
+  const top5WaferSeriesData: Record<string, (number | null)[]> = {}
+  productTop5Bins.value.forEach(topBin => {
+    top5WaferSeriesData[topBin.bin] = Array(25).fill(null)
+  })
+
+  for (const w of lotWafers) {
+    const wId = parseInt(w.wafer_id, 10)
+    if (wId >= 1 && wId <= 25) {
+      productTop5Bins.value.forEach(topBin => {
+        const binVal = w['sbin' + topBin.binNumber] || 0
+        const totalVal = w.total || 0
+        top5WaferSeriesData[topBin.bin][wId - 1] = totalVal > 0 ? (binVal / totalVal) * 100 : 0
+      })
+    }
+  }
+
+  let rightMax = 0
+  const top1BinName = productTop5Bins.value[0]?.bin
+  if (top1BinName && top5WaferSeriesData[top1BinName]) {
+    top5WaferSeriesData[top1BinName].forEach(val => {
+      if (val !== null && val > rightMax) {
+        rightMax = val
+      }
+    })
+  }
+  if (rightMax <= 0) {
+    rightMax = 5
+  }
+
+  const selectedLegend: Record<string, boolean> = {
+    'Wafer良率': selectedBins.value['Wafer良率'] !== false
+  }
+  productTop5Bins.value.forEach((topBin) => {
+    selectedLegend[topBin.bin] = (selectedBins.value[topBin.bin] === true)
+  })
+
+  const series: any[] = [
+    {
+      name: 'Wafer良率',
+      data: waferData,
+      type: 'line',
+      smooth: true,
+      yAxisIndex: 0,
+      connectNulls: false,
+      showSymbol: true,
+      symbolSize: 6,
+      itemStyle: { color: '#0ea5e9' },
+      areaStyle: {
+        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: 'rgba(14, 165, 233, 0.3)' },
+          { offset: 1, color: 'rgba(14, 165, 233, 0.05)' }
+        ])
+      },
+      z: 10
+    }
+  ]
+
+  const top5Colors = ['#3b82f6', '#10b981', '#ec4899', '#8b5cf6', '#06b6d4']
+  productTop5Bins.value.forEach((topBin, idx) => {
+    const binName = topBin.bin
+    const binData = top5WaferSeriesData[binName]
+
+    series.push({
+      name: binName,
+      data: binData,
+      type: 'line',
+      smooth: true,
+      yAxisIndex: 1,
+      connectNulls: false,
+      showSymbol: false,
+      itemStyle: { color: top5Colors[idx] },
+      lineStyle: { width: 1.5, type: 'dashed' }
+    })
+  })
+
+  const xAxisData = Array.from({ length: 25 }, (_, i) => i + 1)
+
+  waferYieldChart.setOption({
+    animation: false, // Disable render animation for instant loading feedback
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: any) => {
+        let html = `<b>Wafer ${params[0].name}</b><br/>`;
+        let hasData = false;
+        params.forEach((p: any) => {
+          if (p.value !== null && p.value !== undefined) {
+            hasData = true;
+            const val = parseFloat(p.value);
+            if (p.seriesName === 'Wafer良率') {
+              html += `${p.marker} Wafer良率: <b>${val.toFixed(2)}%</b><br/>`;
+            } else {
+              html += `${p.marker} ${p.seriesName} 失效: <b>${val.toFixed(3)}%</b><br/>`;
+            }
+          }
+        });
+        if (!hasData) return `Wafer ${params[0].name}: No Data`;
+        return html;
+      }
+    },
+    legend: {
+      data: ['Wafer良率', ...productTop5Bins.value.map(b => b.bin)],
+      selected: selectedLegend,
+      top: 0,
+      textStyle: { fontSize: 11, color: '#374151' }
+    },
+    grid: { left: 50, right: 50, top: 35, bottom: 44 },
+    xAxis: {
+      type: 'category',
+      data: xAxisData,
+      name: selectedLotId.value,
+      nameLocation: 'center',
+      nameGap: 24,
+      nameTextStyle: {
+        fontSize: 12,
+        fontWeight: 'bold',
+        color: '#475569'
+      },
+      axisLabel: {
+        interval: 0, // Show all wafer labels 1-25
+        fontSize: 9
+      }
+    },
+    yAxis: [
+      {
+        type: 'value',
+        min: 50,
+        max: 100,
+        interval: 10,
+        axisLabel: { formatter: '{value}%' },
+        nameTextStyle: { fontSize: 11, color: '#6b7280' }
+      },
+      {
+        type: 'value',
+        name: 'Top5失效',
+        min: 0,
+        max: rightMax,
+        interval: rightMax / 5,
+        axisLabel: {
+          formatter: (val: number) => val.toFixed(2) + '%'
+        },
+        nameTextStyle: { fontSize: 11, color: '#6b7280' },
+        splitLine: { show: false }
+      }
+    ],
+    series: series
+  }, true)
+
+  // Listen to legend selections to dynamically synchronize with the device chart
+  waferYieldChart.off('legendselectchanged')
+  waferYieldChart.on('legendselectchanged', (event: any) => {
+    selectedBins.value = { ...event.selected }
+    if (deviceYieldChart) {
+      deviceYieldChart.setOption({
+        legend: {
+          selected: selectedBins.value
+        }
+      })
+    }
+  })
+}
+
+// Watch selectedLotId to render appropriate charts
+watch(selectedLotId, (newVal) => {
+  nextTick(() => {
+    if (newVal) {
+      renderWaferYieldChart()
+    } else {
+      renderDeviceCharts()
+    }
+  })
+})
+
+// Sync wafer yield chart on hovering over AG Grid cells
+function onCellMouseOver(event: any) {
+  if (event && event.data && event.data.lot_id) {
+    const hoveredLotId = event.data.lot_id
+    if (selectedLotId.value !== hoveredLotId) {
+      selectedLotId.value = hoveredLotId
+    }
   }
 }
 
@@ -726,8 +1251,10 @@ onMounted(() => {
   window.addEventListener('resize', () => {
     if (outputChart) outputChart.resize()
     if (pieChart) pieChart.resize()
+    if (osatPieChart) osatPieChart.resize()
     if (deviceOutputChart) deviceOutputChart.resize()
     if (deviceYieldChart) deviceYieldChart.resize()
+    if (waferYieldChart) waferYieldChart.resize()
   })
 })
 </script>
@@ -815,6 +1342,26 @@ onMounted(() => {
   font-size: 12px;
   color: #1f2937;
   outline: none;
+}
+
+.input-osat {
+  width: 100px;
+}
+
+.input-device {
+  width: 125px;
+}
+
+.input-lot {
+  width: 125px;
+}
+
+.input-wafer {
+  width: 100px;
+}
+
+.input-pgm {
+  width: 225px;
 }
 
 .date-range-floating {
@@ -908,45 +1455,24 @@ onMounted(() => {
   margin-bottom: 0;
 }
 
-.month-selector {
-  display: flex;
-  align-items: center;
-  background: #f1f5f9;
-  border-radius: 6px;
-  padding: 2px;
-}
-
-.month-btn {
-  border: none;
-  background: transparent;
-  padding: 4px 12px;
+.filter-select-dropdown {
+  padding: 4px 24px 4px 8px;
   font-size: 12px;
-  color: #475569;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.month-btn.active {
-  background: #ffffff;
   color: #0f172a;
-  font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-}
-
-.month-custom-input {
-  width: 60px;
-  height: 24px;
-  border: 1px solid transparent;
-  background: transparent;
-  padding: 0 4px;
-  font-size: 12px;
-  text-align: center;
-  color: #475569;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
   outline: none;
+  cursor: pointer;
+  height: 30px;
+  min-width: 120px;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 
-.month-custom-input:focus { border-color: #cbd5e1; background: #fff; }
+.filter-select-dropdown:focus {
+  border-color: #1890ff;
+  box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+}
 .ov-filter-right { margin-left: auto; }
 
 .charts-row {

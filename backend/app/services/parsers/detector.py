@@ -1,3 +1,6 @@
+import os
+import re
+
 # ATE tester detection keywords. The file header is matched in priority order.
 # LBS is handled first because it requires both '8200' and 'LBS'.
 _TESTER_PATTERNS: list[tuple[str, str]] = [
@@ -22,6 +25,13 @@ def detect_tester(filepath: str) -> str:
         return 'UNKNOWN'
 
     content = ''.join(head)
+    content_lower = content.lower()
+
+    # 针对 LBS 传入的 T2K 数据定制识别规则：
+    # 如果含有 'LBS'，并且表头中没有 acco, sts8200, 或 ets 字样，则判定为 T2K 机台
+    if 'LBS' in content:
+        if 'acco' not in content_lower and 'sts8200' not in content_lower and 'ets' not in content_lower:
+            return 'T2K'
 
     # Detect LBS first: it must contain both '8200' and 'LBS'.
     if '8200' in content and 'LBS' in content:
@@ -29,6 +39,9 @@ def detect_tester(filepath: str) -> str:
 
     if 'ETS' in content:
         return 'ETS364'
+
+    if 'T32' in filepath.upper():
+        return 'T2K'
 
     if (
         'Tester Name :' in content

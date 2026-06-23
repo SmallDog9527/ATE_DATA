@@ -17,4 +17,7 @@ class SystemSetting(Base):
     smtp_from = Column(String, nullable=True)        # 发件人地址（默认=smtp_user）
     smtp_ssl = Column(Boolean, default=True)         # True=SSL(465), False=STARTTLS(587)
 
+    # 版本更新内容
+    version_update_content = Column(String, nullable=True)
+
     updated_at = Column(DateTime, onupdate=func.now(), server_default=func.now())

@@ -111,6 +111,46 @@
     <div v-if="activeTab === 'admin'" class="panel">
 
       <!-- ═══════════════════════════════════════ -->
+      <!-- 版本更新卡片                             -->
+      <!-- ═══════════════════════════════════════ -->
+      <div class="settings-card">
+        <div class="settings-card-header" @click="versionExpanded = !versionExpanded">
+          <div class="settings-card-title">
+            <span class="settings-icon">ℹ️</span>
+            <span>版本更新信息</span>
+            <span class="badge purple" style="margin-left:8px">{{ versionInfo.version }}</span>
+          </div>
+          <span class="collapse-arrow">{{ versionExpanded ? '▲' : '▼' }}</span>
+        </div>
+
+        <div v-if="versionExpanded" class="settings-card-body">
+          <div v-if="authStore.isAdmin" class="form-grid">
+            <div class="form-field" style="grid-column: 1/-1;">
+              <label>更新日志内容（支持多行输入）</label>
+              <textarea
+                v-model="versionInfo.content"
+                placeholder="请输入版本更新内容，例如新功能介绍、修复说明等..."
+                rows="6"
+                style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-family: inherit; font-size: 14px; resize: vertical;"
+              ></textarea>
+            </div>
+            <div v-if="versionSaveMsg" :class="['msg', versionSaveMsg.ok ? 'success' : 'error']" style="grid-column: 1/-1; margin-top: 8px;">
+              {{ versionSaveMsg.text }}
+            </div>
+            <div class="action-row" style="grid-column: 1/-1; margin-top: 12px;">
+              <button class="btn-primary" :disabled="versionSaving" @click="saveVersion">
+                {{ versionSaving ? '保存中...' : '💾 保存版本更新' }}
+              </button>
+            </div>
+          </div>
+          <div v-else class="version-viewer">
+            <div class="viewer-title" style="font-weight: 600; margin-bottom: 8px; font-size: 14px; color: #475569;">更新日志：</div>
+            <pre style="white-space: pre-wrap; font-family: inherit; font-size: 14px; line-height: 1.6; color: #334155; background: #f8fafc; padding: 12px 16px; border-radius: 6px; border: 1px solid #e2e8f0; margin: 0;">{{ versionInfo.content || '暂无更新说明' }}</pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════ -->
       <!-- 时区设置卡片                             -->
       <!-- ═══════════════════════════════════════ -->
       <div v-if="authStore.isAdmin" class="settings-card">
@@ -274,9 +314,9 @@
                 </div>
               </div>
               <div class="osat-meta">
-                <span>🌐 {{ osat.ftp_host }}:{{ osat.ftp_port }}</span>
+                <span>🌐 [{{ (osat.protocol || 'ftp').toUpperCase() }}] {{ osat.ftp_host }}:{{ osat.ftp_port }}</span>
                 <span>👤 {{ osat.ftp_user }}</span>
-                <span>🔐 {{ formatFtpEncryption(osat.ftp_encryption) }}</span>
+                <span>🔐 {{ osat.protocol === 'sftp' ? 'SFTP 加密' : formatFtpEncryption(osat.ftp_encryption) }}</span>
                 <span>📁 Data: {{ osat.ftp_remote_dir }}</span>
                 <span>📄 Summary: {{ osat.ftp_summary_dir || '-' }}</span>
                 <span>🕐 {{ osat.schedule_start }} ~ {{ osat.schedule_end }}</span>
@@ -589,10 +629,10 @@
         <div class="modal modal-lg">
           <h3>{{ osatModal.id ? '编辑 OSAT' : '新增 OSAT' }}</h3>
           <div class="form-field quick-ftp-parser">
-            <label>自动识别 FTP 配置</label>
+            <label>自动识别 FTP/SFTP 配置</label>
             <textarea
               v-model="osatQuickInput"
-              placeholder="可粘贴带标签配置，或按顺序粘贴：OSAT名称  FTP服务器地址  端口ID  FTP用户名  FTP密码  Data目录  Summary目录"
+              placeholder="可粘贴带标签配置，或按顺序粘贴：OSAT名称  服务器地址  端口  用户名  密码  Data目录  Summary目录"
             ></textarea>
             <div class="quick-actions">
               <button class="btn-primary small" @click="parseOsatQuickInput">识别填入</button>
@@ -605,14 +645,21 @@
               <input v-model="osatModal.name" placeholder="如 CMC、JCET" />
             </div>
             <div class="form-field">
-              <label>FTP 服务器地址 *</label>
+              <label>协议 *</label>
+              <select v-model="osatModal.protocol" @change="onProtocolChange" style="width:100%;height:38px;border-radius:8px;border:1px solid #e2e8f0;padding:0 12px;box-sizing:border-box;outline:none;">
+                <option value="ftp">FTP</option>
+                <option value="sftp">SFTP</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label>{{ osatModal.protocol === 'sftp' ? 'SFTP' : 'FTP' }} 服务器地址 *</label>
               <input v-model="osatModal.ftp_host" placeholder="如 192.168.1.100" />
             </div>
             <div class="form-field">
-              <label>FTP 端口</label>
-              <input v-model.number="osatModal.ftp_port" type="number" placeholder="21" />
+              <label>{{ osatModal.protocol === 'sftp' ? 'SFTP' : 'FTP' }} 端口</label>
+              <input v-model.number="osatModal.ftp_port" type="number" :placeholder="osatModal.protocol === 'sftp' ? '22' : '21'" />
             </div>
-            <div class="form-field">
+            <div class="form-field" v-if="osatModal.protocol !== 'sftp'">
               <label>FTP 加密方式</label>
               <select v-model="osatModal.ftp_encryption" style="width:100%;height:38px;border-radius:8px;border:1px solid #e2e8f0;padding:0 12px;box-sizing:border-box;outline:none;">
                 <option value="explicit_tls_optional">如果可用，使用显式的 FTP over TLS</option>
@@ -621,13 +668,17 @@
                 <option value="plain">只使用明文 FTP（不安全）⚠</option>
               </select>
             </div>
-            <div class="form-field">
-              <label>FTP 用户名 *</label>
-              <input v-model="osatModal.ftp_user" placeholder="FTP 登录用户名" />
+            <div class="form-field" v-else>
+              <label>SFTP 加密方式</label>
+              <input type="text" value="SSH 安全通道（强加密）" disabled style="background-color: #f1f5f9; color: #64748b; width:100%; height:38px; border-radius:8px; border:1px solid #e2e8f0; padding:0 12px; box-sizing:border-box;" />
             </div>
             <div class="form-field">
-              <label>FTP 密码 *</label>
-              <input v-model="osatModal.ftp_password" type="password" placeholder="FTP 登录密码" />
+              <label>{{ osatModal.protocol === 'sftp' ? 'SFTP' : 'FTP' }} 用户名 *</label>
+              <input v-model="osatModal.ftp_user" placeholder="登录用户名" />
+            </div>
+            <div class="form-field">
+              <label>{{ osatModal.protocol === 'sftp' ? 'SFTP' : 'FTP' }} 密码 *</label>
+              <input v-model="osatModal.ftp_password" type="password" placeholder="登录密码" />
             </div>
             <div class="form-field">
               <label>Data 目录</label>
@@ -711,7 +762,7 @@ watch(() => route.path, (newPath) => {
 // ── 折叠状态 ──
 const smtpExpanded    = ref(false)
 const osatExpanded    = ref(false)
-const ftpLogExpanded  = ref(true)
+const ftpLogExpanded  = ref(false)
 const userMgmtExpanded = ref(false)
 const tzExpanded      = ref(false)
 
@@ -898,13 +949,43 @@ async function sendTestEmail() {
   }
 }
 
+// ── 版本更新信息 ──
+const versionExpanded = ref(false)
+const versionInfo     = ref({ version: 'V1_20260618', content: '' })
+const versionSaving   = ref(false)
+const versionSaveMsg  = ref<{ok: boolean; text: string} | null>(null)
+
+async function loadVersionInfo() {
+  try {
+    const data: any = await api.get('/settings/version')
+    versionInfo.value = data
+  } catch (e) {
+    console.error('加载版本信息失败', e)
+  }
+}
+
+async function saveVersion() {
+  versionSaveMsg.value = null
+  versionSaving.value = true
+  try {
+    await api.put('/settings/version', { content: versionInfo.value.content })
+    versionSaveMsg.value = { ok: true, text: '✅ 版本更新内容已保存' }
+  } catch (e: any) {
+    versionSaveMsg.value = { ok: false, text: `❌ 保存失败：${e.message || e}` }
+  } finally {
+    versionSaving.value = false
+  }
+}
+
 // ════════════════════════════════════════
 // OSAT / FTP 管理
 // ════════════════════════════════════════
 
 interface OsatItem {
   id: number; name: string
+  protocol?: string
   ftp_host: string; ftp_port: number; ftp_user: string
+
   ftp_encryption: string; ftp_remote_dir: string; ftp_summary_dir: string
   schedule_start: string; schedule_end: string
   enabled: boolean; data_type: string; created_at?: string; updated_at?: string
@@ -961,9 +1042,15 @@ function assignOsatField(label: string, value: string) {
   const key = label.toLowerCase().replace(/[：:\s]/g, '')
   const val = value.trim()
   if (!val) return
+  if (key.includes('协议') || key.includes('protocol')) {
+    const valL = val.toLowerCase()
+    if (valL.includes('sftp')) osatModal.value.protocol = 'sftp'
+    else if (valL.includes('ftp')) osatModal.value.protocol = 'ftp'
+    return true
+  }
   if (key.includes('服务器名') || key.includes('osat') || key.includes('名称')) { osatModal.value.name = val; return true }
   if (key.includes('服务器地址') || key.includes('ftp服务器') || key.includes('地址') || key.includes('host')) { osatModal.value.ftp_host = normalizeFtpHost(val); return true }
-  if (key.includes('端口')) { osatModal.value.ftp_port = Number(val) || 21; return true }
+  if (key.includes('端口')) { osatModal.value.ftp_port = Number(val) || (osatModal.value.protocol === 'sftp' ? 22 : 21); return true }
   if (key.includes('加密')) { osatModal.value.ftp_encryption = inferFtpEncryption(val); return true }
   if (key.includes('用户名') || key.includes('用户')) { osatModal.value.ftp_user = val; return true }
   if (key.includes('密码')) { osatModal.value.ftp_password = val; return true }
@@ -1038,6 +1125,18 @@ function parseOsatQuickInput() {
   if (!osatModal.value.ftp_encryption) osatModal.value.ftp_encryption = 'plain'
 }
 
+function onProtocolChange() {
+  if (osatModal.value.protocol === 'sftp') {
+    if (osatModal.value.ftp_port === 21) {
+      osatModal.value.ftp_port = 22
+    }
+  } else {
+    if (osatModal.value.ftp_port === 22) {
+      osatModal.value.ftp_port = 21
+    }
+  }
+}
+
 function openOsatModal(osat: OsatItem | null) {
   osatModalError.value = ''
   osatQuickInput.value = ''
@@ -1045,6 +1144,7 @@ function openOsatModal(osat: OsatItem | null) {
     osatModal.value = {
       id: osat.id,
       name: osat.name,
+      protocol: osat.protocol || 'ftp',
       ftp_host: osat.ftp_host,
       ftp_port: osat.ftp_port,
       ftp_user: osat.ftp_user,
@@ -1060,7 +1160,9 @@ function openOsatModal(osat: OsatItem | null) {
   } else {
     osatModal.value = {
       id: null,
-      name: '', ftp_host: '', ftp_port: 21, ftp_user: '',
+      name: '',
+      protocol: 'ftp',
+      ftp_host: '', ftp_port: 21, ftp_user: '',
       ftp_encryption: 'plain',
       ftp_password: '', ftp_remote_dir: '/', ftp_summary_dir: '/',
       schedule_start: '22:00', schedule_end: '08:00', enabled: false,
@@ -1071,10 +1173,11 @@ function openOsatModal(osat: OsatItem | null) {
 
 async function saveOsatModal() {
   osatModalError.value = ''
+  const label = osatModal.value.protocol === 'sftp' ? 'SFTP' : 'FTP'
   if (!osatModal.value.name) { osatModalError.value = '请填写 OSAT 名称'; return }
-  if (!osatModal.value.ftp_host) { osatModalError.value = '请填写 FTP 地址'; return }
-  if (!osatModal.value.ftp_user) { osatModalError.value = '请填写 FTP 用户名'; return }
-  if (!osatModal.value.id && !osatModal.value.ftp_password) { osatModalError.value = '请填写 FTP 密码'; return }
+  if (!osatModal.value.ftp_host) { osatModalError.value = `请填写 ${label} 地址`; return }
+  if (!osatModal.value.ftp_user) { osatModalError.value = `请填写 ${label} 用户名`; return }
+  if (!osatModal.value.id && !osatModal.value.ftp_password) { osatModalError.value = `请填写 ${label} 密码`; return }
 
   osatModalSaving.value = true
   try {
@@ -1378,6 +1481,7 @@ onMounted(async () => {
   await authStore.refreshMe()
   await loadShares()
   await loadManualLogs()
+  await loadVersionInfo()
   if (authStore.isAdmin || authStore.isEng) {
     await Promise.all([loadOsats(), loadFtpLogs(), loadSmtpConfig(), loadManualOperators()])
   }

@@ -6,41 +6,32 @@ from app.models.lot import Lot, DataSource, ProcessStatus
 from app.models.bin_summary import BinSummary
 
 def parse_xls_date(date_str: str) -> datetime:
-    """
-    Parse date string from summary files.
-    Supports YYYYMMDDHHMMSS (14 digits) and YYMMDDHHMMSS (12 digits).
-    """
     if not date_str:
         return None
-    s = str(date_str).strip().split('.')[0] # Remove decimal part if any
-    
-    # Try 14-digit format: YYYYMMDDHHMMSS
+    s = str(date_str).strip().split('.')[0]
     if len(s) == 14:
         try:
             return datetime.strptime(s, "%Y%m%d%H%M%S")
         except ValueError:
             pass
-            
-    # Try 12-digit format: YYMMDDHHMMSS
     if len(s) == 12:
         try:
             return datetime.strptime(s, "%y%m%d%H%M%S")
         except ValueError:
             pass
-            
-    # Fallback parsing
     from app.services.parsers.summary_parser import parse_summary_datetime
     return parse_summary_datetime(s)
 
-def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = None, osat_name: str = "chipmore") -> list:
+def parse_and_save_lbs_summary(filepath: str, db: Session, user_id: int = None, osat_name: str = "lbs") -> list:
     """
-    Parse Chipmore XLS/XLSX summary reports and extract wafer information to save to the database.
+    Parse LBS XLS/XLSX summary reports and extract wafer information to save to the database.
     """
     xl = pd.ExcelFile(filepath)
     filename = os.path.basename(filepath)
     
-    # Read the main summary sheet (first sheet)
-    df0 = xl.parse(0, header=None)
+    # Locate the last sheet or sheet named 'Bin_Summary'
+    sheet_name = 'Bin_Summary' if 'Bin_Summary' in xl.sheet_names else xl.sheet_names[-1]
+    df0 = xl.parse(sheet_name, header=None)
     
     # Get global metadata: Device Name and Test Date
     device_name = ""
@@ -52,12 +43,21 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
             if pd.notna(val):
                 val_str = str(val).strip().lower()
                 if val_str == "device name":
-                    if c + 1 < df0.shape[1]:
-                        device_name = str(df0.iloc[r, c + 1]).strip()
+                    for offset in [1, 2]:
+                        if c + offset < df0.shape[1]:
+                            cand = df0.iloc[r, c + offset]
+                            if pd.notna(cand) and str(cand).strip():
+                                device_name = str(cand).strip()
+                                break
                 elif val_str == "test date":
-                    if c + 1 < df0.shape[1]:
-                        global_test_date = parse_xls_date(df0.iloc[r, c + 1])
-                        
+                    for offset in [1, 2]:
+                        if c + offset < df0.shape[1]:
+                            cand = df0.iloc[r, c + offset]
+                            if pd.notna(cand) and str(cand).strip():
+                                global_test_date = parse_xls_date(cand)
+                                if global_test_date:
+                                    break
+                                    
     # Find the header row (starting with LotID-waferID)
     header_row_idx = None
     for r in range(df0.shape[0]):
@@ -70,7 +70,7 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
         raise ValueError("Could not find 'LotID-waferID' header row in summary sheet")
         
     # Build column name to index map
-    cols = [str(df0.iloc[header_row_idx, c]).strip().lower() for c in range(df0.shape[1])]
+    cols = [str(df0.iloc[header_row_idx, c]).strip().lower() if pd.notna(df0.iloc[header_row_idx, c]) else "" for c in range(df0.shape[1])]
     
     created_lots = []
     
@@ -90,19 +90,37 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
         wafer_id = parts[1].strip()
         
         # Read parameters from current row in df0
+        total_tested = None
+        pass_count = None
         yield_rate = None
         probecard = None
         mp_tester = None
         program = None
         sbin_counts = {}
         
+        # Initialize bin counts
+        for i in range(1, 131):
+            sbin_counts[i] = 0
+            
         for c in range(df0.shape[1]):
             col_name = cols[c]
             val = df0.iloc[r, c]
             if pd.isna(val):
                 val = None
                 
-            if col_name == "yield(%)":
+            if col_name in ("total test", "total tested"):
+                if val is not None:
+                    try:
+                        total_tested = int(float(str(val).strip()))
+                    except ValueError:
+                        pass
+            elif col_name in ("total pass", "pass"):
+                if val is not None:
+                    try:
+                        pass_count = int(float(str(val).strip()))
+                    except ValueError:
+                        pass
+            elif col_name == "yield(%)":
                 if val is not None:
                     try:
                         # Handle values like 0.9543 vs 95.43
@@ -112,63 +130,46 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
                         yield_rate = round(val_float, 4)
                     except ValueError:
                         pass
-            elif col_name in ("probe card no", "probecard"):
+            elif col_name in ("probe card no", "probe card no.", "probecard"):
                 probecard = str(val).strip() if val else None
             elif col_name == "tester":
                 mp_tester = str(val).strip() if val else None
-            elif col_name == "test program":
+            elif col_name in ("test program", "program"):
                 program = str(val).strip() if val else None
             elif col_name.startswith('c') and col_name[1:].isdigit():
                 c_num = int(col_name[1:])
                 if 1 <= c_num <= 130:
                     sbin_counts[c_num] = int(val) if val is not None else 0
                     
-        # Read details from individual wafer sheet
-        total_tested = None
+        # Read details from individual wafer sheet (for precise start/finish timestamps)
         test_finish_time = None
         test_start_time = None
-        pass_count = None
         
         if wafer_key in xl.sheet_names:
             df_wafer = xl.parse(wafer_key, header=None)
-            for wr in range(df_wafer.shape[0]):
+            for wr in range(min(30, df_wafer.shape[0])):
                 for wc in range(df_wafer.shape[1]):
                     wval = df_wafer.iloc[wr, wc]
                     if pd.notna(wval):
                         wval_str = str(wval).strip().lower()
-                        if wval_str == "total tested":
+                        if wval_str == "test finish time":
                             if wc + 1 < df_wafer.shape[1]:
-                                raw_tot = df_wafer.iloc[wr, wc + 1]
-                                try:
-                                    total_tested = int(float(str(raw_tot).strip()))
-                                except ValueError:
-                                    pass
-                        elif wval_str == "test finish time":
-                            if wc + 1 < df_wafer.shape[1]:
-                                raw_time = df_wafer.iloc[wr, wc + 1]
-                                test_finish_time = parse_xls_date(raw_time)
+                                test_finish_time = parse_xls_date(df_wafer.iloc[wr, wc + 1])
                         elif wval_str == "test start time":
                             if wc + 1 < df_wafer.shape[1]:
-                                raw_start = df_wafer.iloc[wr, wc + 1]
-                                test_start_time = parse_xls_date(raw_start)
-                        elif wval_str == "pass":
-                            if wc + 1 < df_wafer.shape[1]:
-                                raw_pass = df_wafer.iloc[wr, wc + 1]
-                                try:
-                                    pass_count = int(float(str(raw_pass).strip()))
-                                except ValueError:
-                                    pass
-                                    
-        # Default pass calculation: bin1 + bin2
+                                test_start_time = parse_xls_date(df_wafer.iloc[wr, wc + 1])
+                                
+        if total_tested is None or total_tested <= 0:
+            continue
+            
         if pass_count is None:
             pass_count = sbin_counts.get(1, 0) + sbin_counts.get(2, 0)
             
-        # Default test time fallback to global test date
+        if yield_rate is None:
+            yield_rate = round(pass_count / total_tested, 4)
+            
         if test_finish_time is None:
             test_finish_time = global_test_date
-            
-        if yield_rate is None and total_tested and total_tested > 0:
-            yield_rate = round(pass_count / total_tested, 4)
             
         # Check if lot with same lot_id, wafer_id and type already exists
         existing_lot = db.query(Lot).filter(
@@ -179,8 +180,7 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
         
         if existing_lot:
             # Overwrite: delete existing lot and its bin summary
-            for bs in db.query(BinSummary).filter(BinSummary.lot_id == existing_lot.id).all():
-                db.delete(bs)
+            db.query(BinSummary).filter(BinSummary.lot_id == existing_lot.id).delete()
             db.delete(existing_lot)
             db.commit()
             
@@ -217,7 +217,7 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
         db.commit()
         db.refresh(lot)
         
-        # Save BinSummary records (1 to 130)
+        # Save BinSummary records
         for sbin_idx in range(1, 131):
             count = sbin_counts.get(sbin_idx, 0)
             percentage = (count / total_tested) * 100.0 if (total_tested and total_tested > 0) else 0.0

@@ -34,6 +34,7 @@ if %errorlevel% neq 0 (
 :: 3. Try to start everything
 echo [1/2] Starting all services (DB, Redis, Backend, Frontend)...
 echo This may take a moment...
+git describe --tags --abbrev=0 > backend\app\version.txt 2>nul
 docker-compose up -d
 if %errorlevel% neq 0 (
     echo.

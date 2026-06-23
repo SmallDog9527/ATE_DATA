@@ -21,7 +21,8 @@ def is_in_window(start_str: str, end_str: str) -> bool:
     判断当前时间是否在 [start_str, end_str] 窗口内。
     支持跨午夜：22:00~08:00 → now>=22:00 OR now<08:00
     """
-    now = datetime.now()
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo('Asia/Shanghai'))
     now_min = now.hour * 60 + now.minute
 
     sh, sm = start_str.split(':')

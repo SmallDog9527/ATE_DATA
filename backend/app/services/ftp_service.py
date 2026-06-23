@@ -12,12 +12,16 @@ import tempfile
 import traceback
 import threading
 import subprocess
+import stat
+import posixpath
+import paramiko
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.core.database import SessionLocal
 from app.services.smtp_dynamic import decrypt_password
+
 
 
 def _detect_osat_data_type(osat, filename: str, parsed_test_stage: Optional[str]) -> str:
@@ -75,12 +79,110 @@ _file_in_progress: set = set()
 _file_in_progress_lock = threading.Lock()
 
 
+class SftpAdapter:
+    def __init__(self, ssh_client, sftp_client):
+        self.ssh = ssh_client
+        self.sftp = sftp_client
+
+    def getwelcome(self) -> str:
+        try:
+            banner = self.ssh.get_transport().get_banner()
+            if banner:
+                return banner.decode('utf-8', errors='ignore').strip()
+        except Exception:
+            pass
+        return "SSH SFTP Connection Successful"
+
+    def quit(self):
+        try:
+            self.sftp.close()
+        except Exception:
+            pass
+        try:
+            self.ssh.close()
+        except Exception:
+            pass
+
+    def close(self):
+        self.quit()
+
+    def retrlines(self, cmd: str, callback):
+        # cmd is like "LIST /path/to/dir"
+        path = cmd[5:] if cmd.startswith("LIST ") else cmd
+        if not path:
+            path = "."
+        # Normalize path to avoid posix double slashes and Windows issues
+        path = posixpath.normpath(path)
+        
+        try:
+            attrs = self.sftp.listdir_attr(path)
+            for attr in attrs:
+                is_dir = stat.S_ISDIR(attr.st_mode)
+                dir_char = 'd' if is_dir else '-'
+                size = attr.st_size
+                perms = "rwxr-xr-x"
+                # Simulating a basic UNIX ftp directory entry format
+                line = f"{dir_char}{perms} 1 owner group {size} Jan 01 2026 {attr.filename}"
+                callback(line)
+        except Exception as e:
+            raise Exception(f"SFTP listdir error: {e}")
+
+    def sendcmd(self, cmd: str):
+        pass
+
+    def size(self, remote_path: str) -> int:
+        try:
+            remote_path = posixpath.normpath(remote_path)
+            return self.sftp.stat(remote_path).st_size
+        except Exception:
+            return 0
+
+    def retrbinary(self, cmd: str, callback):
+        # cmd is like "RETR /path/to/file"
+        path = cmd[5:] if cmd.startswith("RETR ") else cmd
+        path = posixpath.normpath(path)
+        try:
+            with self.sftp.open(path, 'rb') as remote_file:
+                while True:
+                    chunk = remote_file.read(32768)
+                    if not chunk:
+                        break
+                    callback(chunk)
+        except Exception as e:
+            raise Exception(f"SFTP download error: {e}")
+
+
+def _make_sftp(osat) -> SftpAdapter:
+    password = decrypt_password(osat.ftp_pass_enc) if osat.ftp_pass_enc else ""
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    port = osat.ftp_port if osat.ftp_port else 22
+    # If the user has default FTP port 21 but protocol is SFTP, override to 22
+    if port == 21:
+        port = 22
+    ssh.connect(
+        hostname=osat.ftp_host,
+        port=port,
+        username=osat.ftp_user,
+        password=password,
+        timeout=15,
+        allow_agent=False,
+        look_for_keys=False
+    )
+    sftp = ssh.open_sftp()
+    return SftpAdapter(ssh, sftp)
+
+
 # ──────────────────────────────────────────
 # FTP 连接工厂（每次新建，线程安全）
 # ──────────────────────────────────────────
 
-def _make_ftp(osat) -> ftplib.FTP:
-    """建立 FTP 连接并登录（被调用方需自行 close()）"""
+def _make_ftp(osat):
+    """建立 FTP 或 SFTP 连接并登录（被调用方需自行 close()/quit()）"""
+    protocol = getattr(osat, "protocol", "ftp") or "ftp"
+    if protocol == "sftp":
+        return _make_sftp(osat)
+
     password = decrypt_password(osat.ftp_pass_enc) if osat.ftp_pass_enc else ""
     encryption = getattr(osat, "ftp_encryption", "plain") or "plain"
     if encryption == "implicit_tls_required":
