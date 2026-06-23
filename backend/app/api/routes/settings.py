@@ -523,19 +523,21 @@ def get_project_version() -> str:
     import subprocess
     # 1. 尝试从本地的 app/version.txt 文件读取 (Docker 容器环境或本地部署)
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    # app/api/routes/settings.py -> app/version.txt
-    version_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))), "version.txt")
-    if os.path.exists(version_file):
-        for encoding in ("utf-8", "utf-16", "gbk"):
-            try:
-                with open(version_file, "r", encoding=encoding) as f:
-                    ver = f.read().strip()
-                    # 清除可能存在的 BOM 字符和空字符
-                    ver = ver.replace('\x00', '').replace('\ufeff', '').strip()
-                    if ver:
-                        return ver
-            except Exception:
-                pass
+    # 检查 backend/app/version.txt 或是旧路径 backend/version.txt
+    version_file_app = os.path.join(os.path.dirname(os.path.dirname(current_dir)), "version.txt")
+    version_file_root = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))), "version.txt")
+    for version_file in (version_file_app, version_file_root):
+        if os.path.exists(version_file):
+            for encoding in ("utf-8", "utf-16", "gbk"):
+                try:
+                    with open(version_file, "r", encoding=encoding) as f:
+                        ver = f.read().strip()
+                        # 清除可能存在的 BOM 字符和空字符
+                        ver = ver.replace('\x00', '').replace('\ufeff', '').strip()
+                        if ver:
+                            return ver
+                except Exception:
+                    pass
 
     # 2. 尝试执行 git 命令动态获取 (本地开发环境)
     try:
@@ -555,7 +557,7 @@ def get_project_version() -> str:
         pass
 
     # 3. 兜底默认版本号
-    return "V1_20260618"
+    return "V01_20260623"
 
 
 @router.get("/version")

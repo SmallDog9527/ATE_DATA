@@ -951,7 +951,7 @@ async function sendTestEmail() {
 
 // ── 版本更新信息 ──
 const versionExpanded = ref(false)
-const versionInfo     = ref({ version: 'V1_20260618', content: '' })
+const versionInfo     = ref({ version: 'V01_20260623', content: '' })
 const versionSaving   = ref(false)
 const versionSaveMsg  = ref<{ok: boolean; text: string} | null>(null)
 
