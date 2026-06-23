@@ -11,7 +11,7 @@ class OsatConfig(Base):
     name = Column(String, unique=True, nullable=False, index=True)   # OSAT 名称，如 CMC
 
     # FTP 连接信息
-    protocol = Column(String, default="ftp")        # ftp / sftp
+    protocol = Column(String, default="ftp", nullable=False)        # ftp / sftp
     ftp_host = Column(String, nullable=False)
 
     ftp_port = Column(Integer, default=21)
