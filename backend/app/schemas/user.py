@@ -97,6 +97,7 @@ class UserResponse(BaseModel):
     created_at: datetime
     last_login_at: Optional[datetime] = None
     storage_used_bytes: Optional[int] = 0
+    receive_alerts: bool = False
 
     class Config:
         from_attributes = True
@@ -138,6 +139,7 @@ class UserListItem(BaseModel):
     created_at: datetime
     last_login_at: Optional[datetime] = None
     storage_used_bytes: Optional[int] = 0
+    receive_alerts: bool = False
     lot_count: int = 0
 
     class Config:

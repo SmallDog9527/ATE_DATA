@@ -50,6 +50,16 @@
         </div>
       </div>
 
+      <div v-if="authStore.user?.receive_alerts" class="alert-test-section" style="margin: 20px 0; padding: 15px; background: rgba(0,0,0,0.02); border-radius: 8px; border: 1px dashed #ccc; display: flex; align-items: center; justify-content: space-between; gap: 15px;">
+        <div>
+          <h4 style="margin: 0 0 5px 0;">FTP 告警测试</h4>
+          <p style="margin: 0; font-size: 13px; color: #666;">您已拥有接收 FTP 异常报错邮件的权限。可在此处手动发送一封测试邮件。</p>
+        </div>
+        <button type="button" class="btn-primary" @click="sendTestAlertEmail" :disabled="alertLoading" style="margin-left: 15px; white-space: nowrap;">
+          {{ alertLoading ? '发送中...' : '立即发送FTP报错邮件' }}
+        </button>
+      </div>
+
       <div class="section-title">修改密码</div>
       <form class="pw-form" @submit.prevent="handleChangePw">
         <div class="field-row">
@@ -596,6 +606,14 @@
                 <td>{{ u.username }}</td>
                 <td class="email-cell">{{ u.email }}</td>
                 <td>
+                  <input 
+                    type="checkbox" 
+                    :checked="u.receive_alerts" 
+                    @change="toggleAlerts(u)" 
+                    :disabled="u.role === 'user'" 
+                  />
+                </td>
+                <td>
                   <span :class="['badge', u.is_active ? 'green' : 'red']">
                     {{ u.is_active ? '正常' : '已禁用' }}
                   </span>
@@ -850,6 +868,19 @@ async function handleChangePw() {
     pwError.value = e || '修改失败'
   } finally {
     pwLoading.value = false
+  }
+}
+
+const alertLoading = ref(false)
+async function sendTestAlertEmail() {
+  alertLoading.value = true
+  try {
+    const res: any = await api.post('/users/test-ftp-alert')
+    alert(res.message || '测试邮件已发送')
+  } catch (e: any) {
+    alert('发送失败: ' + (e || '未知错误'))
+  } finally {
+    alertLoading.value = false
   }
 }
 
@@ -1421,7 +1452,7 @@ async function retryAllStuck() {
 // ── Admin：用户管理 ──
 interface UserItem {
   id: number; username: string; email: string
-  role: string; is_active: boolean
+  role: string; is_active: boolean; receive_alerts?: boolean
   email_verified: boolean; created_at: string
   last_login_at?: string; storage_used_bytes?: number; lot_count: number
 }
@@ -1446,6 +1477,13 @@ async function toggleActive(u: UserItem) {
   try {
     const r: any = await api.put(`/users/${u.id}/toggle-active`)
     u.is_active = r.is_active
+  } catch (e: any) { alert(e) }
+}
+
+async function toggleAlerts(u: UserItem) {
+  try {
+    const r: any = await api.put(`/users/${u.id}/toggle-alerts`)
+    u.receive_alerts = r.receive_alerts
   } catch (e: any) { alert(e) }
 }
 

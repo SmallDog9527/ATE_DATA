@@ -1,8 +1,8 @@
 [
   {
     "version": "V01_20260623",
-    "content": "1. 解析 KSHT Summary 后入库的 OSAT 名称统一显示为大写的 \"KSHT\"\n2. 修复明细页面中 OSAT 的搜索，支持大小写不敏感匹配",
-    "updated_at": "2026-06-23 20:30:00"
+    "content": "1. 增加对LBS的Summary以及T2K程序的解析，增加KSHT Summary的解析\n2. 增加DataSheet以及Ectable的对比\n3. 增加量产良率时的Top5折线显示\n4. 增加对SFTP协议的支持",
+    "updated_at": "2026-06-23 14:00:57"
   },
   {
     "version": "V1_20260618",

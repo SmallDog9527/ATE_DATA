@@ -44,6 +44,8 @@ def parse_summary_txt(filepath: str) -> dict:
         'ending_time': None,
         'bins': {},
         'program': None,
+        'tester': None,
+        'probecard': None,
     }
 
     try:
@@ -69,6 +71,14 @@ def parse_summary_txt(filepath: str) -> dict:
     if stop_match:
         raw_stop = stop_match.group(1).strip()
         result['ending_time'] = parse_summary_datetime(raw_stop)
+
+    # 2.5 解析 Tester / Probe Card 信息
+    tester_match = re.search(r'(?:Tester ID|Tester|Station|Test Station|Test-Station|Test_Station):\s*([^\r\n]*)', content, re.IGNORECASE)
+    probecard_match = re.search(r'(?:Probe Card ID|Probe Card|ProbeCard|Probecard|Probe-Card|Probe_Card):\s*([^\r\n]*)', content, re.IGNORECASE)
+    if tester_match:
+        result['tester'] = tester_match.group(1).strip()
+    if probecard_match:
+        result['probecard'] = probecard_match.group(1).strip()
 
     # 3. 解析分Bin信息（Sfwr Bin 与 Hdwr Bin 之间的所有 bin 定义）
     sfwr_pos = content.find('Sfwr   Bin')
@@ -193,6 +203,22 @@ def apply_summary_to_csv(db: Session, csv_lot_id: int, summary_data: dict):
             csv_lot.test_date = summary_data['beginning_time']
     if summary_data.get('ending_time') and not csv_lot.ending_time:
         csv_lot.ending_time = summary_data['ending_time']
+
+    # 1.2 匹配的产品名 (Device Name)，不覆盖 CSV 的 Program 程序名
+    if summary_data.get('program'):
+        prefix = summary_data['program'].split('_')[0]
+        from app.models.product_mapping import ProductMapping
+        mapping = db.query(ProductMapping).filter(
+            ProductMapping.program_prefix == prefix
+        ).first()
+        if mapping:
+            csv_lot.product_name = mapping.product_name
+
+    # 1.5 补充 Tester / Probe Card 信息到 mp_tester 和 probecard
+    if summary_data.get('tester') and not csv_lot.mp_tester:
+        csv_lot.mp_tester = summary_data['tester']
+    if summary_data.get('probecard') and not csv_lot.probecard:
+        csv_lot.probecard = summary_data['probecard']
 
     # 2. 补充 / 更新分Bin信息 (bin_name)
     bins = summary_data.get('bins', {})

@@ -47,6 +47,11 @@ def on_startup():
             # Update existing ksht records to uppercase KSHT
             conn.execute(text("UPDATE lots SET osat_name = 'KSHT' WHERE osat_name = 'ksht'"))
             conn.execute(text("UPDATE osat_configs SET name = 'KSHT' WHERE name = 'ksht'"))
+            conn.execute(text("UPDATE lots SET osat_name = 'Chipmore' WHERE osat_name = 'chipmore'"))
+            conn.execute(text("UPDATE osat_configs SET name = 'Chipmore' WHERE name = 'chipmore'"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_alerts BOOLEAN DEFAULT FALSE"))
+            # ?????????????? processing ??
+            conn.execute(text("UPDATE ftp_upload_logs SET status = 'failed', error_msg = '????????????????????????????' WHERE status = 'processing'"))
             conn.commit()
         except Exception:
             conn.rollback()

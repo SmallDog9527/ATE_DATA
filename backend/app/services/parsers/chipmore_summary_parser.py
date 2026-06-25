@@ -32,7 +32,7 @@ def parse_xls_date(date_str: str) -> datetime:
     from app.services.parsers.summary_parser import parse_summary_datetime
     return parse_summary_datetime(s)
 
-def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = None, osat_name: str = "chipmore") -> list:
+def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = None, osat_name: str = "Chipmore") -> list:
     """
     Parse Chipmore XLS/XLSX summary reports and extract wafer information to save to the database.
     """

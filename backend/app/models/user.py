@@ -24,3 +24,4 @@ class User(Base):
     report_email = Column(String)
     weekly_report = Column(Boolean, default=False)
     monthly_report = Column(Boolean, default=False)
+    receive_alerts = Column(Boolean, default=False)

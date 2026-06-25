@@ -135,7 +135,9 @@ async def upload_files(
     current_user: User = Depends(get_current_user),
 ):
     results = []
-    for file in files:
+    # 优先上传 Summary 报表 (.txt)，使后续 Data (.csv等) 上传时可匹配补全 Tester/Probe Card
+    sorted_files = sorted(files, key=lambda f: (0 if (f.filename or "").lower().endswith('.txt') else 1))
+    for file in sorted_files:
         try:
             batch = await _process_upload(file, db, background_tasks, current_user.id)
             results.extend(batch)
@@ -308,7 +310,7 @@ async def _process_csv_paths(
         if csv_name.lower().endswith(('.xls', '.xlsx')):
             try:
                 from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
-                created_lots = parse_and_save_xls_summary(csv_path, db, user_id, osat_name="chipmore")
+                created_lots = parse_and_save_xls_summary(csv_path, db, user_id, osat_name="Chipmore")
                 for lot in created_lots:
                     results.append({
                         "filename": csv_name,
@@ -352,6 +354,18 @@ async def _process_csv_paths(
                 lot.test_date = summary_data['beginning_time']
             if summary_data.get('ending_time'):
                 lot.ending_time = summary_data['ending_time']
+            if summary_data.get('tester'):
+                lot.mp_tester = summary_data['tester']
+            if summary_data.get('probecard'):
+                lot.probecard = summary_data['probecard']
+            if summary_data.get('program'):
+                prefix = summary_data['program'].split('_')[0]
+                from app.models.product_mapping import ProductMapping
+                mapping = db.query(ProductMapping).filter(
+                    ProductMapping.program_prefix == prefix
+                ).first()
+                if mapping:
+                    lot.product_name = mapping.product_name
 
             db.add(lot)
             db.commit()
@@ -867,7 +881,7 @@ def get_mp_yield_overview(
         group_lots: dict = defaultdict(list)
         for lot in lots:
             pname = lot.product_name or "(unknown)"
-            osat = lot.osat_name or "chipmore"
+            osat = lot.osat_name or "Chipmore"
             group_lots[(pname, osat)].append(lot)
 
         products = []
@@ -955,7 +969,7 @@ def get_mp_yield_overview(
         # ── OSAT aggregation ─────────────────────────────────────────────────
         osat_bin1_totals = defaultdict(int)
         for lot in lots:
-            osat = lot.osat_name or "chipmore"
+            osat = lot.osat_name or "Chipmore"
             osat_bin1_totals[osat] += lot.pass_count or 0
 
         osats = [
@@ -1123,7 +1137,7 @@ def get_mp_yield_list(
                     
             item = {
                 "id": lot.id,
-                "osat_name": lot.osat_name or "chipmore",
+                "osat_name": lot.osat_name or "Chipmore",
                 "test_start": test_start_str,
                 "test_date": test_date_str,
                 "duration_h": duration_h,

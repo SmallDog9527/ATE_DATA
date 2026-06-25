@@ -148,3 +148,55 @@ def send_smtp_auto(db, to_email: str, subject: str, html_body: str, text_body: s
         # Fallback：使用原始 settings 配置
         from app.services.email import _send_smtp
         _send_smtp(to_email, subject, html_body, text_body)
+
+
+def send_smtp_attachment_auto(db, to_email: str, subject: str, html_body: str,
+                              attachment_bytes: bytes, attachment_name: str):
+    """
+    发送带有附件的邮件，优先使用数据库中的配置，无配置则 fallback 到 .env。
+    """
+    config = get_smtp_config(db)
+    if not config:
+        config = {
+            "host": app_settings.SMTP_HOST,
+            "port": app_settings.SMTP_PORT,
+            "user": app_settings.SMTP_USER,
+            "password": app_settings.SMTP_PASS,
+            "from_addr": app_settings.SMTP_FROM,
+            "use_ssl": app_settings.SMTP_PORT == 465,
+        }
+
+    msg = EmailMessage(policy=SMTPUTF8)
+    msg["Subject"] = subject
+    msg["From"] = config["from_addr"]
+    msg["To"] = to_email
+
+    text_body = re.sub(r'<[^>]+>', ' ', html_body)
+    text_body = re.sub(r'\s+', ' ', text_body).strip()
+
+    msg.set_content(text_body)
+    msg.add_alternative(html_body, subtype='html')
+
+    # 添加附件
+    msg.add_attachment(attachment_bytes, maintype='application', subtype='octet-stream', filename=attachment_name)
+
+    host = config["host"]
+    port = config["port"]
+    user = config["user"]
+    password = config["password"]
+    use_ssl = config["use_ssl"]
+
+    if use_ssl:
+        with smtplib.SMTP_SSL(host, port, timeout=15) as server:
+            if user and password:
+                server.login(user, password)
+            server.sendmail(config["from_addr"], [to_email], msg.as_bytes())
+    else:
+        with smtplib.SMTP(host, port, timeout=15) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            if user and password:
+                server.login(user, password)
+            server.sendmail(config["from_addr"], [to_email], msg.as_bytes())
+

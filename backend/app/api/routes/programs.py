@@ -1029,6 +1029,19 @@ class ExtraUpdate(BaseModel):
 @router.get("/list")
 def get_program_list(db: Session = Depends(get_db)):
     """一级列表：每个产品名下，按 tester 取最新程序版本"""
+    # 查出所有非删除状态且不只包含 MP_Yield 的 product_name
+    all_active_products = (
+        db.query(Lot.product_name)
+        .filter(
+            Lot.product_name.isnot(None),
+            Lot.status != "deleted",
+            or_(Lot.data_type.is_(None), Lot.data_type != "MP_Yield")
+        )
+        .distinct()
+        .all()
+    )
+    all_product_names = {r[0] for r in all_active_products}
+
     all_lots = (
         db.query(Lot)
         .filter(
@@ -1083,6 +1096,11 @@ def get_program_list(db: Session = Depends(get_db)):
             "hardware_info": extra.hardware_info if extra else None,
             "data_source": "ftp" if lot.data_source == "ftp" else "manual",
         })
+
+    # 补全所有在数据列表中存在但没有匹配程序的 product_name
+    for prod_name in all_product_names:
+        if prod_name not in product_map:
+            product_map[prod_name] = []
 
     avg_td_cache: dict = {}
     result = []
