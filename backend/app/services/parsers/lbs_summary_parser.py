@@ -160,6 +160,20 @@ def parse_and_save_lbs_summary(filepath: str, db: Session, user_id: int = None, 
                                 test_start_time = parse_xls_date(df_wafer.iloc[wr, wc + 1])
                                 
         if total_tested is None or total_tested <= 0:
+            # Sum up all columns starting with 'c' followed by digits
+            bin_sum_total = 0
+            for c_col_idx in range(df0.shape[1]):
+                col_name = cols[c_col_idx]
+                if col_name.startswith('c') and col_name[1:].isdigit():
+                    val = df0.iloc[r, c_col_idx]
+                    if pd.notna(val):
+                        try:
+                            bin_sum_total += int(float(str(val).strip()))
+                        except ValueError:
+                            pass
+            total_tested = bin_sum_total
+
+        if total_tested is None or total_tested <= 0:
             continue
             
         if pass_count is None:
