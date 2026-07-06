@@ -80,7 +80,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-if="options.selected_sites.length === 0">
+          <tr v-if="allSites.length > 0 && options.selected_sites.length === 0">
             <td :colspan="5 + options.selected_sites.length" style="text-align:center;color:#999;padding:20px">No sites selected</td>
           </tr>
           <tr v-else v-for="b in sortedBins" :key="b.bin_number" :class="{ 'pass-row': isPassBin(b.bin_number) }">
