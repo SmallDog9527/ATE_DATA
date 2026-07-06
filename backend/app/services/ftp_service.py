@@ -711,6 +711,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                 if summary_data.get('probecard'):
                     lot.probecard = summary_data['probecard']
                 if summary_data.get('program'):
+                    lot.program = summary_data['program']
                     prefix = summary_data['program'].split('_')[0]
                     from app.models.product_mapping import ProductMapping
                     mapping = db.query(ProductMapping).filter(
@@ -718,10 +719,41 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                     ).first()
                     if mapping:
                         lot.product_name = mapping.product_name
+                if summary_data.get('lot_id'):
+                    lot.lot_id = summary_data['lot_id']
+                if summary_data.get('wafer_id'):
+                    lot.wafer_id = summary_data['wafer_id']
+                if summary_data.get('handler'):
+                    lot.handler = summary_data['handler']
+                if summary_data.get('die_count') is not None:
+                    lot.die_count = summary_data['die_count']
+                if summary_data.get('pass_count') is not None:
+                    lot.pass_count = summary_data['pass_count']
+                if summary_data.get('fail_count') is not None:
+                    lot.fail_count = summary_data['fail_count']
+                if summary_data.get('yield_rate') is not None:
+                    lot.yield_rate = summary_data['yield_rate']
 
                 db.add(lot)
                 db.commit()
                 db.refresh(lot)
+
+                from app.models.bin_summary import BinSummary
+                for bin_num, bin_info in summary_data.get('bins', {}).items():
+                    bin_name = bin_info['name']
+                    bin_count = bin_info['count']
+                    bin_pct = float(bin_count) / lot.die_count if lot.die_count and lot.die_count > 0 else 0.0
+                    bin_sum = BinSummary(
+                        lot_id=lot.id,
+                        bin_number=bin_num,
+                        bin_name=bin_name,
+                        site=0,
+                        count=bin_count,
+                        percentage=bin_pct,
+                        data_range="final",
+                    )
+                    db.add(bin_sum)
+                db.commit()
 
                 # Update corresponding CSV
                 csv_mapped_name = find_corresponding_csv_filename(csv_filename)
@@ -1333,6 +1365,7 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
                 if summary_data.get('probecard'):
                     lot.probecard = summary_data['probecard']
                 if summary_data.get('program'):
+                    lot.program = summary_data['program']
                     prefix = summary_data['program'].split('_')[0]
                     from app.models.product_mapping import ProductMapping
                     mapping = db.query(ProductMapping).filter(
@@ -1340,10 +1373,41 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
                     ).first()
                     if mapping:
                         lot.product_name = mapping.product_name
+                if summary_data.get('lot_id'):
+                    lot.lot_id = summary_data['lot_id']
+                if summary_data.get('wafer_id'):
+                    lot.wafer_id = summary_data['wafer_id']
+                if summary_data.get('handler'):
+                    lot.handler = summary_data['handler']
+                if summary_data.get('die_count') is not None:
+                    lot.die_count = summary_data['die_count']
+                if summary_data.get('pass_count') is not None:
+                    lot.pass_count = summary_data['pass_count']
+                if summary_data.get('fail_count') is not None:
+                    lot.fail_count = summary_data['fail_count']
+                if summary_data.get('yield_rate') is not None:
+                    lot.yield_rate = summary_data['yield_rate']
 
                 db.add(lot)
                 db.commit()
                 db.refresh(lot)
+
+                from app.models.bin_summary import BinSummary
+                for bin_num, bin_info in summary_data.get('bins', {}).items():
+                    bin_name = bin_info['name']
+                    bin_count = bin_info['count']
+                    bin_pct = float(bin_count) / lot.die_count if lot.die_count and lot.die_count > 0 else 0.0
+                    bin_sum = BinSummary(
+                        lot_id=lot.id,
+                        bin_number=bin_num,
+                        bin_name=bin_name,
+                        site=0,
+                        count=bin_count,
+                        percentage=bin_pct,
+                        data_range="final",
+                    )
+                    db.add(bin_sum)
+                db.commit()
 
                 csv_mapped_name = find_corresponding_csv_filename(csv_filename)
                 csv_base = os.path.splitext(csv_mapped_name)[0]

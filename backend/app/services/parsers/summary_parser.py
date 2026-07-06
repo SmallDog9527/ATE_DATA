@@ -46,6 +46,13 @@ def parse_summary_txt(filepath: str) -> dict:
         'program': None,
         'tester': None,
         'probecard': None,
+        'lot_id': None,
+        'wafer_id': None,
+        'handler': None,
+        'die_count': None,
+        'pass_count': None,
+        'fail_count': None,
+        'yield_rate': None,
     }
 
     try:
@@ -54,6 +61,14 @@ def parse_summary_txt(filepath: str) -> dict:
     except Exception as e:
         print(f"[parse_summary] 读取文件出错 {filepath}: {e}")
         return result
+
+    # 提取晶圆测试统计数据 (die_count, pass, fail, yield)
+    perf_match = re.search(r'DUTs Tested.*?Yield Percentage.*?\n[-+\s]*\n\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*([\d\.]+)', content, re.IGNORECASE | re.DOTALL)
+    if perf_match:
+        result['die_count'] = int(perf_match.group(1))
+        result['pass_count'] = int(perf_match.group(2))
+        result['fail_count'] = int(perf_match.group(3))
+        result['yield_rate'] = float(perf_match.group(4)) / 100.0
 
     # 限制解析内容为从开头到出现Hdwr之前的内容
     hdwr_pos_trunc = content.lower().find('hdwr')
@@ -64,6 +79,18 @@ def parse_summary_txt(filepath: str) -> dict:
     test_name_match = re.search(r'Test Name:\s*([^\r\n]*)', content, re.IGNORECASE)
     if test_name_match:
         result['program'] = test_name_match.group(1).strip()
+
+    lot_match = re.search(r'Report for Lot:\s*([^\r\n]*)', content, re.IGNORECASE)
+    if lot_match:
+        result['lot_id'] = lot_match.group(1).strip()
+
+    sublot_match = re.search(r'Report for SubLot:\s*([^\r\n]*)', content, re.IGNORECASE)
+    if sublot_match:
+        result['wafer_id'] = sublot_match.group(1).strip()
+
+    handler_match = re.search(r'(?:Handler/Prober ID|Handler ID|Handler|Prober ID|Prober):\s*([^\r\n]*)', content, re.IGNORECASE)
+    if handler_match:
+        result['handler'] = handler_match.group(1).strip()
 
     # 2. 解析测试时间
     start_match = re.search(r'Data Collection Start Date:\s*([^\r\n]*)', content, re.IGNORECASE)
@@ -114,7 +141,12 @@ def parse_summary_txt(filepath: str) -> dict:
 
                 if bin_num_str.isdigit():
                     bin_num = int(bin_num_str)
-                    result['bins'][bin_num] = bin_desc
+                    bin_count = int(bin_count_str) if bin_count_str.isdigit() else 0
+                    result['bins'][bin_num] = {
+                        'name': bin_desc,
+                        'type': bin_type,
+                        'count': bin_count
+                    }
 
     return result
 
@@ -166,7 +198,8 @@ def save_program_bin_names_from_summary(db: Session, program: str, bins: dict):
     from sqlalchemy import and_
 
     saved = 0
-    for bin_num, bin_name in bins.items():
+    for bin_num, bin_info in bins.items():
+        bin_name = bin_info['name'] if isinstance(bin_info, dict) else bin_info
         if not bin_name or not str(bin_name).strip():
             continue
         rec = db.query(ProgramBinName).filter(
@@ -227,7 +260,8 @@ def apply_summary_to_csv(db: Session, csv_lot_id: int, summary_data: dict):
 
     # 2. 补充 / 更新分Bin信息 (bin_name)
     bins = summary_data.get('bins', {})
-    for bin_num, bin_name in bins.items():
+    for bin_num, bin_info in bins.items():
+        bin_name = bin_info['name'] if isinstance(bin_info, dict) else bin_info
         if bin_name:
             # 更新已有的 BinSummary 记录的 bin_name
             db.query(BinSummary).filter(
