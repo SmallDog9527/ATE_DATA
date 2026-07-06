@@ -359,7 +359,7 @@ def scan_ftp_files(osat) -> List[str]:
 
 # 单个文件允许的最大失败重试次数（超过此次数的文件将被跳过，不再重试）
 _MAX_FAIL_RETRIES = 3
-PROCESSING_TIMEOUT_MINUTES = 20   # 超过此分钟数仍处于 processing 的记录自动标记为 failed
+PROCESSING_TIMEOUT_MINUTES = 10   # 超过此分钟数仍处于 processing 的记录自动标记为 failed
 _DOWNLOAD_WORKERS = 3             # 并发 FTP 下载线程数
 _PARSE_WORKERS = 3                # 并发解析线程数
 
@@ -1263,6 +1263,10 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
         osat = db.query(OsatConfig).filter(OsatConfig.id == osat_id).first()
         effective_osat_name = osat.name.split('_')[0] if osat and osat.name and '_' in osat.name else (osat.name if osat else "Unknown")
         log_rec = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+        if log_rec:
+            from datetime import timezone
+            log_rec.uploaded_at = datetime.now(timezone.utc)
+            db.commit()
         UPLOAD_DIR = os.path.expanduser(app_settings.UPLOAD_DIR)
         last_lot_id = None
 
@@ -1522,47 +1526,39 @@ def run_osat_fetch(osat_id: int):
         def process_batch(paths, batch_name):
             if not paths:
                 return
-            print(f"[ftp_fetch] 开始 {batch_name} 批次下载，共 {len(paths)} 个文件...")
-            
-            try:
-                ftp = _make_ftp(osat)
-            except Exception as e:
-                print(f"[ftp_fetch] 建立 FTP 连接失败 (批次): {e}")
-                return
+            print(f"[ftp_fetch] 开始 {batch_name} 批次并发下载与解析，共 {len(paths)} 个文件...")
 
-            local_parse_futures = {}
-            try:
-                for path in paths:
-                    fname = os.path.basename(path)
-                    try:
-                        result = _do_download_with_ftp(ftp, osat_id, path, admin_user_id)
-                        if result is None:
-                            print(f"[ftp_fetch] 跳过文件: {fname}")
-                            continue
-                        log_id, tmp_dir, csv_files = result
-                        
-                        pf = parse_pool.submit(_do_parse, log_id, osat_id, path,
-                                               tmp_dir, csv_files, admin_user_id)
-                        local_parse_futures[pf] = fname
-                        print(f"[ftp_fetch] 文件 {fname} 下载完成，已提交解析")
-                    except Exception as e:
-                        print(f"[ftp_fetch] 下载/提交解析失败 {fname}: {e}")
-            finally:
+            # 1. 提交下载任务到 download_pool
+            dl_futures = {}
+            for path in paths:
+                fname = os.path.basename(path)
+                df = download_pool.submit(_do_download, osat_id, path, admin_user_id)
+                dl_futures[df] = (path, fname)
+
+            # 2. 监听下载完成，立即提交解析到 parse_pool
+            parse_futures = {}
+            for fut in as_completed(dl_futures):
+                path, fname = dl_futures[fut]
                 try:
-                    ftp.quit()
-                except Exception:
-                    try:
-                        ftp.close()
-                    except Exception:
-                        pass
+                    result = fut.result()
+                    if result is None:
+                        continue
+                    log_id, tmp_dir, csv_files = result
+                    pf = parse_pool.submit(_do_parse, log_id, osat_id, path,
+                                           tmp_dir, csv_files, admin_user_id)
+                    parse_futures[pf] = fname
+                    print(f"[ftp_fetch] 文件 {fname} 下载完成，已提交并发解析")
+                except Exception as e:
+                    print(f"[ftp_fetch] 并发下载失败 {fname}: {e}")
 
-            # 等待本批次所有文件解析完成
-            for fut in as_completed(local_parse_futures):
-                fname = local_parse_futures[fut]
+            # 3. 等待所有解析任务完成
+            for fut in as_completed(parse_futures):
+                fname = parse_futures[fut]
                 try:
                     fut.result()
+                    print(f"[ftp_fetch] 文件 {fname} 全部处理完成")
                 except Exception as e:
-                    print(f"[ftp_fetch] 解析失败 {fname}: {e}")
+                    print(f"[ftp_fetch] 并发解析/保存失败 {fname}: {e}")
 
         try:
             # 第一阶段：先传并解析 Summary (.txt)
