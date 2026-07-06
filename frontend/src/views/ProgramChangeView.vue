@@ -3,7 +3,12 @@
     <!-- 顶部工具栏 -->
     <div class="toolbar">
       <div class="toolbar-left">
-        <button class="btn btn-success" @click="openAddProduct">➕ 新增产品名</button>
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="按产品名或程序名筛选..."
+          class="search-input"
+        />
         <span v-if="loading" class="loading-text">⏳ 加载中...</span>
       </div>
     </div>
@@ -26,26 +31,27 @@
             <th>OSAT</th>
             <th>Package</th>
             <th>Hardware Info</th>
+            <th class="th-remark">备注</th>
           </tr>
         </thead>
         <tbody>
-          <template v-for="row in listData" :key="row.product_name">
+          <template v-for="row in filteredListData" :key="row.product_name">
             <!-- 若该产品没有程序（占位行），只显示产品名一行，其余列为空 -->
             <tr v-if="!row.programs || row.programs.length === 0" class="data-row placeholder-row">
-              <td class="td-no">{{ row.index }}</td>
+              <td class="td-no">{{ row.displayIndex }}</td>
               <td
                 class="td-product"
                 @click="goToProduct(row.product_name)"
               >{{ row.product_name }}
                 <span v-if="row.is_placeholder" class="placeholder-badge">新增</span>
               </td>
-              <td colspan="11" class="td-empty-inline">—</td>
+              <td colspan="12" class="td-empty-inline">—</td>
             </tr>
 
             <!-- 有程序的正常行 -->
             <template v-else>
               <tr class="data-row">
-                <td class="td-no">{{ row.index }}</td>
+                <td class="td-no">{{ row.displayIndex }}</td>
                 <td
                   class="td-product"
                   @click="goToProduct(row.product_name)"
@@ -115,7 +121,7 @@
                     </datalist>
                   </div>
                 </td>
-                <td class="editable-cell" @click="startEdit(row.programs[0].lot_id, 'hardware_info', row.programs[0].hardware_info, row.programs[0])">
+                <td class="editable-cell hw-info-cell" @click="startEdit(row.programs[0].lot_id, 'hardware_info', row.programs[0].hardware_info, row.programs[0])">
                   <template v-if="editState.lot_id !== row.programs[0].lot_id || editState.field !== 'hardware_info'">
                     {{ row.programs[0].hardware_info }}
                   </template>
@@ -128,45 +134,30 @@
                     </datalist>
                   </div>
                 </td>
+                <!-- 备注列 -->
+                <td class="editable-cell remark-cell" @click="startEdit(row.programs[0].lot_id, 'remark', row.programs[0].remark, row.programs[0])">
+                  <template v-if="editState.lot_id !== row.programs[0].lot_id || editState.field !== 'remark'">
+                    {{ row.programs[0].remark }}
+                  </template>
+                  <div v-else class="inline-edit">
+                    <input v-model.value="editState.value" @keyup.enter="saveField(row.programs[0], 'remark')"
+                      @keyup.escape="cancelEdit" @blur="saveField(row.programs[0], 'remark')"
+                      class="inline-input" autofocus />
+                  </div>
+                </td>
               </tr>
             </template>
           </template>
-          <tr v-if="!listData.length && !loading">
-            <td colspan="13" class="td-empty">暂无数据，请点击 Update 加载</td>
+          <tr v-if="!filteredListData.length && !loading">
+            <td colspan="14" class="td-empty">
+              {{ searchQuery ? '未找到匹配的数据' : '暂无数据，请点击 Update 加载' }}
+            </td>
           </tr>
         </tbody>
       </table>
     </div>
 
-    <!-- 新增产品名弹窗 -->
-    <div v-if="addProductDialog.show" class="overlay" @click.self="addProductDialog.show = false">
-      <div class="dialog">
-        <div class="dialog-header">
-          <h3>新增产品名</h3>
-          <button class="close-btn" @click="addProductDialog.show = false">✕</button>
-        </div>
-        <div class="field">
-          <label>产品名 *</label>
-          <input
-            v-model="addProductDialog.productName"
-            placeholder="请输入产品名（如 HL5083ACP00）"
-            @keyup.enter="confirmAddProduct"
-            class="field-input"
-            autofocus
-          />
-        </div>
-        <div class="dialog-actions">
-          <button class="btn" @click="addProductDialog.show = false">取消</button>
-          <button
-            class="btn btn-primary"
-            :disabled="!addProductDialog.productName.trim() || addProductDialog.saving"
-            @click="confirmAddProduct"
-          >
-            {{ addProductDialog.saving ? '保存中...' : '确认' }}
-          </button>
-        </div>
-      </div>
-    </div>
+
 
     <!-- PGS 上传弹窗 -->
     <div v-if="pgsDialog.show" class="overlay" @click.self="pgsDialog.show = false">
@@ -194,7 +185,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '@/api'
 import { fmtDateOnlyTz } from '@/utils/dateUtils'
@@ -203,6 +194,7 @@ const router = useRouter()
 const listData = ref<any[]>([])
 const loading = ref(false)
 const pgsInput = ref<HTMLInputElement>()
+const searchQuery = ref('')
 
 const editState = reactive<{ lot_id: number; field: string; value: any; progRef: any }>({
   lot_id: 0, field: '', value: '', progRef: null
@@ -214,10 +206,6 @@ const suggestions = reactive<Record<string, string[]>>({
 
 const pgsDialog = reactive({
   show: false, file: null as File | null, filename: '', productName: '', uploading: false
-})
-
-const addProductDialog = reactive({
-  show: false, productName: '', saving: false
 })
 
 function fmtDate(v: any) {
@@ -362,24 +350,29 @@ async function fetchSuggestions() {
   }
 }
 
-// ─── 新增产品名 ───
-function openAddProduct() {
-  addProductDialog.productName = ''
-  addProductDialog.saving = false
-  addProductDialog.show = true
-}
+const filteredListData = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase()
+  const source = listData.value
+  const filtered = query
+    ? source.filter((row: any) => {
+        const matchProduct = row.product_name?.toLowerCase().includes(query)
+        let matchProgram = false
+        if (row.programs && row.programs.length > 0) {
+          matchProgram = row.programs.some((prog: any) => {
+            const pgmName = prog.pgm_program?.toLowerCase() || ''
+            const progName = prog.program?.toLowerCase() || ''
+            return pgmName.includes(query) || progName.includes(query)
+          })
+        }
+        return matchProduct || matchProgram
+      })
+    : source
 
-async function confirmAddProduct() {
-  const name = addProductDialog.productName.trim()
-  if (!name) return
-  addProductDialog.saving = true
-  try {
-    await api.post('/programs/placeholder', { product_name: name })
-    addProductDialog.show = false
-    await fetchList()
-  } catch { alert('保存失败') }
-  finally { addProductDialog.saving = false }
-}
+  return filtered.map((item, idx) => ({
+    ...item,
+    displayIndex: idx + 1
+  }))
+})
 
 // ─── PGS 上传（从主页直接上传）───
 function triggerPgsUpload() { pgsInput.value?.click() }
@@ -460,7 +453,29 @@ onMounted(() => { fetchList(); fetchSuggestions() })
   cursor: pointer; white-space: nowrap;
 }
 .td-product:hover { color: #40a9ff; text-decoration: underline; }
-.th-program, .td-program { min-width: 200px; }
+.th-program, .td-program {
+  min-width: 130px;
+  max-width: 130px;
+  word-break: break-all;
+}
+.th-remark, .remark-cell {
+  width: 320px;
+  min-width: 320px;
+  max-width: 320px;
+  word-break: break-all;
+}
+.remark-cell .inline-edit {
+  width: 100%;
+}
+.remark-cell .inline-input {
+  width: 100%;
+}
+.hw-info-cell .inline-edit {
+  width: 100%;
+}
+.hw-info-cell .inline-input {
+  width: 100%;
+}
 .prog-link { color: #5b21b6; font-family: monospace; font-size: 12px; cursor: pointer; }
 .prog-link:hover { color: #7c3aed; text-decoration: underline; }
 .placeholder-badge {
@@ -508,4 +523,17 @@ onMounted(() => { fetchList(); fetchSuggestions() })
   border-radius: 4px; font-size: 13px; box-sizing: border-box;
 }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.search-input {
+  padding: 6px 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  font-size: 13px;
+  width: 240px;
+  outline: none;
+  transition: all 0.3s;
+}
+.search-input:focus {
+  border-color: #1890ff;
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+}
 </style>

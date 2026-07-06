@@ -71,12 +71,13 @@
                 <input 
                   type="text" 
                   v-model="editName" 
-                  @blur="saveEdit(report)" 
                   @keyup.enter="saveEdit(report)" 
-                  @mouseleave="saveEdit(report)"
+                  @keyup.esc="editingId = null"
                   class="edit-input"
                   v-focus
                 />
+                <button class="save-btn" @click="saveEdit(report)">保存</button>
+                <button class="cancel-btn" @click="editingId = null">取消</button>
               </div>
               <div v-else class="name-display">
                 <a :href="report.url" target="_blank" class="report-link">{{ report.name }}</a>
@@ -687,6 +688,38 @@ export default {
 
 .comment-cell {
   width: 300px;
+}
+
+.save-btn {
+  margin-left: 8px;
+  background-color: #1890ff;
+  color: white;
+  border: 1px solid #1890ff;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.save-btn:hover {
+  background-color: #40a9ff;
+  border-color: #40a9ff;
+}
+
+.cancel-btn {
+  margin-left: 6px;
+  background-color: #ffffff;
+  color: #666;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cancel-btn:hover {
+  color: #1890ff;
+  border-color: #1890ff;
 }
 
 .inline-comment-input {

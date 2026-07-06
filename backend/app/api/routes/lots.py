@@ -785,8 +785,8 @@ def reparse_lots(
 def get_mp_yield_overview(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    range_type: str = Query("month"),
-    range_value: Optional[int] = Query(3),
+    range_type: str = Query("year"),
+    range_value: Optional[int] = Query(1),
     months: Optional[int] = Query(None),
     product_name: Optional[str] = None,
 ):
@@ -797,6 +797,40 @@ def get_mp_yield_overview(
                    avg_wafer_time_h, top5 fail bins (pct = bin_cnt/total_die)
     - Weekly trend: output (wafers/week) and avg yield per week
     """
+    # Unwrap FastAPI Query default parameters when called as a normal Python function
+    if hasattr(range_type, "default"):
+        range_type = range_type.default
+    if hasattr(range_value, "default"):
+        range_value = range_value.default
+    if hasattr(months, "default"):
+        months = months.default
+
+    try:
+        from app.core.redis_client import get_redis
+        import json
+        redis_client = get_redis()
+    except Exception as re:
+        print(f"[redis] Error getting client: {re}")
+        redis_client = None
+
+    norm_range_type = (range_type or "month").strip().lower()
+    norm_range_value = range_value if range_value is not None else (3 if norm_range_type == "month" else (1 if norm_range_type == "year" else 20))
+    if months is not None:
+        norm_range_type = "month"
+        norm_range_value = months
+
+    norm_product_name = (product_name or "").strip()
+    cache_key = f"cache:mp_yield_overview:{norm_range_type}:{norm_range_value}:{norm_product_name}"
+
+    if redis_client:
+        try:
+            cached_data = redis_client.get(cache_key)
+            if cached_data:
+                print(f"[cache] Hit cache for key: {cache_key}")
+                return json.loads(cached_data)
+        except Exception as ce:
+            print(f"[cache] Read error: {ce}")
+
     try:
         from app.models.lot import DataSource
         from collections import defaultdict
@@ -980,12 +1014,22 @@ def get_mp_yield_overview(
             for name, total_pass in osat_bin1_totals.items()
         ]
 
-        return {
+        result_data = {
             "products": products,
             "weekly_output": weekly_output,
             "weekly_yield": weekly_yield,
             "osats": osats,
         }
+
+        if redis_client:
+            try:
+                ttl = 86400 if not norm_product_name else 43200
+                redis_client.setex(cache_key, ttl, json.dumps(result_data))
+                print(f"[cache] Successfully cached query key: {cache_key} (ttl={ttl})")
+            except Exception as se:
+                print(f"[cache] Failed to write cache: {se}")
+
+        return result_data
 
     except Exception as e:
         import traceback

@@ -6,7 +6,7 @@ def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, 
     """
     Unified entry point for parsing XLS/XLSX summary reports.
     Dispatches parsing requests to the correct OSAT parser based on the factory name,
-    with auto-detection support for KSHT and LBS formats.
+    with auto-detection support for KSHT, LBS, and UCD formats.
     """
     sheet_names = []
     is_xls = filepath.lower().endswith('.xls')
@@ -64,12 +64,40 @@ def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, 
     except Exception as e:
         print(f"[xls_summary_parser] Error checking VENDOR/CHIPMORE: {e}")
 
+    # 1.6 Auto-detection check for UCD (first sheet, Row 3 Col 2 is Cust, Row 4 Col 2 is HMC)
+    is_ucd = False
+    try:
+        if is_xls:
+            import xlrd
+            wb = xlrd.open_workbook(filepath)
+            sh = wb.sheet_by_index(0)
+            if sh.nrows >= 4 and sh.ncols >= 2:
+                c2_header = str(sh.cell_value(2, 1)).strip().lower()
+                c2_value = str(sh.cell_value(3, 1)).strip().upper()
+                if c2_header == "cust" and c2_value == "HMC":
+                    is_ucd = True
+        else:
+            wb = openpyxl.load_workbook(filepath, data_only=True)
+            sh = wb.worksheets[0]
+            if sh.max_row >= 4 and sh.max_column >= 2:
+                c2_header = sh.cell(3, 2).value
+                c2_value = sh.cell(4, 2).value
+                if c2_header and str(c2_header).strip().lower() == "cust":
+                    if c2_value and str(c2_value).strip().upper() == "HMC":
+                        is_ucd = True
+            wb.close()
+    except Exception as e:
+        print(f"[xls_summary_parser] Error checking UCD: {e}")
+
     # 2. Determine parser name based on auto-detection or fallback to osat_name
     name = str(osat_name).strip().lower()
     
     if is_vendor_chipmore:
         print("[xls_summary_parser] Auto-detected Chipmore Format (has VENDOR: CHIPMORE)")
         name = "Chipmore"
+    elif is_ucd:
+        print("[xls_summary_parser] Auto-detected UCD Format (has Cust: HMC in first sheet)")
+        name = "ucd"
     elif "Bin_Summary" in sheet_names:
         print("[xls_summary_parser] Auto-detected LBS Format (has 'Bin_Summary' sheet)")
         name = "lbs"
@@ -106,7 +134,7 @@ def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, 
             name = "ksht"
 
     # Fallback to filename-based detection if sheet detection didn't resolve it
-    if name not in ("lbs", "ksht", "chipmore", "Chipmore"):
+    if name not in ("lbs", "ksht", "chipmore", "Chipmore", "ucd"):
         filename_lower = os.path.basename(filepath).lower()
         if "lbs" in filename_lower:
             print("[xls_summary_parser] Auto-detected LBS via filename")
@@ -114,16 +142,21 @@ def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, 
         elif "ksht" in filename_lower:
             print("[xls_summary_parser] Auto-detected KSHT via filename")
             name = "ksht"
+        elif "ucd" in filename_lower:
+            print("[xls_summary_parser] Auto-detected UCD via filename")
+            name = "ucd"
 
     print(f"[xls_summary_parser] Routing summary report parse for OSAT: {name!r} (original: {osat_name!r})")
     
     if name == "ksht":
         from app.services.parsers.ksht_summary_parser import parse_and_save_ksht_summary
-        # Pass name as the active osat_name (KSHT) so it saves it as "KSHT" OSAT
         return parse_and_save_ksht_summary(filepath, db, user_id, osat_name="KSHT")
     elif name == "lbs":
         from app.services.parsers.lbs_summary_parser import parse_and_save_lbs_summary
         return parse_and_save_lbs_summary(filepath, db, user_id, osat_name="LBS")
+    elif name == "ucd":
+        from app.services.parsers.ucd_summary_parser import parse_and_save_ucd_summary
+        return parse_and_save_ucd_summary(filepath, db, user_id, osat_name="UCD")
     elif name in ("chipmore", "Chipmore") or not name:
         from app.services.parsers.chipmore_summary_parser import parse_and_save_chipmore_summary
         return parse_and_save_chipmore_summary(filepath, db, user_id, osat_name="Chipmore")

@@ -15,3 +15,4 @@ class ProgramChangeExtra(Base):
     data_type_override = Column(String, nullable=True)   # 'CP' | 'FT'，覆盖 lot.data_type
     ft_touch_down_s = Column(Float, nullable=True)        # FT 用户手动填写的 TouchDown 秒数
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    remark = Column(String, nullable=True)

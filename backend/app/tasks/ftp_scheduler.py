@@ -286,6 +286,44 @@ def send_daily_failure_report_job():
         db.close()
 
 
+def precalculate_mp_yield_job():
+    """每周日晚上22:00定时预计算量产良率大盘的12种组合快照并写入Redis，TTL为24小时"""
+    from app.core.database import SessionLocal
+    from app.api.routes.lots import get_mp_yield_overview
+    import time
+
+    print("[scheduler] ⏰ 开始执行每周量产良率大盘预计算任务...")
+    
+    combinations = [
+        ("month", 1), ("month", 3), ("month", 6), ("month", 12),
+        ("year", 1), ("year", 2), ("year", 3),
+        ("lot", 20), ("lot", 50), ("lot", 100), ("lot", 200),
+        ("all", 0)
+    ]
+    
+    db = SessionLocal()
+    try:
+        for r_type, r_val in combinations:
+            t0 = time.time()
+            try:
+                get_mp_yield_overview(
+                    db=db,
+                    current_user=None,
+                    range_type=r_type,
+                    range_value=r_val if r_type != "all" else None,
+                    months=None,
+                    product_name=None
+                )
+                print(f"[scheduler] 成功计算并缓存组合 ({r_type}, {r_val})，耗时: {time.time() - t0:.2f} 秒")
+            except Exception as ex:
+                print(f"[scheduler] 预计算组合 ({r_type}, {r_val}) 失败: {ex}")
+        print("[scheduler] ✅ 每周量产良率大盘预计算任务圆满完成！")
+    except Exception as e:
+        print(f"[scheduler] precalculate_mp_yield_job 异常: {e}")
+    finally:
+        db.close()
+
+
 def start_scheduler():
     """在应用启动时调用，注册定时任务"""
     if not _scheduler.running:
@@ -304,6 +342,17 @@ def start_scheduler():
             hour=9,
             minute=0,
             id='daily_failure_report',
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
+        # 每周日 22:00:00 运行 of 量产良率大盘预计算任务
+        _scheduler.add_job(
+            precalculate_mp_yield_job,
+            trigger='cron',
+            day_of_week='sun',
+            hour=22,
+            minute=0,
+            id='precalculate_mp_yield_snapshot',
             replace_existing=True,
             misfire_grace_time=3600,
         )

@@ -11,19 +11,19 @@
           <span class="icon">📋</span>
           <span v-if="!collapsed" class="label">数据列表</span>
         </RouterLink>
-        <RouterLink to="/analysis" class="menu-item" :class="{ 'router-link-active': isAnalysisActive }">
+        <RouterLink to="/analysis" target="_blank" class="menu-item" :class="{ 'router-link-active': isAnalysisActive }">
           <span class="icon">📊</span>
           <span v-if="!collapsed" class="label">量产良率</span>
         </RouterLink>
-        <RouterLink to="/reports" class="menu-item">
+        <RouterLink to="/reports" target="_blank" class="menu-item">
           <span class="icon">📑</span>
           <span v-if="!collapsed" class="label">报表中心</span>
         </RouterLink>
-        <RouterLink to="/program-changes" class="menu-item" :class="{ 'router-link-active': $route.path.startsWith('/program-changes') }">
+        <RouterLink to="/program-changes" target="_blank" class="menu-item" :class="{ 'router-link-active': $route.path.startsWith('/program-changes') }">
           <span class="icon">📄</span>
           <span v-if="!collapsed" class="label">程序变更</span>
         </RouterLink>
-        <RouterLink v-if="authStore.isAdmin || authStore.isEng" to="/settings" class="menu-item">
+        <RouterLink v-if="authStore.isAdmin || authStore.isEng" to="/settings" target="_blank" class="menu-item">
           <span class="icon">⚙</span>
           <span v-if="!collapsed" class="label">系统设置</span>
         </RouterLink>

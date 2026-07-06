@@ -196,8 +196,9 @@
             <th>上传日期</th>
             <th>解析状态</th>
             <th>数据来源</th>
-            <th>Datasheet</th>
-            <th>操作</th>
+            <th class="th-ds">Datasheet</th>
+            <th class="th-raw">操作</th>
+            <th class="th-remark">备注</th>
           </tr>
         </thead>
         <tbody>
@@ -247,9 +248,19 @@
                 <button class="raw-btn download-btn" @click="downloadPgs(row)">下载</button>
               </div>
             </td>
+            <td class="editable-cell remark-cell" @click.stop="startPgmEdit(row.id, 'remark', row.remark)">
+              <template v-if="pgmEditState.id !== row.id || pgmEditState.field !== 'remark'">
+                {{ row.remark }}
+              </template>
+              <div v-else class="inline-edit" @click.stop>
+                <input v-model="pgmEditState.value" @keyup.enter="savePgmField(row, 'remark')"
+                  @keyup.escape="cancelPgmEdit" @blur="savePgmField(row, 'remark')"
+                  class="inline-input" autofocus />
+              </div>
+            </td>
           </tr>
           <tr v-if="!pgmRows.length && !pgmLoading">
-            <td colspan="12" class="td-empty">
+            <td colspan="13" class="td-empty">
               暂无 PGM 数据，请点击「上传程序」上传 .zip/.rar/.7z 文件
             </td>
           </tr>
@@ -458,6 +469,35 @@ const pgmLoading = ref(false)
 const editState = reactive<{ lot_id: number; field: string; value: any }>({
   lot_id: 0, field: '', value: ''
 })
+
+// ─── Pgm Remark edit state ───
+const pgmEditState = reactive<{ id: number; field: string; value: any }>({
+  id: 0, field: '', value: ''
+})
+
+function startPgmEdit(id: number, field: string, val: any) {
+  pgmEditState.id = id
+  pgmEditState.field = field
+  pgmEditState.value = val ?? ''
+}
+
+function cancelPgmEdit() {
+  pgmEditState.id = 0
+  pgmEditState.field = ''
+  pgmEditState.value = ''
+}
+
+async function savePgmField(row: any, field: string) {
+  if (!pgmEditState.field) return
+  try {
+    await api.put(`/programs/pgs/${row.id}/remark`, { remark: pgmEditState.value })
+    row[field] = pgmEditState.value
+  } catch (err: any) {
+    alert('保存失败: ' + (err.response?.data?.detail || err.message))
+  } finally {
+    cancelPgmEdit()
+  }
+}
 const suggestions = reactive<Record<string, string[]>>({
   engineer: [], package: [], hardware_info: []
 })
@@ -1071,6 +1111,23 @@ onMounted(() => { fetchDataSnapshot(); fetchPgmData(); fetchSuggestions() })
 
 .td-ds {
   text-align: center;
+}
+
+.th-ds, .td-ds {
+  width: 80px;
+  text-align: center;
+}
+.th-raw, .td-raw {
+  width: 100px;
+  text-align: center;
+  white-space: nowrap;
+}
+.th-remark, .td-remark {
+  min-width: 160px;
+  text-align: left;
+}
+.remark-cell .inline-input {
+  width: 100%;
 }
 
 .ds-row-actions {

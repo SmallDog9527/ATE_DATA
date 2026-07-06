@@ -4,7 +4,7 @@ from app.core.database import Base
 
 
 class PgsUpload(Base):
-    """PGS 程序文件上传记录"""
+    """PGS ????????"""
     __tablename__ = "pgs_uploads"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -13,15 +13,14 @@ class PgsUpload(Base):
     storage_path = Column(String, nullable=True)
     upload_date = Column(DateTime, server_default=func.now())
     uploader_id = Column(Integer, nullable=True)
-    # 解析结果
-    program_version = Column(String, nullable=True)   # 如 'V08'，从文件名提取
-    pgs_version = Column(Integer, nullable=True)       # 如 1007 / 1002
+    # ????
+    program_version = Column(String, nullable=True)   # ? 'V08'???????
+    pgs_version = Column(Integer, nullable=True)       # ? 1007 / 1002
     parse_status = Column(String, default="pending")   # pending / ok / error
-    parse_error = Column(Text, nullable=True)          # 解析失败时的错误信息
-    parsed_params = Column(Text, nullable=True)        # JSON: Param 表数据
-    parsed_summary = Column(Text, nullable=True)       # JSON: Summary 表数据
+    parse_error = Column(Text, nullable=True)          # ??????????
+    parsed_params = Column(Text, nullable=True)        # JSON: Param ???
+    parsed_summary = Column(Text, nullable=True)       # JSON: Summary ???
     datasheet_filename = Column(String, nullable=True)
     datasheet_path = Column(String, nullable=True)
-    sbl_input = Column(Text, nullable=True)            # 原始 SBL 解析输入框文本
-
-
+    sbl_input = Column(Text, nullable=True)            # ?? SBL ???????
+    remark = Column(String, nullable=True)             # ??

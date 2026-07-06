@@ -199,6 +199,7 @@ def _make_ftp(osat):
     else:
         ftp = ftplib.FTP()
         ftp.connect(osat.ftp_host, osat.ftp_port, timeout=15)
+    ftp.encoding = 'latin-1'
     ftp.login(osat.ftp_user, password)
     if isinstance(ftp, ftplib.FTP_TLS) and encryption != "plain":
         try:
@@ -296,6 +297,10 @@ def _walk_ftp(ftp: ftplib.FTP, current_dir: str, result: List[str], visited: set
                 subdirs.append(full_path)
             else:
                 lower_name = name.lower()
+                # 排除 .std 和 .mdb 相关文件（例如 .std, .std.zip, .mdb, .mdb.zip 等）
+                if ('.std.' in lower_name or lower_name.endswith('.std')
+                        or '.mdb.' in lower_name or lower_name.endswith('.mdb')):
+                    continue
                 # 排除 Summary 文件：sum.csv / sum.csv.gz / sum.csv.zip
                 # （即解压后内部文件名带 _sum 后缀的所有变体）
                 if skip_sum_files and (lower_name.endswith('sum.csv')
@@ -497,6 +502,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
     返回 {"ok": True, "lot_id": <id>} 或 {"error": "..."}
     """
     from app.models.ftp_upload_log import FtpUploadLog
+    effective_osat_name = osat.name.split('_')[0] if osat.name and '_' in osat.name else osat.name
     from app.models.lot import Lot
     from app.core.config import settings as app_settings
     from app.services.parsers.detector import detect_tester
@@ -579,16 +585,24 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                     z.extractall(extract_dir)
             else:
                 _extract_rar_archive(local_file, extract_dir)
-
+            has_log_files = False
             for root, _, files in os.walk(extract_dir):
                 for f in files:
                     flower = f.lower()
                     if (flower.endswith('.csv') or flower.endswith('.txt')
                             or flower.endswith('.xls') or flower.endswith('.xlsx')):
                         csv_files_to_process.append(os.path.join(root, f))
-
+                    elif flower.endswith('.log'):
+                        has_log_files = True
             if not csv_files_to_process:
-                raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt, .xls 或 .xlsx 文件")
+                if has_log_files:
+                    print(f"[ftp_fetch] ZIP/RAR 仅包含 .log 文件，放弃并标记成功")
+                    log.status = 'success'
+                    log.uploaded_at = datetime.now(timezone.utc)
+                    db.commit()
+                    return {"ok": True, "lot_id": None}
+                else:
+                    raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt, .xls 或 .xlsx 文件")
 
         elif ext == '.gz':
             # GZ 文件：解压，仅当内部文件是 CSV 或 TXT 时才处理
@@ -613,6 +627,13 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
             csv_files_to_process.append(inner_path)
             print(f"[ftp_fetch] GZ 已解压: {filename} -> {inner_name}")
 
+        elif ext == '.log':
+            print(f"[ftp_fetch] 发现 .log 文件 '{filename}'，放弃并标记成功")
+            log.status = 'success'
+            log.uploaded_at = datetime.now(timezone.utc)
+            db.commit()
+            return {"ok": True, "lot_id": None}
+
         elif ext in ('.csv', '.txt', '.xls', '.xlsx'):
             # 单个 CSV, TXT, XLS 或 XLSX 文件
             csv_files_to_process.append(local_file)
@@ -633,7 +654,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
             # ── 重名文件处理：检查是否已有对应 Lot 记录 ──
             existing_lot = db.query(Lot).filter(
                 Lot.filename == csv_filename,
-                Lot.osat_name == osat.name,
+                Lot.osat_name == effective_osat_name,
                 Lot.status.in_(['processed', 'pending', 'processing'])
             ).first()
             if existing_lot:
@@ -652,7 +673,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
             if csv_filename.lower().endswith(('.xls', '.xlsx')):
                 try:
                     from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
-                    created_lots = parse_and_save_xls_summary(save_path, db, None, osat_name=osat.name)
+                    created_lots = parse_and_save_xls_summary(save_path, db, None, osat_name=effective_osat_name)
                     if created_lots:
                         last_lot_id = created_lots[-1].id
                 except Exception as ex:
@@ -673,7 +694,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                     upload_date=datetime.now(timezone.utc),
                     test_machine='ETS364',
                     user_id=admin_user_id,
-                    osat_name=osat.name,
+                    osat_name=effective_osat_name,
                     data_type='Summary',
                     ftp_path=remote_path,
                 )
@@ -721,6 +742,13 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
             display_tester = 'STS8200' if tester == 'LBS' else tester
             try:
                 meta_result = parse_file(save_path)
+                # 如果没有有效数据行，直接丢弃该文件，跳过 Lot 数据库记录创建
+                if meta_result.error == "未找到有效数据行":
+                    print(f"[ftp_parse] 文件 {csv_filename} 没有有效数据行，抛弃该文件，跳过 Lot 创建")
+                    if os.path.exists(save_path):
+                        os.remove(save_path)
+                    continue
+
                 meta = {} if meta_result.error else {
                     'program': meta_result.program,
                     'lot_id': meta_result.lot_id,
@@ -745,7 +773,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                 upload_date=datetime.now(timezone.utc),
                 test_machine=display_tester,
                 user_id=admin_user_id,
-                osat_name=osat.name,
+                osat_name=effective_osat_name,
                 program=meta.get('program'),
                 lot_id=meta.get('lot_id'),
                 wafer_id=meta.get('wafer_id'),
@@ -946,20 +974,31 @@ def _do_download_with_ftp(ftp, osat_id: int, remote_path: str, admin_user_id: in
                     z.extractall(extract_dir)
             else:
                 _extract_rar_archive(local_file, extract_dir)
+            has_log_files = False
             for root, _, files in os.walk(extract_dir):
                 for f in files:
                     flower = f.lower()
                     if (flower.endswith('.csv') or flower.endswith('.txt')
                             or flower.endswith('.xls') or flower.endswith('.xlsx')):
                         csv_files_to_process.append(os.path.join(root, f))
+                    elif flower.endswith('.log'):
+                        has_log_files = True
             if not csv_files_to_process:
-                raise Exception("ZIP/RAR ????????? .csv, .txt, .xls ? .xlsx ??")
+                if has_log_files:
+                    print(f"[ftp_dl] ZIP/RAR 仅包含 .log 文件，放弃并标记成功")
+                    log.status = 'success'
+                    log.uploaded_at = datetime.now(timezone.utc)
+                    db.commit()
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    return None
+                else:
+                    raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt, .xls 或 .xlsx 文件")
 
         elif ext == '.gz':
             inner_name = os.path.splitext(filename)[0]
             inner_ext = os.path.splitext(inner_name)[1].lower()
             if inner_ext not in ('.csv', '.txt'):
-                print(f"[ftp_dl] GZ ???? '{inner_name}' ?? CSV/TXT?????")
+                print(f"[ftp_dl] GZ 内部文件 '{inner_name}' 不是 CSV/TXT，跳过解析")
                 log.status = 'success'
                 log.uploaded_at = datetime.now(timezone.utc)
                 db.commit()
@@ -973,15 +1012,23 @@ def _do_download_with_ftp(ftp, osat_id: int, remote_path: str, admin_user_id: in
                 with open(inner_path, 'wb') as out_f:
                     shutil.copyfileobj(gz_f, out_f)
             csv_files_to_process.append(inner_path)
-            print(f"[ftp_dl] GZ ???: {filename} -> {inner_name}")
+            print(f"[ftp_dl] GZ 已解压: {filename} -> {inner_name}")
+
+        elif ext == '.log':
+            print(f"[ftp_dl] 发现 .log 文件 '{filename}'，放弃并标记成功")
+            log.status = 'success'
+            log.uploaded_at = datetime.now(timezone.utc)
+            db.commit()
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
 
         elif ext in ('.csv', '.txt', '.xls', '.xlsx'):
             csv_files_to_process.append(local_file)
         else:
-            raise Exception(f"????????: {ext}")
+            raise Exception(f"不支持的文件格式: {ext}")
 
         csv_files_to_process.sort(key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
-        print(f"[ftp_dl] ? ????: {filename} ({len(csv_files_to_process)} ??????)")
+        print(f"[ftp_dl] 下载完成: {filename} ({len(csv_files_to_process)} 个待处理)")
         return (log_id, tmp_dir, csv_files_to_process)
 
     except Exception as e:
@@ -996,14 +1043,14 @@ def _do_download_with_ftp(ftp, osat_id: int, remote_path: str, admin_user_id: in
                     log_rec.uploaded_at = datetime.now(timezone.utc)
                     db.commit()
                     
-                    # ???????????????????
-                    fail_count = db.query(FtpUploadLog).filter(
-                        FtpUploadLog.osat_id == osat_id,
-                        FtpUploadLog.remote_path == remote_path,
-                        FtpUploadLog.status == 'failed'
-                    ).count()
-                    if fail_count >= _MAX_FAIL_RETRIES:
-                        send_failure_alert(db, osat, filename, err_msg)
+                    # 屏蔽单条即时报错发信规则
+                    # fail_count = db.query(FtpUploadLog).filter(
+                    #     FtpUploadLog.osat_id == osat_id,
+                    #     FtpUploadLog.remote_path == remote_path,
+                    #     FtpUploadLog.status == 'failed'
+                    # ).count()
+                    # if fail_count >= _MAX_FAIL_RETRIES:
+                    #     send_failure_alert(db, osat, filename, err_msg)
             except Exception:
                 db.rollback()
         if tmp_dir:
@@ -1104,14 +1151,25 @@ def _do_download(osat_id: int, remote_path: str, admin_user_id: int):
                     z.extractall(extract_dir)
             else:
                 _extract_rar_archive(local_file, extract_dir)
+            has_log_files = False
             for root, _, files in os.walk(extract_dir):
                 for f in files:
                     flower = f.lower()
                     if (flower.endswith('.csv') or flower.endswith('.txt')
                             or flower.endswith('.xls') or flower.endswith('.xlsx')):
                         csv_files_to_process.append(os.path.join(root, f))
+                    elif flower.endswith('.log'):
+                        has_log_files = True
             if not csv_files_to_process:
-                raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt, .xls 或 .xlsx 文件")
+                if has_log_files:
+                    print(f"[ftp_dl] ZIP/RAR 仅包含 .log 文件，放弃并标记成功")
+                    log.status = 'success'
+                    log.uploaded_at = datetime.now(timezone.utc)
+                    db.commit()
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    return None
+                else:
+                    raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt, .xls 或 .xlsx 文件")
 
         elif ext == '.gz':
             inner_name = os.path.splitext(filename)[0]
@@ -1133,6 +1191,14 @@ def _do_download(osat_id: int, remote_path: str, admin_user_id: int):
                     shutil.copyfileobj(gz_f, out_f)
             csv_files_to_process.append(inner_path)
             print(f"[ftp_dl] GZ 已解压: {filename} -> {inner_name}")
+
+        elif ext == '.log':
+            print(f"[ftp_dl] 发现 .log 文件 '{filename}'，放弃并标记成功")
+            log.status = 'success'
+            log.uploaded_at = datetime.now(timezone.utc)
+            db.commit()
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
 
         elif ext in ('.csv', '.txt', '.xls', '.xlsx'):
             csv_files_to_process.append(local_file)
@@ -1195,6 +1261,7 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
     filename = os.path.basename(remote_path)
     try:
         osat = db.query(OsatConfig).filter(OsatConfig.id == osat_id).first()
+        effective_osat_name = osat.name.split('_')[0] if osat and osat.name and '_' in osat.name else (osat.name if osat else "Unknown")
         log_rec = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
         UPLOAD_DIR = os.path.expanduser(app_settings.UPLOAD_DIR)
         last_lot_id = None
@@ -1207,7 +1274,7 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
             # ── 重名文件处理 ──────────────────────────────────────────────
             existing_lot = db.query(Lot).filter(
                 Lot.filename == csv_filename,
-                Lot.osat_name == osat.name,
+                Lot.osat_name == effective_osat_name,
                 Lot.status.in_(['processed', 'pending', 'processing'])
             ).first()
             if existing_lot:
@@ -1224,7 +1291,7 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
             if csv_filename.lower().endswith(('.xls', '.xlsx')):
                 try:
                     from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
-                    created_lots = parse_and_save_xls_summary(save_path, db, None, osat_name=osat.name)
+                    created_lots = parse_and_save_xls_summary(save_path, db, None, osat_name=effective_osat_name)
                     if created_lots:
                         last_lot_id = created_lots[-1].id
                 except Exception as ex:
@@ -1244,7 +1311,7 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
                     upload_date=datetime.now(timezone.utc),
                     test_machine='ETS364',
                     user_id=admin_user_id,
-                    osat_name=osat.name,
+                    osat_name=effective_osat_name,
                     data_type='Summary',
                     ftp_path=remote_path,
                 )
@@ -1291,6 +1358,13 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
             display_tester = 'STS8200' if tester == 'LBS' else tester
             try:
                 meta_result = parse_file(save_path)
+                # 如果没有有效数据行，直接丢弃该文件，跳过 Lot 数据库记录创建
+                if meta_result.error == "未找到有效数据行":
+                    print(f"[ftp_parse] 文件 {csv_filename} 没有有效数据行，抛弃该文件，跳过 Lot 创建")
+                    if os.path.exists(save_path):
+                        os.remove(save_path)
+                    continue
+
                 meta = {} if meta_result.error else {
                     'program': meta_result.program,
                     'lot_id': meta_result.lot_id,
@@ -1315,7 +1389,7 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
                 upload_date=datetime.now(timezone.utc),
                 test_machine=display_tester,
                 user_id=admin_user_id,
-                osat_name=osat.name,
+                osat_name=effective_osat_name,
                 program=meta.get('program'),
                 lot_id=meta.get('lot_id'),
                 wafer_id=meta.get('wafer_id'),

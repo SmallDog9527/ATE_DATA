@@ -44,6 +44,10 @@
               <option value="all">全部</option>
             </select>
           </div>
+          <div class="ov-filter-item" style="margin-left: 15px;">
+            <label>产品名</label>
+            <input type="text" v-model="ovProductName" placeholder="输入产品名" @input="debouncedOverviewSearch" class="filter-input input-device" style="width: 140px; font-size: 12px; padding: 4px 8px; border-radius: 4px; border: 1px solid #cbd5e1;" />
+          </div>
           <div class="ov-filter-item ov-filter-right">
             <button class="btn btn-primary" @click="fetchOverview(true)">刷新</button>
           </div>
@@ -172,10 +176,14 @@
     ════════════════════════════════════════════════ -->
     <div v-show="activeView === 'device'" class="tab-content">
       <div class="filter-card ov-filter">
-        <div class="ov-filter-row">
+        <div class="ov-filter-row" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
           <div class="ov-filter-item">
             <span style="font-size: 16px; font-weight: bold; color: #1e293b;">{{ deviceViewDevice }}</span>
             <span style="font-size: 12px; color: #64748b; margin-left: 10px;">基于总览的 {{ getFilterLabel() }} 筛选条件</span>
+          </div>
+          <div class="ov-filter-item" style="margin-right: 15px; display: flex; align-items: center; gap: 8px;">
+            <label style="font-size: 12px; font-weight: 600; color: #475569; margin: 0;">LOT</label>
+            <input type="text" v-model="deviceLotQuery" placeholder="输入 LOT ID 筛选" class="filter-input input-lot" style="width: 150px; font-size: 12px; padding: 4px 8px; border-radius: 4px; border: 1px solid #cbd5e1;" />
           </div>
         </div>
       </div>
@@ -210,7 +218,7 @@
         <AgGridVue
           class="ag-theme-alpine"
           :theme="'legacy'"
-          :rowData="deviceLots"
+          :rowData="filteredDeviceLots"
           :columnDefs="deviceColDefs"
           :defaultColDef="defaultColDef"
           style="width: 100%; flex: 1; min-height: 0;"
@@ -280,6 +288,29 @@ const activeView = ref<'overview' | 'detail' | 'device'>('overview')
 const deviceViewDevice = ref('')
 const deviceViewOsat = ref('')
 const deviceViewTester = ref('')
+
+const ovProductName = ref('')
+const deviceLotQuery = ref('')
+
+let ovSearchTimer: any = null
+function debouncedOverviewSearch() {
+  if (ovSearchTimer) clearTimeout(ovSearchTimer)
+  ovSearchTimer = setTimeout(() => {
+    fetchOverview(true)
+  }, 400)
+}
+
+const filteredDeviceLots = computed(() => {
+  if (!deviceLotQuery.value) return deviceLots.value
+  const q = deviceLotQuery.value.trim().toLowerCase()
+  return deviceLots.value.filter((l: any) => 
+    (l.lot_id || '').toLowerCase().includes(q)
+  )
+})
+
+watch(deviceLotQuery, () => {
+  nextTick(() => renderDeviceCharts())
+})
 
 function switchView(view: 'overview' | 'detail' | 'device') {
   activeView.value = view
@@ -384,6 +415,9 @@ async function fetchOverview(force = false) {
     const params: any = {
       range_type: rangeType.value,
       range_value: rangeType.value === 'all' ? null : rangeValue.value
+    }
+    if (ovProductName.value) {
+      params.product_name = ovProductName.value
     }
     const resp: any = await api.get('/lots/mp-yield/overview', { params })
     ovProducts.value = resp.products || []
@@ -754,10 +788,14 @@ async function fetchDeviceData() {
     })
     selectedBins.value = initSelected
 
-    // Group by LOT ID
+    // Group by LOT ID (合并 UCD 的子 LOT：若 OSAT 包含 UCD 且 lot_id 包含 #，按 # 前面的一致性合并)
     const lotGroups: Record<string, any[]> = {}
+    const isUCD = deviceViewOsat.value && deviceViewOsat.value.toUpperCase().includes('UCD')
     for (const w of allWafers) {
-      const lid = w.lot_id || 'Unknown'
+      let lid = w.lot_id || 'Unknown'
+      if (isUCD && lid.includes('#')) {
+        lid = lid.split('#')[0]
+      }
       if (!lotGroups[lid]) lotGroups[lid] = []
       lotGroups[lid].push(w)
     }
@@ -895,8 +933,9 @@ function renderDeviceCharts() {
       deviceYieldChart.resize()
     }
     
-    const lotIds = deviceLots.value.map(l => l.lot_id)
-    const yields = deviceLots.value.map(l => l.avg_yield.toFixed(2))
+    const lotsData = filteredDeviceLots.value
+    const lotIds = lotsData.map(l => l.lot_id)
+    const yields = lotsData.map(l => l.avg_yield.toFixed(2))
 
     // Listen to axis pointer updates to dynamically sync wafer yield chart on hover
     deviceYieldChart.off('updateAxisPointer')
@@ -916,7 +955,7 @@ function renderDeviceCharts() {
     let rightMax = 0
     const top1BinName = productTop5Bins.value[0]?.bin
     if (top1BinName) {
-      for (const lot of deviceLots.value) {
+      for (const lot of lotsData) {
         const val = lot.top5_fail_rates?.[top1BinName] || 0
         if (val > rightMax) {
           rightMax = val
@@ -949,7 +988,7 @@ function renderDeviceCharts() {
     const top5Colors = ['#3b82f6', '#10b981', '#ec4899', '#8b5cf6', '#06b6d4']
     productTop5Bins.value.forEach((topBin, idx) => {
       const binName = topBin.bin
-      const binData = deviceLots.value.map(l => {
+      const binData = lotsData.map(l => {
         const val = l.top5_fail_rates?.[binName]
         return val !== undefined ? parseFloat(val.toFixed(3)) : 0
       })
@@ -1043,8 +1082,15 @@ function renderWaferYieldChart() {
     waferYieldChart.resize()
   }
 
-  // Filter wafer data belonging to the selected LOT
-  const lotWafers = deviceWafers.value.filter((w: any) => w.lot_id === selectedLotId.value)
+  // Filter wafer data belonging to the selected LOT (考虑 UCD 子 LOT 合并)
+  const isUCD = deviceViewOsat.value && deviceViewOsat.value.toUpperCase().includes('UCD')
+  const lotWafers = deviceWafers.value.filter((w: any) => {
+    let lid = w.lot_id || ''
+    if (isUCD && lid.includes('#')) {
+      lid = lid.split('#')[0]
+    }
+    return lid === selectedLotId.value
+  })
 
   // Map wafer data to fixed slots from 1 to 25
   const waferData = Array(25).fill(null)
