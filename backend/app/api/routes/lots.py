@@ -76,7 +76,7 @@ def _collect_archive_data_files(extract_dir: str) -> list[str]:
     for root, _, files in os.walk(extract_dir):
         for f in files:
             flower = f.lower()
-            if flower.endswith('.csv') or flower.endswith('.txt') or flower.endswith('.xls') or flower.endswith('.xlsx'):
+            if flower.endswith('.csv') or (flower.endswith('.txt') and 'ets' in flower) or flower.endswith('.xls') or flower.endswith('.xlsx'):
                 data_files.append(os.path.join(root, f))
             elif _is_stdf(f):
                 from app.services.parsers.stdf_converter import convert_stdf_to_csv
@@ -102,7 +102,7 @@ def _collect_archive_data_files(extract_dir: str) -> list[str]:
                     os.remove(gz_inner)
                 except Exception as e:
                     print(f"[upload] Archive GZ extract failed {gz_inner}: {e}")
-    return sorted(data_files, key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
+    return sorted(data_files, key=lambda p: (1 if (p.lower().endswith('.txt') and 'ets' in p.lower() or p.lower().endswith(('.xls', '.xlsx'))) else 0, p))
 
 
 def _extract_data_archive(archive_path: str, filename: str) -> tuple[list[str], str]:
@@ -136,7 +136,7 @@ async def upload_files(
 ):
     results = []
     # 优先上传 Summary 报表 (.txt)，使后续 Data (.csv等) 上传时可匹配补全 Tester/Probe Card
-    sorted_files = sorted(files, key=lambda f: (0 if (f.filename or "").lower().endswith('.txt') else 1))
+    sorted_files = sorted(files, key=lambda f: (0 if ((f.filename or "").lower().endswith('.txt') and 'ets' in (f.filename or "").lower()) else 1))
     for file in sorted_files:
         try:
             batch = await _process_upload(file, db, background_tasks, current_user.id)
@@ -250,7 +250,7 @@ async def _process_upload(file: UploadFile, db: Session, background_tasks: Backg
         for root, _, files in os.walk(extract_dir):
             for f in files:
                 flower = f.lower()
-                if flower.endswith('.csv') or flower.endswith('.txt') or flower.endswith('.xls') or flower.endswith('.xlsx'):
+                if flower.endswith('.csv') or (flower.endswith('.txt') and 'ets' in flower) or flower.endswith('.xls') or flower.endswith('.xlsx'):
                     csv_files.append(os.path.join(root, f))
                 elif _is_stdf(f):
                     # ZIP 内的 STDF 文件先转换为 CSV
@@ -281,7 +281,7 @@ async def _process_upload(file: UploadFile, db: Session, background_tasks: Backg
         if not csv_files:
             raise HTTPException(status_code=400, detail="ZIP中未找到CSV、STDF、TXT或XLS/XLSX文件")
         # 确保 txt/xls 文件排在 csv 文件后面
-        csv_paths = sorted(csv_files, key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
+        csv_paths = sorted(csv_files, key=lambda p: (1 if (p.lower().endswith('.txt') and 'ets' in p.lower() or p.lower().endswith(('.xls', '.xlsx'))) else 0, p))
 
     return await _process_csv_paths(
         csv_paths, filename, save_path if is_zip else None,
@@ -327,7 +327,7 @@ async def _process_csv_paths(
                 })
             continue
 
-        if csv_name.lower().endswith('.txt'):
+        if csv_name.lower().endswith('.txt') and 'ets' in csv_name.lower():
             # Summary txt file
             lot_storage_path = csv_path
             lot_file_size = os.path.getsize(csv_path)

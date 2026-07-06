@@ -589,7 +589,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
             for root, _, files in os.walk(extract_dir):
                 for f in files:
                     flower = f.lower()
-                    if (flower.endswith('.csv') or flower.endswith('.txt')
+                    if (flower.endswith('.csv') or (flower.endswith('.txt') and 'ets' in flower)
                             or flower.endswith('.xls') or flower.endswith('.xlsx')):
                         csv_files_to_process.append(os.path.join(root, f))
                     elif flower.endswith('.log'):
@@ -602,7 +602,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                     db.commit()
                     return {"ok": True, "lot_id": None}
                 else:
-                    raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt, .xls 或 .xlsx 文件")
+                    raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt (含ets), .xls 或 .xlsx 文件")
 
         elif ext == '.gz':
             # GZ 文件：解压，仅当内部文件是 CSV 或 TXT 时才处理
@@ -634,14 +634,14 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
             db.commit()
             return {"ok": True, "lot_id": None}
 
-        elif ext in ('.csv', '.txt', '.xls', '.xlsx'):
+        elif ext in ('.csv', '.xls', '.xlsx') or (ext == '.txt' and 'ets' in filename.lower()):
             # 单个 CSV, TXT, XLS 或 XLSX 文件
             csv_files_to_process.append(local_file)
         else:
             raise Exception(f"不支持的文件格式: {ext}")
 
         # 确保 txt/xls/xlsx 文件排在 csv 文件后面进行处理
-        csv_files_to_process.sort(key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
+        csv_files_to_process.sort(key=lambda p: (1 if (p.lower().endswith('.txt') and 'ets' in os.path.basename(p).lower() or p.lower().endswith(('.xls', '.xlsx'))) else 0, p))
 
         last_lot_id = None
 
@@ -681,7 +681,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                     traceback.print_exc()
                 continue
 
-            if csv_filename.lower().endswith('.txt'):
+            if csv_filename.lower().endswith('.txt') and 'ets' in csv_filename.lower():
                 # Process Summary txt file
                 lot = Lot(
                     filename=save_name,
@@ -978,7 +978,7 @@ def _do_download_with_ftp(ftp, osat_id: int, remote_path: str, admin_user_id: in
             for root, _, files in os.walk(extract_dir):
                 for f in files:
                     flower = f.lower()
-                    if (flower.endswith('.csv') or flower.endswith('.txt')
+                    if (flower.endswith('.csv') or (flower.endswith('.txt') and 'ets' in flower)
                             or flower.endswith('.xls') or flower.endswith('.xlsx')):
                         csv_files_to_process.append(os.path.join(root, f))
                     elif flower.endswith('.log'):
@@ -992,7 +992,7 @@ def _do_download_with_ftp(ftp, osat_id: int, remote_path: str, admin_user_id: in
                     shutil.rmtree(tmp_dir, ignore_errors=True)
                     return None
                 else:
-                    raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt, .xls 或 .xlsx 文件")
+                    raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt (含ets), .xls 或 .xlsx 文件")
 
         elif ext == '.gz':
             inner_name = os.path.splitext(filename)[0]
@@ -1022,12 +1022,12 @@ def _do_download_with_ftp(ftp, osat_id: int, remote_path: str, admin_user_id: in
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return None
 
-        elif ext in ('.csv', '.txt', '.xls', '.xlsx'):
+        elif ext in ('.csv', '.xls', '.xlsx') or (ext == '.txt' and 'ets' in filename.lower()):
             csv_files_to_process.append(local_file)
         else:
             raise Exception(f"不支持的文件格式: {ext}")
 
-        csv_files_to_process.sort(key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
+        csv_files_to_process.sort(key=lambda p: (1 if (p.lower().endswith('.txt') and 'ets' in os.path.basename(p).lower() or p.lower().endswith(('.xls', '.xlsx'))) else 0, p))
         print(f"[ftp_dl] 下载完成: {filename} ({len(csv_files_to_process)} 个待处理)")
         return (log_id, tmp_dir, csv_files_to_process)
 
@@ -1155,7 +1155,7 @@ def _do_download(osat_id: int, remote_path: str, admin_user_id: int):
             for root, _, files in os.walk(extract_dir):
                 for f in files:
                     flower = f.lower()
-                    if (flower.endswith('.csv') or flower.endswith('.txt')
+                    if (flower.endswith('.csv') or (flower.endswith('.txt') and 'ets' in flower)
                             or flower.endswith('.xls') or flower.endswith('.xlsx')):
                         csv_files_to_process.append(os.path.join(root, f))
                     elif flower.endswith('.log'):
@@ -1169,14 +1169,14 @@ def _do_download(osat_id: int, remote_path: str, admin_user_id: int):
                     shutil.rmtree(tmp_dir, ignore_errors=True)
                     return None
                 else:
-                    raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt, .xls 或 .xlsx 文件")
+                    raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt (含ets), .xls 或 .xlsx 文件")
 
         elif ext == '.gz':
             inner_name = os.path.splitext(filename)[0]
             inner_ext = os.path.splitext(inner_name)[1].lower()
-            if inner_ext not in ('.csv', '.txt'):
-                # 内部文件不是 CSV/TXT，直接标记成功并跳过解析
-                print(f"[ftp_dl] GZ 内部文件 '{inner_name}' 不是 CSV/TXT，跳过解析")
+            if inner_ext not in ('.csv', '.txt') or (inner_ext == '.txt' and 'ets' not in inner_name.lower()):
+                # 内部文件不是 CSV/TXT，或者是无 ets 的 TXT，直接标记成功并跳过解析
+                print(f"[ftp_dl] GZ 内部文件 '{inner_name}' 不是 CSV/ETS TXT，跳过解析")
                 log.status = 'success'
                 log.uploaded_at = datetime.now(timezone.utc)
                 db.commit()
@@ -1200,12 +1200,12 @@ def _do_download(osat_id: int, remote_path: str, admin_user_id: int):
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return None
 
-        elif ext in ('.csv', '.txt', '.xls', '.xlsx'):
+        elif ext in ('.csv', '.xls', '.xlsx') or (ext == '.txt' and 'ets' in filename.lower()):
             csv_files_to_process.append(local_file)
         else:
             raise Exception(f"不支持的文件格式: {ext}")
 
-        csv_files_to_process.sort(key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
+        csv_files_to_process.sort(key=lambda p: (1 if (p.lower().endswith('.txt') and 'ets' in os.path.basename(p).lower() or p.lower().endswith(('.xls', '.xlsx'))) else 0, p))
         print(f"[ftp_dl] ✅ 下载完成: {filename} ({len(csv_files_to_process)} 个文件待解析)")
         return (log_id, tmp_dir, csv_files_to_process)
 
@@ -1303,7 +1303,7 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
                     traceback.print_exc()
                 continue
 
-            if csv_filename.lower().endswith('.txt'):
+            if csv_filename.lower().endswith('.txt') and 'ets' in csv_filename.lower():
                 lot = Lot(
                     filename=save_name,
                     storage_path=save_path,
@@ -1497,7 +1497,9 @@ def run_osat_fetch(osat_id: int):
 
         # Step 2: 去重（排除已成功 / 处理中 / 超限失败）
         new_paths = get_new_files(db, osat_id, all_paths)
-        new_paths = sorted(new_paths, key=lambda p: (1 if p.lower().endswith('.txt') else 0, p))
+        # 过滤掉非 ETS 的 .txt 文件
+        new_paths = [p for p in new_paths if not (p.lower().endswith('.txt') and 'ets' not in os.path.basename(p).lower())]
+        new_paths = sorted(new_paths, key=lambda p: (1 if (p.lower().endswith('.txt') and 'ets' in os.path.basename(p).lower()) else 0, p))
         print(f"[ftp_fetch] 去重后待处理 {len(new_paths)} 个文件")
 
         # ??????????????????????????????
@@ -1520,8 +1522,8 @@ def run_osat_fetch(osat_id: int):
                                         thread_name_prefix="ftp_parse")
 
         # 区分 Summary 文件 (.txt) 和 Data 文件 (其他)
-        summary_paths = [p for p in new_paths if p.lower().endswith('.txt')]
-        data_paths = [p for p in new_paths if not p.lower().endswith('.txt')]
+        summary_paths = [p for p in new_paths if p.lower().endswith('.txt') and 'ets' in os.path.basename(p).lower()]
+        data_paths = [p for p in new_paths if not (p.lower().endswith('.txt') and 'ets' in os.path.basename(p).lower())]
 
         def process_batch(paths, batch_name):
             if not paths:

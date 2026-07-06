@@ -55,6 +55,11 @@ def parse_summary_txt(filepath: str) -> dict:
         print(f"[parse_summary] 读取文件出错 {filepath}: {e}")
         return result
 
+    # 限制解析内容为从开头到出现Hdwr之前的内容
+    hdwr_pos_trunc = content.lower().find('hdwr')
+    if hdwr_pos_trunc != -1:
+        content = content[:hdwr_pos_trunc]
+
     # 1. 解析程序名 (Test Name)
     test_name_match = re.search(r'Test Name:\s*([^\r\n]*)', content, re.IGNORECASE)
     if test_name_match:
@@ -101,11 +106,11 @@ def parse_summary_txt(filepath: str) -> dict:
             
             # 使用固定宽度切片或正则解析
             # 例如: "    1     P    Pass                         3615      60.66"
-            if len(line) >= 37:
+            if len(line) >= 43:
                 bin_num_str = line[0:6].strip()
                 bin_type = line[6:13].strip()
-                bin_desc = line[13:37].strip()
-                bin_count_str = line[37:47].strip()
+                bin_desc = line[13:43].strip()
+                bin_count_str = line[43:53].strip()
 
                 if bin_num_str.isdigit():
                     bin_num = int(bin_num_str)
