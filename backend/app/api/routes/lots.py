@@ -390,7 +390,7 @@ async def _process_csv_paths(
             for bin_num, bin_info in summary_data.get('bins', {}).items():
                 bin_name = bin_info['name']
                 bin_count = bin_info['count']
-                bin_pct = float(bin_count) / lot.die_count if lot.die_count and lot.die_count > 0 else 0.0
+                bin_pct = float(bin_count) / lot.die_count * 100.0 if lot.die_count and lot.die_count > 0 else 0.0
                 bin_sum = BinSummary(
                     lot_id=lot.id,
                     bin_number=bin_num,
