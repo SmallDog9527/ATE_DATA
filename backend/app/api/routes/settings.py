@@ -405,6 +405,67 @@ def get_failed_summary(
     }
 
 
+@router.get("/ftp-logs/daily-summary")
+def get_ftp_logs_daily_summary(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin_or_eng),
+):
+    """Query FTP upload logs daily summary aggregated by production date and OSAT."""
+    from sqlalchemy import text
+    
+    osats = [
+        {"id": o.id, "name": o.name}
+        for o in db.query(OsatConfig).order_by(OsatConfig.id).all()
+    ]
+    
+    sql = """
+        SELECT 
+            (uploaded_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai' - INTERVAL '8 hours')::date AS prod_date,
+            osat_id,
+            status,
+            COUNT(*) AS cnt
+        FROM 
+            ftp_upload_logs
+        WHERE 
+            uploaded_at IS NOT NULL
+        GROUP BY 
+            prod_date, osat_id, status
+        ORDER BY 
+            prod_date DESC, osat_id
+    """
+    
+    result = db.execute(text(sql)).all()
+    
+    rows_dict = {}
+    for row in result:
+        date_str = str(row[0])
+        osat_id = row[1]
+        status = row[2]
+        count = row[3]
+        
+        if date_str not in rows_dict:
+            rows_dict[date_str] = {}
+        if osat_id not in rows_dict[date_str]:
+            rows_dict[date_str][osat_id] = {"success": 0, "failed": 0}
+            
+        if status == "success":
+            rows_dict[date_str][osat_id]["success"] += count
+        elif status == "failed":
+            rows_dict[date_str][osat_id]["failed"] += count
+            
+    rows = []
+    for date_str in sorted(rows_dict.keys(), reverse=True):
+        rows.append({
+            "date": date_str,
+            "stats": rows_dict[date_str]
+        })
+        
+    return {
+        "osats": osats,
+        "rows": rows
+    }
+
+
 @router.get("/manual-logs", response_model=ManualLogPage)
 def get_manual_logs(
     db: Session = Depends(get_db),

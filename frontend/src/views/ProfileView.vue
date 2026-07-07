@@ -381,6 +381,9 @@
             <button :class="['preset-btn', activeLogSubTab === 'manual' ? 'active' : '']" @click="activeLogSubTab = 'manual'">
               📤 ENG_日志
             </button>
+            <button :class="['preset-btn', activeLogSubTab === 'summary' ? 'active' : '']" @click="activeLogSubTab = 'summary'">
+              📊 FTP 日志汇总
+            </button>
           </div>
 
           <!-- FTP 自动上传日志 content -->
@@ -572,6 +575,39 @@
               <span>第 {{ manualLogPage }} 页 / 共 {{ Math.ceil(manualLogTotal / manualLogPageSize) }} 页</span>
               <button :disabled="manualLogPage * manualLogPageSize >= manualLogTotal" @click="manualLogPage++; loadManualLogs()" class="btn-sm">下一页</button>
             </div>
+          </template>
+
+          <!-- FTP 日志汇总 content -->
+          <template v-if="activeLogSubTab === 'summary' && (authStore.isAdmin || authStore.isEng)">
+            <div class="log-filter-row">
+              <button class="btn-sm" @click="loadDailySummary">🔄 刷新</button>
+            </div>
+
+            <div v-if="summaryLoading" class="loading">加载中...</div>
+            <div v-else-if="summaryRows.length === 0" class="empty-tip">暂无汇总数据</div>
+            <table v-else class="log-table">
+              <thead>
+                <tr>
+                  <th style="width: 150px;">日期</th>
+                  <th v-for="o in summaryOsats" :key="o.id">{{ o.name }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in summaryRows" :key="row.date">
+                  <td style="font-weight: 500;">{{ row.date }}</td>
+                  <td v-for="o in summaryOsats" :key="o.id">
+                    <span v-if="row.stats[o.id]">
+                      <span style="color: #16a34a; font-weight: 600;">{{ row.stats[o.id].success }}</span>
+                      <span style="color: #64748b;">/</span>
+                      <span :style="{ color: row.stats[o.id].failed > 0 ? '#dc2626' : '#64748b', fontWeight: row.stats[o.id].failed > 0 ? '600' : 'normal' }">
+                        {{ row.stats[o.id].failed }}
+                      </span>
+                    </span>
+                    <span v-else style="color: #cbd5e1;">—</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </template>
         </div>
       </div>
@@ -1520,6 +1556,23 @@ async function doAdminResetPw() {
   }
 }
 
+const summaryOsats = ref<any[]>([])
+const summaryRows = ref<any[]>([])
+const summaryLoading = ref(false)
+
+async function loadDailySummary() {
+  summaryLoading.value = true
+  try {
+    const data: any = await api.get('/settings/ftp-logs/daily-summary')
+    summaryOsats.value = data.osats || []
+    summaryRows.value = data.rows || []
+  } catch (e) {
+    console.error('Failed to load daily summary:', e)
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
 // ── 工具 ──
 function fmtDate(d?: string) {
   return fmtDateTz(d)
@@ -1538,7 +1591,7 @@ onMounted(async () => {
   await loadManualLogs()
   await loadVersionInfo()
   if (authStore.isAdmin || authStore.isEng) {
-    await Promise.all([loadOsats(), loadFtpLogs(), loadSmtpConfig(), loadManualOperators()])
+    await Promise.all([loadOsats(), loadFtpLogs(), loadSmtpConfig(), loadManualOperators(), loadDailySummary()])
   }
   if (authStore.isAdmin) {
     await loadUsers()
