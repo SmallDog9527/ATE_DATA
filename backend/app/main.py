@@ -44,9 +44,9 @@ def on_startup():
             conn.execute(text("ALTER TABLE pgs_uploads ADD COLUMN IF NOT EXISTS datasheet_filename VARCHAR"))
             conn.execute(text("ALTER TABLE pgs_uploads ADD COLUMN IF NOT EXISTS datasheet_path VARCHAR"))
             conn.execute(text("ALTER TABLE datasheet_parameters ADD COLUMN IF NOT EXISTS remark VARCHAR"))
-            # Update existing ksht records to uppercase KSHT
-            conn.execute(text("UPDATE lots SET osat_name = 'KSHT' WHERE osat_name = 'ksht'"))
-            conn.execute(text("UPDATE osat_configs SET name = 'KSHT' WHERE name = 'ksht'"))
+            # Update existing ksht/KSHT records to HTKS
+            conn.execute(text("UPDATE lots SET osat_name = 'HTKS' WHERE osat_name IN ('ksht', 'KSHT')"))
+            conn.execute(text("UPDATE osat_configs SET name = 'HTKS' WHERE name IN ('ksht', 'KSHT')"))
             conn.execute(text("UPDATE lots SET osat_name = 'Chipmore' WHERE osat_name = 'chipmore'"))
             conn.execute(text("UPDATE osat_configs SET name = 'Chipmore' WHERE name = 'chipmore'"))
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_alerts BOOLEAN DEFAULT FALSE"))

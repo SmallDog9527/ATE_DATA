@@ -17,7 +17,7 @@ def parse_ksht_date(val):
             pass
     return None
 
-def parse_and_save_ksht_summary(filepath: str, db: Session, user_id: int = None, osat_name: str = "KSHT") -> list:
+def parse_and_save_ksht_summary(filepath: str, db: Session, user_id: int = None, osat_name: str = "HTKS") -> list:
     """
     Parse KSHT XLSX summary reports (both Format 1 and Format 2)
     and save the parsed wafer data into the database.

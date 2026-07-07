@@ -916,7 +916,7 @@ def get_mp_yield_overview(
 
             products.append({
                 "product_name": pname,
-                "osat": osat.upper() if osat.lower() == "ksht" else osat,
+                "osat": osat.upper() if osat.lower() in ("ksht", "htks") else osat,
                 "wafers": wafer_count,
                 "bin1_k": int(total_pass // 1000),       # integer K
                 "avg_yield": round(avg_yield, 2),
@@ -2177,3 +2177,20 @@ def merge_cp_lot(data: MergeCpLotRequest, db: Session = Depends(get_db)):
 
     return {"id": new_lot.id, "filename": new_lot.filename, "status": new_lot.status}
 
+@router.get("/osats/names")
+def get_distinct_osat_names(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """获取数据库中所有已有的 OSAT 厂名称"""
+    try:
+        results = db.query(Lot.osat_name).filter(Lot.osat_name.isnot(None)).distinct().all()
+        names = [r[0] for r in results if r[0].strip()]
+        names = sorted(list(set([n.strip() for n in names])))
+        defaults = ["Chipmore", "LBS", "HTKS", "HTJS", "UCD"]
+        for d in defaults:
+            if d not in names:
+                names.append(d)
+        return sorted(names)
+    except Exception as e:
+        return ["Chipmore", "LBS", "HTKS", "HTJS", "UCD"]

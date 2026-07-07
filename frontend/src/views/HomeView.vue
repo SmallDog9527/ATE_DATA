@@ -368,6 +368,7 @@ const fileInput = ref<HTMLInputElement>()
 const gridApi = ref<GridApi>()
 const filters = ref({ product_name: '', lot_id: '', status: 'processed' })
 const backendGridFilters = ref<Record<string, string>>({})
+const allOsatNames = ref<string[]>([])
 const displayEditInput = ref<HTMLInputElement>()
 const displayEditDialog = ref({
   visible: false,
@@ -1071,7 +1072,7 @@ const columnDefs: ColDef[] = [
     suppressHeaderFilterButton: true,
     floatingFilterComponent: SelectFloatingFilter,
     floatingFilterComponentParams: {
-      options: () => uniqueColumnOptions('osat_name'),
+      options: () => allOsatNames.value,
       placeholder: 'OSAT',
     },
     cellRenderer: (p: any) => {
@@ -1206,6 +1207,16 @@ async function fetchLots() {
     console.error('fetchLots failed:', e)
     lots.value = []
     backendTotal.value = 0
+  }
+}
+
+async function fetchOsatNames() {
+  try {
+    const res: any = await api.get('/lots/osats/names')
+    allOsatNames.value = res || []
+  } catch (e) {
+    console.error('Failed to fetch osat names:', e)
+    allOsatNames.value = ["Chipmore", "LBS", "HTKS", "HTJS", "UCD"]
   }
 }
 
@@ -1676,7 +1687,10 @@ function onCheckboxClick(event: MouseEvent, p: string) {
   }
 }
 
-onMounted(fetchLots)
+onMounted(() => {
+  fetchLots()
+  fetchOsatNames()
+})
 watch(activeHomeTab, () => {
   if (gridApi.value) {
     const model = gridApi.value.getFilterModel() || {}

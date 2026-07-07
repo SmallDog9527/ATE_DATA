@@ -174,7 +174,7 @@ def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, 
     
     if name == "ksht":
         from app.services.parsers.ksht_summary_parser import parse_and_save_ksht_summary
-        return parse_and_save_ksht_summary(filepath, db, user_id, osat_name="KSHT")
+        return parse_and_save_ksht_summary(filepath, db, user_id, osat_name="HTKS")
     elif name == "lbs":
         from app.services.parsers.lbs_summary_parser import parse_and_save_lbs_summary
         return parse_and_save_lbs_summary(filepath, db, user_id, osat_name="LBS")
