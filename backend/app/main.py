@@ -50,8 +50,8 @@ def on_startup():
             conn.execute(text("UPDATE lots SET osat_name = 'Chipmore' WHERE osat_name = 'chipmore'"))
             conn.execute(text("UPDATE osat_configs SET name = 'Chipmore' WHERE name = 'chipmore'"))
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_alerts BOOLEAN DEFAULT FALSE"))
-            # ?????????????? processing ??
-            conn.execute(text("UPDATE ftp_upload_logs SET status = 'failed', error_msg = '????????????????????????????' WHERE status = 'processing'"))
+            # Force mark any stuck processing logs as failed on service startup
+            conn.execute(text("UPDATE ftp_upload_logs SET status = 'failed', error_msg = 'Service restarted unexpectedly, marked as failed' WHERE status = 'processing'"))
             conn.commit()
         except Exception:
             conn.rollback()

@@ -842,7 +842,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
         log.lot_id_created = last_lot_id
         log.uploaded_at = datetime.now(timezone.utc)
         
-        # 物理删除该文件此前的所有失败历史日志，保持日志列表干净
+        # Physically delete all previous failed history logs for this file to keep logs list clean
         try:
             db.query(FtpUploadLog).filter(
                 FtpUploadLog.osat_id == log.osat_id,
@@ -1503,7 +1503,7 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
         log_rec.lot_id_created = last_lot_id
         log_rec.uploaded_at = datetime.now(timezone.utc)
         
-        # 物理删除该文件此前的所有失败历史日志，保持日志列表干净
+        # Physically delete all previous failed history logs for this file to keep logs list clean
         try:
             db.query(FtpUploadLog).filter(
                 FtpUploadLog.osat_id == log_rec.osat_id,
