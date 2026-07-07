@@ -458,12 +458,12 @@
             <div v-else-if="ftpLogs.length === 0" class="empty-tip">暂无上传日志</div>
             <table v-else class="log-table">
               <colgroup>
-                <col style="width:135px" />
-                <col />
                 <col style="width:120px" />
-                <col style="width:120px" />
+                <col style="width:320px" />
+                <col style="width:100px" />
+                <col style="width:100px" />
                 <col style="width:150px" />
-                <col style="width:110px" />
+                <col />
               </colgroup>
               <thead>
                 <tr>
@@ -1699,7 +1699,7 @@ onMounted(async () => {
 .log-table td { padding: 9px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 .log-table tr:hover td { background: #fafbff; }
 .log-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #444; }
-.log-error { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #dc2626; font-size: 12px; }
+.log-error { word-break: break-all; color: #dc2626; font-size: 12px; }
 .osat-tag { background: #f5f3ff; color: #7c3aed; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 500; }
 .log-pagination { display: flex; align-items: center; gap: 12px; justify-content: center; margin-top: 12px; font-size: 13px; color: #666; }
 
