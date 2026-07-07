@@ -76,7 +76,7 @@ def _collect_archive_data_files(extract_dir: str) -> list[str]:
     for root, _, files in os.walk(extract_dir):
         for f in files:
             flower = f.lower()
-            if flower.endswith('.csv') or (flower.endswith('.txt') and 'ets' in flower) or flower.endswith('.xls') or flower.endswith('.xlsx'):
+            if flower.endswith('.csv') or flower.endswith('.txt') or flower.endswith('.xls') or flower.endswith('.xlsx'):
                 data_files.append(os.path.join(root, f))
             elif _is_stdf(f):
                 from app.services.parsers.stdf_converter import convert_stdf_to_csv
@@ -102,7 +102,7 @@ def _collect_archive_data_files(extract_dir: str) -> list[str]:
                     os.remove(gz_inner)
                 except Exception as e:
                     print(f"[upload] Archive GZ extract failed {gz_inner}: {e}")
-    return sorted(data_files, key=lambda p: (1 if (p.lower().endswith('.txt') and 'ets' in p.lower() or p.lower().endswith(('.xls', '.xlsx'))) else 0, p))
+    return sorted(data_files, key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
 
 
 def _extract_data_archive(archive_path: str, filename: str) -> tuple[list[str], str]:
@@ -135,9 +135,7 @@ async def upload_files(
     current_user: User = Depends(get_current_user),
 ):
     results = []
-    # 优先上传 Summary 报表 (.txt)，使后续 Data (.csv等) 上传时可匹配补全 Tester/Probe Card
-    sorted_files = sorted(files, key=lambda f: (0 if ((f.filename or "").lower().endswith('.txt') and 'ets' in (f.filename or "").lower()) else 1))
-    for file in sorted_files:
+    for file in files:
         try:
             batch = await _process_upload(file, db, background_tasks, current_user.id)
             results.extend(batch)
@@ -250,7 +248,7 @@ async def _process_upload(file: UploadFile, db: Session, background_tasks: Backg
         for root, _, files in os.walk(extract_dir):
             for f in files:
                 flower = f.lower()
-                if flower.endswith('.csv') or (flower.endswith('.txt') and 'ets' in flower) or flower.endswith('.xls') or flower.endswith('.xlsx'):
+                if flower.endswith('.csv') or flower.endswith('.txt') or flower.endswith('.xls') or flower.endswith('.xlsx'):
                     csv_files.append(os.path.join(root, f))
                 elif _is_stdf(f):
                     # ZIP 内的 STDF 文件先转换为 CSV
@@ -281,7 +279,7 @@ async def _process_upload(file: UploadFile, db: Session, background_tasks: Backg
         if not csv_files:
             raise HTTPException(status_code=400, detail="ZIP中未找到CSV、STDF、TXT或XLS/XLSX文件")
         # 确保 txt/xls 文件排在 csv 文件后面
-        csv_paths = sorted(csv_files, key=lambda p: (1 if (p.lower().endswith('.txt') and 'ets' in p.lower() or p.lower().endswith(('.xls', '.xlsx'))) else 0, p))
+        csv_paths = sorted(csv_files, key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
 
     return await _process_csv_paths(
         csv_paths, filename, save_path if is_zip else None,
@@ -310,7 +308,7 @@ async def _process_csv_paths(
         if csv_name.lower().endswith(('.xls', '.xlsx')):
             try:
                 from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
-                created_lots = parse_and_save_xls_summary(csv_path, db, user_id, osat_name="Chipmore")
+                created_lots = parse_and_save_xls_summary(csv_path, db, user_id, osat_name="chipmore")
                 for lot in created_lots:
                     results.append({
                         "filename": csv_name,
@@ -327,7 +325,7 @@ async def _process_csv_paths(
                 })
             continue
 
-        if csv_name.lower().endswith('.txt') and 'ets' in csv_name.lower():
+        if csv_name.lower().endswith('.txt'):
             # Summary txt file
             lot_storage_path = csv_path
             lot_file_size = os.path.getsize(csv_path)
@@ -354,54 +352,10 @@ async def _process_csv_paths(
                 lot.test_date = summary_data['beginning_time']
             if summary_data.get('ending_time'):
                 lot.ending_time = summary_data['ending_time']
-            if summary_data.get('tester'):
-                lot.mp_tester = summary_data['tester']
-            if summary_data.get('probecard'):
-                lot.probecard = summary_data['probecard']
-            if summary_data.get('program'):
-                lot.program = summary_data['program']
-                prefix = summary_data['program'].split('_')[0]
-                from app.models.product_mapping import ProductMapping
-                mapping = db.query(ProductMapping).filter(
-                    ProductMapping.program_prefix == prefix
-                ).first()
-                if mapping:
-                    lot.product_name = mapping.product_name
-            if summary_data.get('lot_id'):
-                lot.lot_id = summary_data['lot_id']
-            if summary_data.get('wafer_id'):
-                lot.wafer_id = summary_data['wafer_id']
-            if summary_data.get('handler'):
-                lot.handler = summary_data['handler']
-            if summary_data.get('die_count') is not None:
-                lot.die_count = summary_data['die_count']
-            if summary_data.get('pass_count') is not None:
-                lot.pass_count = summary_data['pass_count']
-            if summary_data.get('fail_count') is not None:
-                lot.fail_count = summary_data['fail_count']
-            if summary_data.get('yield_rate') is not None:
-                lot.yield_rate = summary_data['yield_rate']
 
             db.add(lot)
             db.commit()
             db.refresh(lot)
-
-            from app.models.bin_summary import BinSummary
-            for bin_num, bin_info in summary_data.get('bins', {}).items():
-                bin_name = bin_info['name']
-                bin_count = bin_info['count']
-                bin_pct = float(bin_count) / lot.die_count * 100.0 if lot.die_count and lot.die_count > 0 else 0.0
-                bin_sum = BinSummary(
-                    lot_id=lot.id,
-                    bin_number=bin_num,
-                    bin_name=bin_name,
-                    site=0,
-                    count=bin_count,
-                    percentage=bin_pct,
-                    data_range="final",
-                )
-                db.add(bin_sum)
-            db.commit()
 
             csv_mapped_name = find_corresponding_csv_filename(csv_name)
             csv_base = os.path.splitext(csv_mapped_name)[0]
@@ -817,8 +771,8 @@ def reparse_lots(
 def get_mp_yield_overview(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    range_type: str = Query("year"),
-    range_value: Optional[int] = Query(1),
+    range_type: str = Query("month"),
+    range_value: Optional[int] = Query(3),
     months: Optional[int] = Query(None),
     product_name: Optional[str] = None,
 ):
@@ -829,40 +783,6 @@ def get_mp_yield_overview(
                    avg_wafer_time_h, top5 fail bins (pct = bin_cnt/total_die)
     - Weekly trend: output (wafers/week) and avg yield per week
     """
-    # Unwrap FastAPI Query default parameters when called as a normal Python function
-    if hasattr(range_type, "default"):
-        range_type = range_type.default
-    if hasattr(range_value, "default"):
-        range_value = range_value.default
-    if hasattr(months, "default"):
-        months = months.default
-
-    try:
-        from app.core.redis_client import get_redis
-        import json
-        redis_client = get_redis()
-    except Exception as re:
-        print(f"[redis] Error getting client: {re}")
-        redis_client = None
-
-    norm_range_type = (range_type or "month").strip().lower()
-    norm_range_value = range_value if range_value is not None else (3 if norm_range_type == "month" else (1 if norm_range_type == "year" else 20))
-    if months is not None:
-        norm_range_type = "month"
-        norm_range_value = months
-
-    norm_product_name = (product_name or "").strip()
-    cache_key = f"cache:mp_yield_overview:{norm_range_type}:{norm_range_value}:{norm_product_name}"
-
-    if redis_client:
-        try:
-            cached_data = redis_client.get(cache_key)
-            if cached_data:
-                print(f"[cache] Hit cache for key: {cache_key}")
-                return json.loads(cached_data)
-        except Exception as ce:
-            print(f"[cache] Read error: {ce}")
-
     try:
         from app.models.lot import DataSource
         from collections import defaultdict
@@ -947,7 +867,7 @@ def get_mp_yield_overview(
         group_lots: dict = defaultdict(list)
         for lot in lots:
             pname = lot.product_name or "(unknown)"
-            osat = lot.osat_name or "Chipmore"
+            osat = lot.osat_name or "chipmore"
             group_lots[(pname, osat)].append(lot)
 
         products = []
@@ -1035,7 +955,7 @@ def get_mp_yield_overview(
         # ── OSAT aggregation ─────────────────────────────────────────────────
         osat_bin1_totals = defaultdict(int)
         for lot in lots:
-            osat = lot.osat_name or "Chipmore"
+            osat = lot.osat_name or "chipmore"
             osat_bin1_totals[osat] += lot.pass_count or 0
 
         osats = [
@@ -1046,22 +966,12 @@ def get_mp_yield_overview(
             for name, total_pass in osat_bin1_totals.items()
         ]
 
-        result_data = {
+        return {
             "products": products,
             "weekly_output": weekly_output,
             "weekly_yield": weekly_yield,
             "osats": osats,
         }
-
-        if redis_client:
-            try:
-                ttl = 86400 if not norm_product_name else 43200
-                redis_client.setex(cache_key, ttl, json.dumps(result_data))
-                print(f"[cache] Successfully cached query key: {cache_key} (ttl={ttl})")
-            except Exception as se:
-                print(f"[cache] Failed to write cache: {se}")
-
-        return result_data
 
     except Exception as e:
         import traceback
@@ -1194,6 +1104,37 @@ def get_mp_yield_list(
                     bin_summaries_map[b.lot_id] = {}
                 bin_summaries_map[b.lot_id][b.bin_number] = b.count
                 
+        # 计算当前页各 Lot 在 OSAT_CP 中的已上传去重 wafer 数量
+        cp_counts_map = {}
+        lot_keys = list(set((lot.product_name, lot.lot_id) for lot in lots if lot.product_name and lot.lot_id))
+        if lot_keys:
+            lot_ids_in_page = [k[1] for k in lot_keys]
+            product_names_in_page = [k[0] for k in lot_keys]
+            
+            from sqlalchemy import not_
+            counts_q = (
+                db.query(
+                    Lot.product_name,
+                    Lot.lot_id,
+                    func.count(func.distinct(Lot.wafer_id))
+                )
+                .filter(
+                    Lot.data_type == 'CP',
+                    Lot.status != 'deleted',
+                    Lot.lot_id.in_(lot_ids_in_page),
+                    Lot.product_name.in_(product_names_in_page),
+                    not_(Lot.filename.ilike("%qa%")),
+                    not_(Lot.filename.ilike("%cp_lot%")),
+                    not_(Lot.filename.ilike("%merged%")),
+                    not_(Lot.filename.ilike("%合并%"))
+                )
+                .group_by(Lot.product_name, Lot.lot_id)
+                .all()
+            )
+            for prod, lid, cnt in counts_q:
+                if prod and lid:
+                    cp_counts_map[(prod.strip().lower(), lid.strip().lower())] = cnt
+
         items = []
         for lot in lots:
             lot_bins = bin_summaries_map.get(lot.id, {})
@@ -1211,9 +1152,13 @@ def get_mp_yield_list(
                 if diff_s > 0:
                     duration_h = round(diff_s / 3600.0, 2)
                     
+            prod_key = (lot.product_name.strip().lower() if lot.product_name else "",
+                        lot.lot_id.strip().lower() if lot.lot_id else "")
+            cp_wafer_count = cp_counts_map.get(prod_key, 0)
+
             item = {
                 "id": lot.id,
-                "osat_name": lot.osat_name or "Chipmore",
+                "osat_name": lot.osat_name or "chipmore",
                 "test_start": test_start_str,
                 "test_date": test_date_str,
                 "duration_h": duration_h,
@@ -1226,6 +1171,7 @@ def get_mp_yield_list(
                 "program": lot.program or "",
                 "mp_tester": lot.mp_tester or "",
                 "probecard": lot.probecard or "",
+                "cp_wafer_count": cp_wafer_count,
             }
             
             for sbin_idx in range(1, 131):
@@ -1537,6 +1483,11 @@ def merge_lots(data: MergeRequest, db: Session = Depends(get_db)):
     def _lot_end_time(lot: Lot):
         return lot.ending_time or lot.test_date or lot.beginning_time or lot.upload_date
 
+    # 校验所选 LOT 记录的晶圆编号是否一致
+    wafer_ids = set(l.wafer_id.strip() if l.wafer_id else "" for l in lots)
+    if len(wafer_ids) > 1:
+        raise HTTPException(status_code=400, detail="所选数据的晶圆编号不一致，无法合并")
+
     lots.sort(key=_lot_start_time)
     merged_beginning_time = min(
         (t for t in (_lot_start_time(lot) for lot in lots) if t),
@@ -1687,6 +1638,8 @@ def merge_lots(data: MergeRequest, db: Session = Depends(get_db)):
 
         new_lot.status = 'processed'
         new_lot.finish_date = datetime.now(timezone.utc)
+        elapsed = max(1, int(time.time() - t0))
+        new_lot.test_stage = f"{elapsed}S"
         db.commit()
     except Exception as e:
         import traceback
@@ -1700,6 +1653,8 @@ def merge_lots(data: MergeRequest, db: Session = Depends(get_db)):
 
 @router.post("/merge_many")
 def merge_many_lots(data: MergeManyRequest, db: Session = Depends(get_db)):
+    import time
+    t0 = time.time()
     import pandas as pd
     from datetime import timezone
 
@@ -1736,7 +1691,29 @@ def merge_many_lots(data: MergeManyRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail=f"LOT {lot.id} 没有测试项定义")
         current_param_names = [it.item_name for it in ref_items]
         if idx == 0:
-            ref_param_order = current_param_names
+            ref_param_order = list(current_param_names)
+        else:
+            for item in current_param_names:
+                if item not in ref_param_order:
+                    idx_pos = current_param_names.index(item)
+                    inserted = False
+                    for i in range(idx_pos - 1, -1, -1):
+                        prev_item = current_param_names[i]
+                        if prev_item in ref_param_order:
+                            insert_idx = ref_param_order.index(prev_item) + 1
+                            ref_param_order.insert(insert_idx, item)
+                            inserted = True
+                            break
+                    if not inserted:
+                        for i in range(idx_pos + 1, len(current_param_names)):
+                            next_item = current_param_names[i]
+                            if next_item in ref_param_order:
+                                insert_idx = ref_param_order.index(next_item)
+                                ref_param_order.insert(insert_idx, item)
+                                inserted = True
+                                break
+                    if not inserted:
+                        ref_param_order.append(item)
         for it in ref_items:
             param_meta_by_name.setdefault(it.item_name, {
                 'lower_limit': it.lower_limit,
@@ -1751,14 +1728,6 @@ def merge_many_lots(data: MergeManyRequest, db: Session = Depends(get_db)):
                 aligned_df[pname] = df[pname]
             else:
                 aligned_df[pname] = None
-        for pname in current_param_names:
-            if pname not in aligned_df.columns:
-                aligned_df[pname] = df[pname] if pname in df.columns else None
-                if pname not in ref_param_order:
-                    ref_param_order.append(pname)
-
-        merged_cols = [c for c in ref_param_order if c in aligned_df.columns]
-        aligned_df = aligned_df[merged_cols]
 
         # 保留坐标与 bin 等信息在原始 parquet 中；这里仅做测试项拼接统计
         for col in meta_cols:
@@ -1781,8 +1750,17 @@ def merge_many_lots(data: MergeManyRequest, db: Session = Depends(get_db)):
         default=None,
     )
 
+    product_name = ref_lot.product_name
+    lot_ids = list(dict.fromkeys(l.lot_id for l in lots if l.lot_id))
+    lot_str = "_".join(lot_ids)
+    date_suffix = datetime.now().strftime("%Y%m%d%H%M")
+    dt_str = ref_lot.data_type
+    if dt_str == 'CP':
+        dt_str = 'CP_LOT'
+    constructed_filename = f"Merged_{product_name}_{lot_str}_{dt_str}_{date_suffix}.parquet"
+
     new_lot = Lot(
-        filename=data.new_name,
+        filename=constructed_filename,
         product_name=ref_lot.product_name,
         lot_id=data.new_lot_id or ref_lot.lot_id,
         wafer_id=data.new_wafer_id or ref_lot.wafer_id,
@@ -1829,6 +1807,8 @@ def merge_many_lots(data: MergeManyRequest, db: Session = Depends(get_db)):
         save_stats_to_db(new_lot, parsed, db, PASS_BINS)
         new_lot.status = 'processed'
         new_lot.finish_date = datetime.now(timezone.utc)
+        elapsed = max(1, int(time.time() - t0))
+        new_lot.test_stage = f"{elapsed}S"
         db.commit()
     except Exception as e:
         import traceback
@@ -1914,3 +1894,286 @@ def download_lots(data: DownloadRequest, db: Session = Depends(get_db)):
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'}
     )
+
+
+class MergeCpLotRequest(BaseModel):
+    lot_id: str
+    product_name: str
+
+
+@router.post("/merge-cp-lot")
+def merge_cp_lot(data: MergeCpLotRequest, db: Session = Depends(get_db)):
+    import time
+    t0 = time.time()
+    import pandas as pd
+    from datetime import timezone
+
+    lot_id = data.lot_id.strip()
+    product_name = data.product_name.strip()
+
+    # 1. 找出该 LOT 所有的有效 Wafer 数据记录（排除 QA 且排除 CP_LOT 以防递归）
+    wafers_query = db.query(Lot).filter(
+        Lot.lot_id == lot_id,
+        Lot.product_name == product_name,
+        Lot.data_type != 'QA',
+        Lot.data_type != 'CP_LOT',
+        Lot.status == 'processed'
+    ).all()
+
+    if not wafers_query:
+        raise HTTPException(status_code=400, detail=f"批号 {lot_id} 下没有可合并的 Wafer 数据记录")
+
+    # 文件名去重
+    seen_filenames = set()
+    unique_wafers = []
+    for w in sorted(wafers_query, key=lambda x: x.id):
+        if w.filename not in seen_filenames:
+            seen_filenames.add(w.filename)
+            unique_wafers.append(w)
+
+    # 按 Wafer ID 分组
+    wafers_by_id = {}
+    for w in unique_wafers:
+        if w.wafer_id:
+            w_id = w.wafer_id.strip()
+            try:
+                w_id = str(int(w_id))
+            except ValueError:
+                pass
+            wafers_by_id.setdefault(w_id, []).append(w)
+
+    if not wafers_by_id:
+        raise HTTPException(status_code=400, detail="未找到有效的 Wafer ID 信息")
+
+    sorted_wafer_keys = sorted(wafers_by_id.keys(), key=lambda x: int(x) if x.isdigit() else 999)
+
+    # 格式化 Wafer ID 范围
+    def format_wafer_ranges(wafer_ids: list[str]) -> str:
+        nums = []
+        non_nums = []
+        for x in wafer_ids:
+            if x.isdigit():
+                nums.append(int(x))
+            else:
+                non_nums.append(x)
+        nums.sort()
+
+        ranges = []
+        if nums:
+            unique_nums = sorted(list(set(nums)))
+            start = unique_nums[0]
+            prev = unique_nums[0]
+            for i in range(1, len(unique_nums)):
+                cur = unique_nums[i]
+                if cur == prev + 1:
+                    prev = cur
+                else:
+                    if start == prev:
+                        ranges.append(str(start))
+                    else:
+                        ranges.append(f"{start}-{prev}")
+                    start = cur
+                    prev = cur
+            if start == prev:
+                ranges.append(str(start))
+            else:
+                ranges.append(f"{start}-{prev}")
+        ranges.extend(non_nums)
+        return ",".join(ranges)
+
+    wafer_range_str = format_wafer_ranges(sorted_wafer_keys)
+
+    # 2. 单片合并及全局坐标抹除
+    param_meta_by_name: dict[str, dict] = {}
+    ref_param_order: list[str] = []
+    wafer_dfs = []
+
+    for w_id in sorted_wafer_keys:
+        w_list = wafers_by_id[w_id]
+        w_list.sort(key=lambda l: l.test_date or l.beginning_time or l.upload_date or datetime.min)
+
+        single_wafer_dfs = []
+        for lot in w_list:
+            if not lot.parquet_path or not os.path.exists(lot.parquet_path):
+                continue
+            df = pd.read_parquet(lot.parquet_path)
+
+            ref_items = db.query(TestItem).filter(
+                TestItem.lot_id == lot.id,
+                TestItem.site == 0
+            ).order_by(TestItem.item_number).all()
+
+            if ref_items:
+                current_param_names = [it.item_name for it in ref_items]
+                if not ref_param_order:
+                    ref_param_order = list(current_param_names)
+                else:
+                    for item in current_param_names:
+                        if item not in ref_param_order:
+                            idx = current_param_names.index(item)
+                            inserted = False
+                            for i in range(idx - 1, -1, -1):
+                                prev_item = current_param_names[i]
+                                if prev_item in ref_param_order:
+                                    insert_idx = ref_param_order.index(prev_item) + 1
+                                    ref_param_order.insert(insert_idx, item)
+                                    inserted = True
+                                    break
+                            if not inserted:
+                                for i in range(idx + 1, len(current_param_names)):
+                                    next_item = current_param_names[i]
+                                    if next_item in ref_param_order:
+                                        insert_idx = ref_param_order.index(next_item)
+                                        ref_param_order.insert(insert_idx, item)
+                                        inserted = True
+                                        break
+                            if not inserted:
+                                ref_param_order.append(item)
+                for it in ref_items:
+                    param_meta_by_name.setdefault(it.item_name, {
+                        'lower_limit': it.lower_limit,
+                        'upper_limit': it.upper_limit,
+                        'unit': it.unit,
+                    })
+
+            single_wafer_dfs.append(df)
+
+        if not single_wafer_dfs:
+            continue
+
+        wafer_df = pd.concat(single_wafer_dfs, ignore_index=True, sort=False)
+
+        if 'X_COORD' in wafer_df.columns and 'Y_COORD' in wafer_df.columns:
+            wafer_df = wafer_df.dropna(subset=['X_COORD', 'Y_COORD'])
+            wafer_df = wafer_df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='last')
+
+        # 抹掉坐标与标识信息
+        for col in ['X_COORD', 'Y_COORD', 'DIE_ID', 'PART_ID', 'SERIES']:
+            if col in wafer_df.columns:
+                wafer_df[col] = None
+
+        wafer_dfs.append(wafer_df)
+
+    if not wafer_dfs:
+        raise HTTPException(status_code=400, detail="合并失败：未找到任何可用的测试项数据")
+
+    # 对齐所有测试项并合并
+    aligned_dfs = []
+    meta_cols = {'SITE_NUM', 'SOFT_BIN', 'HARD_BIN', 'X_COORD', 'Y_COORD', 'DIE_ID', 'PART_ID', 'SERIES'}
+    for df in wafer_dfs:
+        aligned_df = pd.DataFrame(index=df.index)
+        for pname in ref_param_order:
+            if pname in df.columns:
+                aligned_df[pname] = df[pname]
+            else:
+                aligned_df[pname] = None
+        for col in meta_cols:
+            if col in df.columns:
+                aligned_df[col] = df[col]
+            else:
+                aligned_df[col] = None
+        aligned_dfs.append(aligned_df)
+
+    merged_df = pd.concat(aligned_dfs, ignore_index=True, sort=False)
+
+    # 3. 检查并覆盖更新现存的 CP_LOT 记录
+    existing_cp_lot = db.query(Lot).filter(
+        Lot.lot_id == lot_id,
+        Lot.product_name == product_name,
+        Lot.data_type == 'CP_LOT'
+    ).first()
+
+    if existing_cp_lot:
+        if existing_cp_lot.parquet_path and os.path.exists(existing_cp_lot.parquet_path):
+            try:
+                os.remove(existing_cp_lot.parquet_path)
+            except Exception:
+                pass
+        db.query(BinSummary).filter(BinSummary.lot_id == existing_cp_lot.id).delete()
+        db.query(TestItem).filter(TestItem.lot_id == existing_cp_lot.id).delete()
+        db.delete(existing_cp_lot)
+        db.commit()
+
+    # Sort all unique wafers by test time to find the last program
+    sorted_by_time = sorted(
+        unique_wafers,
+        key=lambda l: l.test_date or l.ending_time or l.beginning_time or l.upload_date or datetime.min
+    )
+    latest_wafer_record = sorted_by_time[-1]
+    latest_program = latest_wafer_record.program
+
+    ref_lot = unique_wafers[0]
+    merged_beginning_time = min(
+        (t for t in (l.beginning_time or l.test_date or l.upload_date for l in unique_wafers) if t),
+        default=None,
+    )
+    merged_ending_time = max(
+        (t for t in (l.ending_time or l.test_date or l.upload_date for l in unique_wafers) if t),
+        default=None,
+    )
+
+    date_suffix = datetime.now().strftime("%Y%m%d%H%M")
+    constructed_filename = f"Merged_{product_name}_{lot_id}_CP_LOT_{date_suffix}.parquet"
+
+    new_lot = Lot(
+        filename=constructed_filename,
+        product_name=product_name,
+        lot_id=lot_id,
+        wafer_id=wafer_range_str,
+        program=latest_program,
+        test_machine=ref_lot.test_machine,
+        handler=ref_lot.handler,
+        data_type='CP_LOT',
+        test_date=merged_ending_time or ref_lot.test_date,
+        beginning_time=merged_beginning_time,
+        ending_time=merged_ending_time,
+        status='processing',
+        data_source='manual',
+        storage_type='local',
+        upload_date=datetime.now(timezone.utc),
+        osat_name=ref_lot.osat_name,
+    )
+    db.add(new_lot)
+    db.commit()
+    db.refresh(new_lot)
+
+    parquet_dir = os.path.join(UPLOAD_DIR, 'parquet')
+    os.makedirs(parquet_dir, exist_ok=True)
+    parquet_path = os.path.join(parquet_dir, f"lot_{new_lot.id}.parquet")
+    merged_df.to_parquet(parquet_path, index=False)
+    new_lot.parquet_path = parquet_path
+    db.commit()
+
+    try:
+        from app.services.parsers.base import ParsedData
+        from app.services.stats import save_stats_to_db
+
+        param_names = [p for p in ref_param_order if p in param_meta_by_name]
+        param_ll = {k: v['lower_limit'] for k, v in param_meta_by_name.items() if k in param_names}
+        param_ul = {k: v['upper_limit'] for k, v in param_meta_by_name.items() if k in param_names}
+        param_units = {k: v['unit'] for k, v in param_meta_by_name.items() if k in param_names}
+
+        parsed = ParsedData(
+            data=merged_df,
+            param_names=param_names,
+            param_ll=param_ll,
+            param_ul=param_ul,
+            param_units=param_units,
+            bin_definitions={},
+        )
+        PASS_BINS = [1, 2]
+        save_stats_to_db(new_lot, parsed, db, PASS_BINS)
+        new_lot.status = 'processed'
+        new_lot.finish_date = datetime.now(timezone.utc)
+        elapsed = max(1, int(time.time() - t0))
+        new_lot.test_stage = f"{elapsed}S"
+        db.commit()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        new_lot.status = 'failed'
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"CP_LOT 合并统计计算失败: {e}")
+
+    return {"id": new_lot.id, "filename": new_lot.filename, "status": new_lot.status}
+

@@ -1,0 +1,16 @@
+# Ignore python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore local database and temp files
+chip.db
+db_test_result.txt
+*.bak
+*.bak_*
+*.xlsx
+export_results/
+
+# Ignore version file to prevent rebuild loops on start_ate.sh
+app/version.txt

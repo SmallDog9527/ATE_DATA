@@ -14,6 +14,9 @@
       <button :class="['home-tab-btn', { active: activeHomeTab === 'CP' }]" @click="activeHomeTab = 'CP'">
         🔮 OSAT_CP
       </button>
+      <button :class="['home-tab-btn', { active: activeHomeTab === 'CP_LOT' }]" @click="activeHomeTab = 'CP_LOT'">
+        📦 CP_LOT
+      </button>
     </div>
 
     <!-- 顶部操作栏 -->
@@ -161,10 +164,10 @@
           @click="fileInput?.click()"
         >
           <p>点击或拖拽文件到此处</p>
-          <p class="hint">请上传 .csv / .zip / .rar / .gz / .txt 格式</p>
+          <p class="hint">请上传 .csv / .zip / .rar / .gz / .txt / .xls / .xlsx 格式</p>
           <!-- <p class="hint stdf-hint">⚡ STDF 文件将自动转换为 CSV 后分析</p> -->
         </div>
-        <input ref="fileInput" type="file" accept=".csv,.zip,.rar,.stdf,.std,.stdf.gz,.std.gz,.csv.gz,.gz,.txt" multiple hidden @change="handleFileSelect" />
+        <input ref="fileInput" type="file" accept=".csv,.zip,.rar,.stdf,.std,.stdf.gz,.std.gz,.csv.gz,.gz,.txt,.xls,.xlsx" multiple hidden @change="handleFileSelect" />
         <div v-if="uploadFiles.length" class="upload-list">
           <div v-for="f in uploadFiles" :key="f.name" class="upload-item">
             <span>
@@ -477,6 +480,9 @@ const filteredLots = computed(() => {
       return lots.value.filter((l: any) => l.data_source === 'manual' && l.user_id === authStore.user?.id && l.data_type !== 'MP_Yield')
     }
   }
+  if (activeHomeTab.value === 'CP_LOT') {
+    return lots.value.filter((l: any) => l.data_type === 'CP_LOT')
+  }
   // OSAT_CP/OSAT_FT Tab 按 osat_type 过滤（而非 data_type）
   // 这样来自 CP OSAT 的 QA 文件仍留在 OSAT_CP Tab，而不会因 data_type='QA' 而消失
   return lots.value.filter((l: any) => l.data_source === 'ftp' && l.osat_type === activeHomeTab.value && l.data_type !== 'MP_Yield')
@@ -585,6 +591,11 @@ async function saveCheckConfig() {
 function openMergeDialog() {
   const firstLot = selectedRows.value[0]
   if (!firstLot) return
+  const waferIds = new Set(selectedRows.value.map(row => (row.wafer_id || '').trim()))
+  if (waferIds.size > 1) {
+    alert('所选数据的晶圆编号不一致，无法合并！')
+    return
+  }
   mergeForm.value = {
     new_name: (firstLot.filename || '') + '_combine',
     new_lot_id: firstLot.lot_id || '',
@@ -1013,16 +1024,33 @@ const columnDefs: ColDef[] = [
     width: 120,
     filter: 'agNumberColumnFilter',
     valueGetter: (p: any) => {
-      const start = p.data.beginning_time || p.data.test_date;
-      const end = p.data.ending_time;
-      if (!start || !end) return null;
-      const startTime = new Date(start).getTime();
-      const endTime = new Date(end).getTime();
-      if (isNaN(startTime) || isNaN(endTime)) return null;
-      const diff = endTime - startTime;
-      return diff > 0 ? diff / 3600000 : 0;
+      const ts = p.data?.test_stage;
+      if (ts && typeof ts === 'string' && ts.endsWith('S')) {
+        return parseInt(ts.slice(0, -1), 10);
+      }
+      if (p.data?.data_type === 'CP_LOT') {
+        return ts ? parseInt(ts, 10) : null;
+      } else {
+        const start = p.data.beginning_time || p.data.test_date;
+        const end = p.data.ending_time;
+        if (!start || !end) return null;
+        const startTime = new Date(start).getTime();
+        const endTime = new Date(end).getTime();
+        if (isNaN(startTime) || isNaN(endTime)) return null;
+        const diff = endTime - startTime;
+        return diff > 0 ? diff / 3600000 : 0;
+      }
     },
-    valueFormatter: (p: any) => p.value != null ? `${p.value.toFixed(2)} H` : '-'
+    valueFormatter: (p: any) => {
+      const ts = p.data?.test_stage;
+      if (ts && typeof ts === 'string' && ts.endsWith('S')) {
+        return p.value != null ? `${p.value}S` : '-';
+      }
+      if (p.data?.data_type === 'CP_LOT') {
+        return p.value != null ? `${p.value}S` : '-';
+      }
+      return p.value != null ? `${p.value.toFixed(2)} H` : '-';
+    }
   },
   { 
     headerName: '上传日期', 
@@ -1158,6 +1186,8 @@ async function fetchLots() {
     } else if (activeHomeTab.value === 'CP') {
       params.data_source = 'ftp'
       params.osat_type = 'CP'   // 按 OSAT 配置的 data_type 过滤，而非 lot 自身的 data_type
+    } else if (activeHomeTab.value === 'CP_LOT') {
+      params.data_type = 'CP_LOT'
     }
 
     const data: any = await api.get('/lots', { params })
@@ -1392,7 +1422,7 @@ function handleDrop(e: DragEvent) {
 
 function handleFileSelect(e: Event) {
   const files = Array.from((e.target as HTMLInputElement).files || [])
-  uploadFiles.value = files
+  uploadFiles.value = files.filter(f => isAllowedFile(f.name))
 }
 
 function isAllowedFile(name: string): boolean {
@@ -1406,7 +1436,9 @@ function isAllowedFile(name: string): boolean {
          lower.endsWith('.std.gz') ||
          lower.endsWith('.csv.gz') ||
          lower.endsWith('.gz') ||
-         lower.endsWith('.txt')
+         lower.endsWith('.txt') ||
+         lower.endsWith('.xls') ||
+         lower.endsWith('.xlsx')
 }
 
 function isStdfFile(name: string): boolean {

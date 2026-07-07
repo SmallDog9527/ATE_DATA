@@ -359,7 +359,7 @@ const draftOptions = ref({
   custom_ll: null as number | null,
   custom_ul: null as number | null,
   show_histogram: true,
-  show_scatter: true,
+  show_scatter: false,
   show_map: true,
   site_display_mode: 'site',
 })

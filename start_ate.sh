@@ -76,8 +76,12 @@ if [ "$DEV_MODE" = true ]; then
     echo ""
     echo -e "${RED}提示：请手动在另一个终端启动 Backend 和 Frontend${NC}"
 else
-    # 写入最新的 git tag 到版本文件
-    git describe --tags --abbrev=0 > backend/app/version.txt 2>/dev/null || true
+    # 写入最新的 git tag 到版本文件（仅在发生变化时写入，避免触发生命周期重构）
+    NEW_VER=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+    OLD_VER=$(cat backend/app/version.txt 2>/dev/null || echo "")
+    if [ "$NEW_VER" != "$OLD_VER" ]; then
+        echo "$NEW_VER" > backend/app/version.txt 2>/dev/null || true
+    fi
     echo -e "${YELLOW}[2/3] 启动 Backend (FastAPI) + Frontend (Vue/Vite) 容器...${NC}"
     docker compose up $COMPOSE_UP_ARGS backend frontend
 fi

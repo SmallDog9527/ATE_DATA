@@ -1,5 +1,6 @@
 import os
 import openpyxl
+import pandas as pd
 from sqlalchemy.orm import Session
 
 def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, osat_name: str = "Chipmore") -> list:
@@ -99,8 +100,31 @@ def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, 
         print("[xls_summary_parser] Auto-detected UCD Format (has Cust: HMC in first sheet)")
         name = "ucd"
     elif "Bin_Summary" in sheet_names:
-        print("[xls_summary_parser] Auto-detected LBS Format (has 'Bin_Summary' sheet)")
-        name = "lbs"
+        # Resolve Chipmore vs LBS based on column headers inside Bin_Summary sheet
+        is_lbs = True
+        try:
+            with pd.ExcelFile(filepath) as xl:
+                df = xl.parse("Bin_Summary", nrows=15, header=None)
+            for r in range(df.shape[0]):
+                val = df.iloc[r, 0]
+                if pd.notna(val) and str(val).strip().lower() == "lotid-waferid":
+                    if df.shape[1] > 1:
+                        col1_val = str(df.iloc[r, 1]).strip().lower()
+                        if col1_val == "yield(%)":
+                            is_lbs = False
+                            break
+                        elif col1_val in ("total test", "total tested"):
+                            is_lbs = True
+                            break
+        except Exception as e:
+            print(f"[xls_summary_parser] Error checking Bin_Summary columns: {e}")
+            
+        if is_lbs:
+            print("[xls_summary_parser] Auto-detected LBS Format (has 'Bin_Summary' sheet with LBS columns)")
+            name = "lbs"
+        else:
+            print("[xls_summary_parser] Auto-detected Chipmore Format (has 'Bin_Summary' sheet with Chipmore columns)")
+            name = "Chipmore"
     elif "Lot" in sheet_names:
         print("[xls_summary_parser] Auto-detected KSHT Format 1 (has 'Lot' sheet)")
         name = "ksht"

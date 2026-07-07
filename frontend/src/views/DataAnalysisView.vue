@@ -44,10 +44,6 @@
               <option value="all">全部</option>
             </select>
           </div>
-          <div class="ov-filter-item" style="margin-left: 15px;">
-            <label>产品名</label>
-            <input type="text" v-model="ovProductName" placeholder="输入产品名" @input="debouncedOverviewSearch" class="filter-input input-device" style="width: 140px; font-size: 12px; padding: 4px 8px; border-radius: 4px; border: 1px solid #cbd5e1;" />
-          </div>
           <div class="ov-filter-item ov-filter-right">
             <button class="btn btn-primary" @click="fetchOverview(true)">刷新</button>
           </div>
@@ -176,14 +172,30 @@
     ════════════════════════════════════════════════ -->
     <div v-show="activeView === 'device'" class="tab-content">
       <div class="filter-card ov-filter">
-        <div class="ov-filter-row" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-          <div class="ov-filter-item">
+        <div class="ov-filter-row">
+          <div class="ov-filter-item" style="display: flex; align-items: center; gap: 8px; width: 100%;">
             <span style="font-size: 16px; font-weight: bold; color: #1e293b;">{{ deviceViewDevice }}</span>
             <span style="font-size: 12px; color: #64748b; margin-left: 10px;">基于总览的 {{ getFilterLabel() }} 筛选条件</span>
-          </div>
-          <div class="ov-filter-item" style="margin-right: 15px; display: flex; align-items: center; gap: 8px;">
-            <label style="font-size: 12px; font-weight: 600; color: #475569; margin: 0;">LOT</label>
-            <input type="text" v-model="deviceLotQuery" placeholder="输入 LOT ID 筛选" class="filter-input input-lot" style="width: 150px; font-size: 12px; padding: 4px 8px; border-radius: 4px; border: 1px solid #cbd5e1;" />
+            
+            <!-- LOT/PGM Switcher -->
+            <div class="mode-switch-group" style="display: inline-flex; border: 1px solid #cbd5e1; border-radius: 4px; overflow: hidden; margin-left: 15px; background: #f8fafc; padding: 2px;">
+              <button
+                class="mode-switch-btn"
+                :class="{ active: deviceGroupMode === 'LOT' }"
+                @click="setDeviceGroupMode('LOT')"
+                type="button"
+              >
+                LOT
+              </button>
+              <button
+                class="mode-switch-btn"
+                :class="{ active: deviceGroupMode === 'PGM' }"
+                @click="setDeviceGroupMode('PGM')"
+                type="button"
+              >
+                PGM
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -218,12 +230,13 @@
         <AgGridVue
           class="ag-theme-alpine"
           :theme="'legacy'"
-          :rowData="filteredDeviceLots"
+          :rowData="deviceLots"
           :columnDefs="deviceColDefs"
           :defaultColDef="defaultColDef"
           style="width: 100%; flex: 1; min-height: 0;"
           :suppressScrollOnNewData="true"
           @cell-mouse-over="onCellMouseOver"
+          @cell-clicked="onDeviceGridCellClicked"
         />
       </div>
     </div>
@@ -251,7 +264,10 @@ export default {
 import { reactive, computed, onMounted, nextTick, watch } from 'vue'
 import * as echarts from 'echarts'
 import api from '@/api'
+import { useRouter } from 'vue-router'
 import { AgGridVue } from 'ag-grid-vue3'
+
+const router = useRouter()
 import 'ag-grid-community/styles/ag-grid.css'
 import 'ag-grid-community/styles/ag-theme-alpine.css'
 
@@ -288,29 +304,6 @@ const activeView = ref<'overview' | 'detail' | 'device'>('overview')
 const deviceViewDevice = ref('')
 const deviceViewOsat = ref('')
 const deviceViewTester = ref('')
-
-const ovProductName = ref('')
-const deviceLotQuery = ref('')
-
-let ovSearchTimer: any = null
-function debouncedOverviewSearch() {
-  if (ovSearchTimer) clearTimeout(ovSearchTimer)
-  ovSearchTimer = setTimeout(() => {
-    fetchOverview(true)
-  }, 400)
-}
-
-const filteredDeviceLots = computed(() => {
-  if (!deviceLotQuery.value) return deviceLots.value
-  const q = deviceLotQuery.value.trim().toLowerCase()
-  return deviceLots.value.filter((l: any) => 
-    (l.lot_id || '').toLowerCase().includes(q)
-  )
-})
-
-watch(deviceLotQuery, () => {
-  nextTick(() => renderDeviceCharts())
-})
 
 function switchView(view: 'overview' | 'detail' | 'device') {
   activeView.value = view
@@ -349,6 +342,73 @@ const YieldRenderer = (p: any) => {
   if (val < 80) { color = 'red'; fw = 'bold'; }
   else if (val < 95) { color = 'orange'; }
   return `<div style="width: 100%;"><span style="color: ${color}; font-weight: ${fw};">${val.toFixed(2)}%</span></div>`;
+}
+
+function formatWaferRanges(waferIds: (string|number)[]): string {
+  const nums: number[] = []
+  const nonNums: string[] = []
+  for (const x of waferIds) {
+    if (x == null || x === '') continue;
+    const str = String(x).trim();
+    if (/^\d+$/.test(str)) {
+      nums.push(parseInt(str, 10))
+    } else {
+      nonNums.push(str)
+    }
+  }
+  
+  if (nums.length === 0 && nonNums.length === 0) return '';
+  
+  const uniqueNums = Array.from(new Set(nums)).sort((a, b) => a - b)
+  const ranges: string[] = []
+  
+  if (uniqueNums.length > 0) {
+    let start = uniqueNums[0]
+    let prev = uniqueNums[0]
+    for (let i = 1; i < uniqueNums.length; i++) {
+      const cur = uniqueNums[i]
+      if (cur === prev + 1) {
+        prev = cur
+      } else {
+        if (start === prev) {
+          ranges.push(String(start))
+        } else {
+          ranges.push(`${start}-${prev}`)
+        }
+        start = cur
+        prev = cur
+      }
+    }
+    if (start === prev) {
+      ranges.push(String(start))
+    } else {
+      ranges.push(`${start}-${prev}`)
+    }
+  }
+  
+  ranges.push(...nonNums)
+  return ranges.join(',')
+}
+
+const WafersDataRenderer = (p: any) => {
+  const val = p.value;
+  if (val === undefined || val === null) return '';
+  const mergedId = p.data ? p.data.merged_id : null;
+  if (mergedId) {
+    return `
+      <div style="line-height: 1.4; padding: 6px 0; text-align: center;">
+        <a href="/lot/${mergedId}/bin" target="_blank" style="background-color: #fef08a; color: #1e3a8a; padding: 2px 6px; border-radius: 4px; text-decoration: underline; font-weight: bold; font-size: 13px;">${val}</a>
+      </div>
+    `;
+  }
+  return `
+    <div style="line-height: 1.4; padding: 4px 0; text-align: center;">
+      <div>${val}</div>
+      <div style="font-size: 11px; margin-top: 2px;">
+        <span class="merge-link" data-action="merge_lot" style="color: #1890ff; cursor: pointer; text-decoration: underline; font-weight: 500;">合并</span>
+      </div>
+    </div>
+  `;
 }
 
 const SingleBinRenderer = (p: any) => {
@@ -415,9 +475,6 @@ async function fetchOverview(force = false) {
     const params: any = {
       range_type: rangeType.value,
       range_value: rangeType.value === 'all' ? null : rangeValue.value
-    }
-    if (ovProductName.value) {
-      params.product_name = ovProductName.value
     }
     const resp: any = await api.get('/lots/mp-yield/overview', { params })
     ovProducts.value = resp.products || []
@@ -697,6 +754,7 @@ const deviceLoading = ref(false)
 const deviceLots = shallowRef<any[]>([])
 const deviceWeeklyOutput = ref<any[]>([])
 const deviceWafers = shallowRef<any[]>([]) // Store all wafer data for the active device
+const deviceCpLotsMap = ref<Map<string, number>>(new Map())
 const selectedLotId = ref<string | null>(null) // Selected LOT ID for wafer-level drill-down
 const productTop5Bins = ref<any[]>([]) // Top 5 failing bins for the active device
 const selectedBins = ref<Record<string, boolean>>({}) // Legend selection states for charts
@@ -709,16 +767,78 @@ let deviceOutputChart: any = null
 let deviceYieldChart: any = null
 let waferYieldChart: any = null // Wafer yield chart instance
 
-const deviceColDefs = [
-  { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
-  { field: 'lot_id', headerName: 'LOT ID', width: 180, pinned: 'left' },
-  { field: 'test_start', headerName: '测试时间(最早)', width: 160 },
-  { field: 'wafers', headerName: 'Wafers', width: 90, type: 'numericColumn' },
-  { field: 'avg_wafer_time_h', headerName: 'Time(h)', width: 90, type: 'numericColumn' },
-  { field: 'bin1_k', headerName: 'Bin1(K)', width: 90, type: 'numericColumn' },
-  { field: 'avg_yield', headerName: '平均良率', width: 100, cellRenderer: YieldRenderer },
-  ...failBinCols
-]
+const deviceGroupMode = ref<'LOT' | 'PGM'>('LOT')
+
+function setDeviceGroupMode(mode: 'LOT' | 'PGM') {
+  if (deviceGroupMode.value === mode) return
+  deviceGroupMode.value = mode
+  if (deviceWafers.value && deviceWafers.value.length > 0) {
+    processDeviceWafers(deviceWafers.value)
+  }
+}
+
+const isMergingLot = ref(false)
+
+async function handleMergeLot(lotId: string) {
+  if (isMergingLot.value) return
+  isMergingLot.value = true
+  try {
+    const res: any = await api.post('/lots/merge-cp-lot', {
+      lot_id: lotId,
+      product_name: deviceViewDevice.value
+    })
+    if (res && res.id) {
+      const url = router.resolve(`/lot/${res.id}`).href
+      window.open(url, '_blank')
+      fetchDeviceData()
+    } else {
+      alert('合并失败：返回结果异常')
+    }
+  } catch (error: any) {
+    console.error('Merge CP Lot failed:', error)
+    alert('合并 CP LOT 失败: ' + (error.response?.data?.detail || error.message || error))
+  } finally {
+    isMergingLot.value = false
+  }
+}
+
+function onDeviceGridCellClicked(params: any) {
+  const event = params.event
+  const action = event?.target?.dataset?.action
+  if (action === 'merge_lot') {
+    const lotId = params.data.lot_id
+    if (lotId) {
+      handleMergeLot(lotId)
+    }
+  }
+}
+
+const deviceColDefs = computed(() => {
+  const isPgmMode = deviceGroupMode.value === 'PGM'
+  return [
+    { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
+    { 
+      field: isPgmMode ? 'program' : 'lot_id', 
+      headerName: isPgmMode ? 'PGM' : 'LOT ID', 
+      width: isPgmMode ? 280 : 180, 
+      pinned: 'left' 
+    },
+    ...(isPgmMode ? [] : [
+      {
+        field: 'wafers_data',
+        headerName: 'WAFERS_DATA',
+        width: 130,
+        cellRenderer: WafersDataRenderer
+      }
+    ]),
+    { field: 'test_start', headerName: '测试时间(最早)', width: 160 },
+    { field: 'wafers', headerName: 'Wafers', width: 90, type: 'numericColumn' },
+    { field: 'avg_wafer_time_h', headerName: 'Time(h)', width: 90, type: 'numericColumn' },
+    { field: 'bin1_k', headerName: 'Bin1(K)', width: 90, type: 'numericColumn' },
+    { field: 'avg_yield', headerName: '平均良率', width: 100, cellRenderer: YieldRenderer },
+    ...failBinCols
+  ]
+})
 
 function getWeekString(dateStr: string) {
   const d = new Date(dateStr)
@@ -733,6 +853,25 @@ function getWeekString(dateStr: string) {
 async function fetchDeviceData() {
   deviceLoading.value = true
   try {
+    // 1. Fetch merged CP_LOTs for this product
+    const cpLotsResp: any = await api.get('/lots', {
+      params: {
+        product_name: deviceViewDevice.value,
+        data_type: 'CP_LOT',
+        page: 1,
+        page_size: 200
+      }
+    })
+    const cpLotsMap = new Map()
+    if (cpLotsResp && cpLotsResp.items) {
+      for (const item of cpLotsResp.items) {
+        if (item.lot_id) {
+          cpLotsMap.set(item.lot_id.trim().toLowerCase(), item.id)
+        }
+      }
+    }
+    deviceCpLotsMap.value = cpLotsMap
+
     // Fetch ALL pages to correctly aggregate LOTs for this device
     let allWafers: any[] = []
     let p = 1
@@ -758,138 +897,171 @@ async function fetchDeviceData() {
     }
     deviceWafers.value = allWafers // Store all wafers for wafer-level yield lookup
 
-    // Compute overall top 5 failing bins for this device across all fetched wafers
-    const overallSbinSums: Record<number, number> = {}
-    for (const w of allWafers) {
-      for (let i = 3; i <= 130; i++) {
-        overallSbinSums[i] = (overallSbinSums[i] || 0) + (w['sbin' + i] || 0)
-      }
-    }
-    const overallSbinArr = []
-    for (let i = 3; i <= 130; i++) {
-      if (overallSbinSums[i] > 0) {
-        overallSbinArr.push({
-          binNumber: i,
-          bin: `Sbin${i}`,
-          count: overallSbinSums[i]
-        })
-      }
-    }
-    overallSbinArr.sort((a, b) => b.count - a.count)
-    productTop5Bins.value = overallSbinArr.slice(0, 5)
-
-    // Initialize selectedBins: default only display '平均良率', 'Wafer良率' and Top 1 failing bin
-    const initSelected: Record<string, boolean> = {
-      '平均良率': true,
-      'Wafer良率': true
-    }
-    productTop5Bins.value.forEach((topBin, idx) => {
-      initSelected[topBin.bin] = (idx === 0)
-    })
-    selectedBins.value = initSelected
-
-    // Group by LOT ID (合并 UCD 的子 LOT：若 OSAT 包含 UCD 且 lot_id 包含 #，按 # 前面的一致性合并)
-    const lotGroups: Record<string, any[]> = {}
-    const isUCD = deviceViewOsat.value && deviceViewOsat.value.toUpperCase().includes('UCD')
-    for (const w of allWafers) {
-      let lid = w.lot_id || 'Unknown'
-      if (isUCD && lid.includes('#')) {
-        lid = lid.split('#')[0]
-      }
-      if (!lotGroups[lid]) lotGroups[lid] = []
-      lotGroups[lid].push(w)
-    }
-
-    const compiledLots = []
-    const weeklyCount: Record<string, number> = {}
-
-    for (const lot_id in lotGroups) {
-      const wList = lotGroups[lot_id]
-      let totalTime = 0
-      let totalWafersWithTime = 0
-      let totalBin1 = 0
-      let totalPass = 0
-      let totalTotal = 0
-      const sbinSums: Record<number, number> = {}
-      
-      let minTestStart = ''
-
-      for (const w of wList) {
-        if (w.duration_h != null && w.duration_h > 0) {
-          totalTime += w.duration_h
-          totalWafersWithTime++
-        }
-        totalBin1 += (w.sbin1 || 0)
-        totalPass += (w.pass || 0)
-        totalTotal += (w.total || 0)
-        
-        for (let i=1; i<=130; i++) {
-          sbinSums[i] = (sbinSums[i] || 0) + (w['sbin'+i] || 0)
-        }
-
-        const tStart = w.test_start || w.test_date || w.upload_date
-        if (tStart) {
-          if (!minTestStart || tStart < minTestStart) minTestStart = tStart
-        }
-      }
-
-      const weekStr = getWeekString(minTestStart || new Date().toISOString())
-      weeklyCount[weekStr] = (weeklyCount[weekStr] || 0) + wList.length
-
-      const avgYield = totalTotal > 0 ? (totalPass / totalTotal) * 100 : 0
-      const bin1k = totalBin1 / 1000
-
-      const sbinArr = []
-      for (let i=3; i<=130; i++) { 
-        if (sbinSums[i] > 0) {
-          sbinArr.push({
-            bin: `Sbin${i}`,
-            count: sbinSums[i],
-            pct: totalTotal > 0 ? ((sbinSums[i] / totalTotal) * 100).toFixed(2) : '0.00'
-          })
-        }
-      }
-      sbinArr.sort((a, b) => b.count - a.count)
-
-      const top5FailRates: Record<string, number> = {}
-      for (const topBin of productTop5Bins.value) {
-        const binVal = sbinSums[topBin.binNumber] || 0
-        top5FailRates[topBin.bin] = totalTotal > 0 ? (binVal / totalTotal) * 100 : 0
-      }
-
-      compiledLots.push({
-        lot_id: lot_id,
-        wafers: wList.length,
-        avg_wafer_time_h: totalWafersWithTime > 0 ? (totalTime / totalWafersWithTime).toFixed(2) : null,
-        bin1_k: bin1k.toFixed(1),
-        avg_yield: avgYield,
-        top5_fail_bins: sbinArr.slice(0, 5),
-        top5_fail_rates: top5FailRates,
-        test_start: minTestStart
-      })
-    }
-    
-    compiledLots.sort((a, b) => {
-      const tA = a.test_start || '';
-      const tB = b.test_start || '';
-      if (tA === tB) return 0;
-      return tA > tB ? 1 : -1;
-    })
-    deviceLots.value = compiledLots
-
-    const weeks = Object.keys(weeklyCount).sort()
-    deviceWeeklyOutput.value = weeks.map(w => ({
-      week: w,
-      wafers: weeklyCount[w]
-    }))
-
-    nextTick(() => renderDeviceCharts())
+    processDeviceWafers(allWafers)
 
   } catch (error) {
     console.error('Failed to fetch device drill-down data:', error)
   } finally {
     deviceLoading.value = false
   }
+}
+
+function processDeviceWafers(allWafers: any[]) {
+  // Compute overall top 5 failing bins for this device across all fetched wafers
+  const overallSbinSums: Record<number, number> = {}
+  for (const w of allWafers) {
+    for (let i = 3; i <= 130; i++) {
+      overallSbinSums[i] = (overallSbinSums[i] || 0) + (w['sbin' + i] || 0)
+    }
+  }
+  const overallSbinArr = []
+  for (let i = 3; i <= 130; i++) {
+    if (overallSbinSums[i] > 0) {
+      overallSbinArr.push({
+        binNumber: i,
+        bin: `Sbin${i}`,
+        count: overallSbinSums[i]
+      })
+    }
+  }
+  overallSbinArr.sort((a, b) => b.count - a.count)
+  productTop5Bins.value = overallSbinArr.slice(0, 5)
+
+  // Initialize selectedBins: default only display '平均良率', 'Wafer良率' and Top 1 failing bin
+  const initSelected: Record<string, boolean> = {
+    '平均良率': true,
+    'Wafer良率': true
+  }
+  productTop5Bins.value.forEach((topBin, idx) => {
+    initSelected[topBin.bin] = (idx === 0)
+  })
+  selectedBins.value = initSelected
+
+  // Group by Mode (LOT or PGM)
+  const isPgmMode = deviceGroupMode.value === 'PGM'
+  const groups: Record<string, any[]> = {}
+  for (const w of allWafers) {
+    const key = isPgmMode ? (w.program || 'Unknown') : (w.lot_id || 'Unknown')
+    if (!groups[key]) groups[key] = []
+    groups[key].push(w)
+  }
+
+  const compiledLots = []
+  const weeklyCount: Record<string, number> = {}
+
+  for (const key in groups) {
+    const wList = groups[key]
+    let totalTime = 0
+    let totalWafersWithTime = 0
+    let totalBin1 = 0
+    let totalPass = 0
+    let totalTotal = 0
+    const sbinSums: Record<number, number> = {}
+    
+    let minTestStart = ''
+
+    for (const w of wList) {
+      if (w.duration_h != null && w.duration_h > 0) {
+        totalTime += w.duration_h
+        totalWafersWithTime++
+      }
+      totalBin1 += (w.sbin1 || 0)
+      totalPass += (w.pass || 0)
+      totalTotal += (w.total || 0)
+      
+      for (let i=1; i<=130; i++) {
+        sbinSums[i] = (sbinSums[i] || 0) + (w['sbin'+i] || 0)
+      }
+
+      const tStart = w.test_start || w.test_date || w.upload_date
+      if (tStart) {
+        if (!minTestStart || tStart < minTestStart) minTestStart = tStart
+      }
+    }
+
+    const weekStr = getWeekString(minTestStart || new Date().toISOString())
+    weeklyCount[weekStr] = (weeklyCount[weekStr] || 0) + wList.length
+
+    const avgYield = totalTotal > 0 ? (totalPass / totalTotal) * 100 : 0
+    const bin1k = totalBin1 / 1000
+
+    const sbinArr = []
+    for (let i=3; i<=130; i++) { 
+      if (sbinSums[i] > 0) {
+        sbinArr.push({
+          bin: `Sbin${i}`,
+          count: sbinSums[i],
+          pct: totalTotal > 0 ? ((sbinSums[i] / totalTotal) * 100).toFixed(2) : '0.00'
+        })
+      }
+    }
+    sbinArr.sort((a, b) => b.count - a.count)
+
+    const top5FailRates: Record<string, number> = {}
+    for (const topBin of productTop5Bins.value) {
+      const binVal = sbinSums[topBin.binNumber] || 0
+      top5FailRates[topBin.bin] = totalTotal > 0 ? (binVal / totalTotal) * 100 : 0
+    }
+
+    const waferIds = wList.map(w => w.wafer_id).filter(id => id != null)
+    const lotDataStr = formatWaferRanges(waferIds)
+    const mergedId = isPgmMode ? undefined : deviceCpLotsMap.value.get(key.trim().toLowerCase())
+    const cpWaferCount = wList[0]?.cp_wafer_count || 0
+
+    compiledLots.push({
+      lot_id: isPgmMode ? undefined : key,
+      program: isPgmMode ? key : undefined,
+      lot_data: isPgmMode ? undefined : lotDataStr,
+      wafers_data: isPgmMode ? undefined : cpWaferCount,
+      merged_id: mergedId,
+      wafers: wList.length,
+      avg_wafer_time_h: totalWafersWithTime > 0 ? (totalTime / totalWafersWithTime).toFixed(2) : null,
+      bin1_k: bin1k.toFixed(1),
+      avg_yield: avgYield,
+      top5_fail_bins: sbinArr.slice(0, 5),
+      top5_fail_rates: top5FailRates,
+      test_start: minTestStart
+    })
+  }
+  
+  compiledLots.sort((a, b) => {
+    const tA = a.test_start || '';
+    const tB = b.test_start || '';
+    if (tA === tB) return 0;
+    return tA > tB ? 1 : -1;
+  })
+  deviceLots.value = compiledLots
+
+  const weeks = Object.keys(weeklyCount).sort()
+  deviceWeeklyOutput.value = weeks.map(w => ({
+    week: w,
+    wafers: weeklyCount[w]
+  }))
+
+  nextTick(() => {
+    renderDeviceCharts()
+    if (selectedLotId.value) {
+      const lotExists = compiledLots.some(c => (isPgmMode ? c.program : c.lot_id) === selectedLotId.value)
+      if (lotExists) {
+        renderWaferYieldChart()
+      } else {
+        selectedLotId.value = null
+      }
+    }
+  })
+}
+
+
+function getProgramVersion(programName: string) {
+  if (!programName) return '';
+  const matches = [...programName.matchAll(/V\d+/gi)]
+  if (matches.length > 0) {
+    return matches[matches.length - 1][0]
+  }
+  const parts = programName.split('_')
+  const lastPart = parts[parts.length - 1]
+  if (lastPart && lastPart.length < 15) return lastPart
+  return programName.length > 10 ? programName.substring(programName.length - 10) : programName
 }
 
 function renderDeviceCharts() {
@@ -933,9 +1105,17 @@ function renderDeviceCharts() {
       deviceYieldChart.resize()
     }
     
-    const lotsData = filteredDeviceLots.value
-    const lotIds = lotsData.map(l => l.lot_id)
-    const yields = lotsData.map(l => l.avg_yield.toFixed(2))
+    const isPgmMode = deviceGroupMode.value === 'PGM'
+    const lotIds = deviceLots.value.map(l => isPgmMode ? l.program : l.lot_id)
+    const yields = deviceLots.value.map(l => l.avg_yield.toFixed(2))
+
+    // Formatted labels for x-axis display
+    const xAxisLabels = deviceLots.value.map(l => {
+      if (isPgmMode) {
+        return getProgramVersion(l.program)
+      }
+      return l.lot_id
+    })
 
     // Listen to axis pointer updates to dynamically sync wafer yield chart on hover
     deviceYieldChart.off('updateAxisPointer')
@@ -955,7 +1135,7 @@ function renderDeviceCharts() {
     let rightMax = 0
     const top1BinName = productTop5Bins.value[0]?.bin
     if (top1BinName) {
-      for (const lot of lotsData) {
+      for (const lot of deviceLots.value) {
         const val = lot.top5_fail_rates?.[top1BinName] || 0
         if (val > rightMax) {
           rightMax = val
@@ -988,7 +1168,7 @@ function renderDeviceCharts() {
     const top5Colors = ['#3b82f6', '#10b981', '#ec4899', '#8b5cf6', '#06b6d4']
     productTop5Bins.value.forEach((topBin, idx) => {
       const binName = topBin.bin
-      const binData = lotsData.map(l => {
+      const binData = deviceLots.value.map(l => {
         const val = l.top5_fail_rates?.[binName]
         return val !== undefined ? parseFloat(val.toFixed(3)) : 0
       })
@@ -1009,7 +1189,9 @@ function renderDeviceCharts() {
       tooltip: {
         trigger: 'axis',
         formatter: (params: any) => {
-          let html = `<b>${params[0].name}</b><br/>`;
+          const dataIndex = params[0].dataIndex
+          const fullLabel = lotIds[dataIndex] || params[0].name
+          let html = `<b>${fullLabel}</b><br/>`;
           params.forEach((p: any) => {
             const val = parseFloat(p.value);
             if (p.seriesName === '平均良率') {
@@ -1028,7 +1210,7 @@ function renderDeviceCharts() {
         textStyle: { fontSize: 11, color: '#374151' }
       },
       grid: { left: 50, right: 50, top: 35, bottom: 40 },
-      xAxis: { type: 'category', data: lotIds, axisLabel: { fontSize: 11, rotate: 30 } },
+      xAxis: { type: 'category', data: xAxisLabels, axisLabel: { fontSize: 11, rotate: 30 } },
       yAxis: [
         {
           type: 'value',
@@ -1082,38 +1264,61 @@ function renderWaferYieldChart() {
     waferYieldChart.resize()
   }
 
-  // Filter wafer data belonging to the selected LOT (考虑 UCD 子 LOT 合并)
-  const isUCD = deviceViewOsat.value && deviceViewOsat.value.toUpperCase().includes('UCD')
+  // Filter wafer data belonging to the selected LOT or PGM
+  const isPgmMode = deviceGroupMode.value === 'PGM'
   const lotWafers = deviceWafers.value.filter((w: any) => {
-    let lid = w.lot_id || ''
-    if (isUCD && lid.includes('#')) {
-      lid = lid.split('#')[0]
-    }
-    return lid === selectedLotId.value
+    return isPgmMode ? (w.program === selectedLotId.value) : (w.lot_id === selectedLotId.value)
   })
 
-  // Map wafer data to fixed slots from 1 to 25
-  const waferData = Array(25).fill(null)
-  for (const w of lotWafers) {
-    const wId = parseInt(w.wafer_id, 10)
-    if (wId >= 1 && wId <= 25) {
-      waferData[wId - 1] = w.yield_rate
+  if (isPgmMode) {
+    lotWafers.sort((a: any, b: any) => {
+      const tA = a.test_start || a.test_date || a.upload_date || '';
+      const tB = b.test_start || b.test_date || b.upload_date || '';
+      if (tA === tB) return 0;
+      return tA > tB ? 1 : -1;
+    })
+  }
+
+  // Map wafer data to slots
+  const numWafers = isPgmMode ? lotWafers.length : 25
+  const waferData = Array(numWafers).fill(null)
+  if (isPgmMode) {
+    for (let i = 0; i < lotWafers.length; i++) {
+      waferData[i] = lotWafers[i].yield_rate
+    }
+  } else {
+    for (const w of lotWafers) {
+      const wId = parseInt(w.wafer_id, 10)
+      if (wId >= 1 && wId <= 25) {
+        waferData[wId - 1] = w.yield_rate
+      }
     }
   }
 
   const top5WaferSeriesData: Record<string, (number | null)[]> = {}
   productTop5Bins.value.forEach(topBin => {
-    top5WaferSeriesData[topBin.bin] = Array(25).fill(null)
+    top5WaferSeriesData[topBin.bin] = Array(numWafers).fill(null)
   })
 
-  for (const w of lotWafers) {
-    const wId = parseInt(w.wafer_id, 10)
-    if (wId >= 1 && wId <= 25) {
+  if (isPgmMode) {
+    for (let i = 0; i < lotWafers.length; i++) {
+      const w = lotWafers[i]
       productTop5Bins.value.forEach(topBin => {
         const binVal = w['sbin' + topBin.binNumber] || 0
         const totalVal = w.total || 0
-        top5WaferSeriesData[topBin.bin][wId - 1] = totalVal > 0 ? (binVal / totalVal) * 100 : 0
+        top5WaferSeriesData[topBin.bin][i] = totalVal > 0 ? (binVal / totalVal) * 100 : 0
       })
+    }
+  } else {
+    for (const w of lotWafers) {
+      const wId = parseInt(w.wafer_id, 10)
+      if (wId >= 1 && wId <= 25) {
+        productTop5Bins.value.forEach(topBin => {
+          const binVal = w['sbin' + topBin.binNumber] || 0
+          const totalVal = w.total || 0
+          top5WaferSeriesData[topBin.bin][wId - 1] = totalVal > 0 ? (binVal / totalVal) * 100 : 0
+        })
+      }
     }
   }
 
@@ -1176,7 +1381,9 @@ function renderWaferYieldChart() {
     })
   })
 
-  const xAxisData = Array.from({ length: 25 }, (_, i) => i + 1)
+  const xAxisData = isPgmMode 
+    ? lotWafers.map((w: any, idx: number) => w.wafer_id || `${idx + 1}`)
+    : Array.from({ length: 25 }, (_, i) => i + 1)
 
   waferYieldChart.setOption({
     animation: false, // Disable render animation for instant loading feedback
@@ -1219,7 +1426,7 @@ function renderWaferYieldChart() {
         color: '#475569'
       },
       axisLabel: {
-        interval: 0, // Show all wafer labels 1-25
+        interval: isPgmMode ? 'auto' : 0, // Show all wafer labels 1-25 or auto in PGM mode
         fontSize: 9
       }
     },
@@ -1275,10 +1482,10 @@ watch(selectedLotId, (newVal) => {
 
 // Sync wafer yield chart on hovering over AG Grid cells
 function onCellMouseOver(event: any) {
-  if (event && event.data && event.data.lot_id) {
-    const hoveredLotId = event.data.lot_id
-    if (selectedLotId.value !== hoveredLotId) {
-      selectedLotId.value = hoveredLotId
+  if (event && event.data) {
+    const key = deviceGroupMode.value === 'PGM' ? event.data.program : event.data.lot_id
+    if (key && selectedLotId.value !== key) {
+      selectedLotId.value = key
     }
   }
 }
@@ -1657,4 +1864,29 @@ onMounted(() => {
   animation: shimmer 1.2s infinite;
 }
 @keyframes shimmer { 100% { background-position: -200% 0; } }
+
+/* Mode Switch Button Styles */
+.mode-switch-btn {
+  padding: 2px 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+  transition: all 0.2s;
+  border-radius: 3px;
+  outline: none;
+}
+
+.mode-switch-btn.active {
+  background: #ffffff;
+  color: #1890ff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  font-weight: 600;
+}
+
+.mode-switch-btn:hover:not(.active) {
+  color: #1890ff;
+}
 </style>

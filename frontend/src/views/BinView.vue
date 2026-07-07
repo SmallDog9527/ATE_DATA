@@ -40,7 +40,7 @@
           </label>
         </div>
 
-        <div class="opt-group">
+        <div class="opt-group" v-if="false">
           <span class="opt-label">Map旋转</span>
           <select v-model="options.rotate" @change="renderBinMap()" style="font-size:12px;padding:2px 6px;border:1px solid #d9d9d9;border-radius:4px">
             <option value="0">0°</option>
@@ -80,7 +80,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-if="allSites.length > 0 && options.selected_sites.length === 0">
+          <tr v-if="options.selected_sites.length === 0">
             <td :colspan="5 + options.selected_sites.length" style="text-align:center;color:#999;padding:20px">No sites selected</td>
           </tr>
           <tr v-else v-for="b in sortedBins" :key="b.bin_number" :class="{ 'pass-row': isPassBin(b.bin_number) }">
@@ -130,7 +130,7 @@
     <!-- 底部三栏 -->
     <div class="bottom-area">
       <!-- 左：Bin Map -->
-      <div class="map-section" v-if="hasCoords">
+      <div class="map-section" v-if="false">
         <div class="section-title">Bin Map</div>
         <div class="map-with-legend" style="position:relative">
           <canvas ref="binMapCanvas" width="800" height="800"
@@ -709,7 +709,7 @@ function drawBinMap(canvas: HTMLCanvasElement, data: any[], highlightBin: number
     const drawH = Math.max(0.5, dieH - 0.2)
     ctx.fillRect(px, py, drawW, drawH)
 
-    if (d.retest) {
+    if (d.retest && options.value.data_range !== 'original') {
       ctx.fillStyle = 'rgba(0,0,0,0.25)'
       const cx = px + drawW / 2, cy = py + drawH / 2
       const arm = Math.min(drawW, drawH) * 0.35
