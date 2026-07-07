@@ -437,6 +437,7 @@ def get_ftp_logs_daily_summary(
     result = db.execute(text(sql)).all()
     
     rows_dict = {}
+    total_stats = {}
     for row in result:
         date_str = str(row[0])
         osat_id = row[1]
@@ -452,8 +453,21 @@ def get_ftp_logs_daily_summary(
             rows_dict[date_str][osat_id]["success"] += count
         elif status == "failed":
             rows_dict[date_str][osat_id]["failed"] += count
+
+        if osat_id not in total_stats:
+            total_stats[osat_id] = {"success": 0, "failed": 0}
+        if status == "success":
+            total_stats[osat_id]["success"] += count
+        elif status == "failed":
+            total_stats[osat_id]["failed"] += count
             
     rows = []
+    if total_stats:
+        rows.append({
+            "date": "total",
+            "stats": total_stats
+        })
+
     for date_str in sorted(rows_dict.keys(), reverse=True):
         rows.append({
             "date": date_str,
