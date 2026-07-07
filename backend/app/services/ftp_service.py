@@ -841,6 +841,17 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
         log.status = 'success'
         log.lot_id_created = last_lot_id
         log.uploaded_at = datetime.now(timezone.utc)
+        
+        # 物理删除该文件此前的所有失败历史日志，保持日志列表干净
+        try:
+            db.query(FtpUploadLog).filter(
+                FtpUploadLog.osat_id == log.osat_id,
+                FtpUploadLog.remote_path == log.remote_path,
+                FtpUploadLog.status == 'failed'
+            ).delete(synchronize_session=False)
+        except Exception as ex:
+            print(f"[ftp_service] Cleanup failed logs error in process_one_file: {ex}")
+            
         db.commit()
 
         return {"ok": True, "lot_id": last_lot_id}
@@ -1491,6 +1502,17 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
         log_rec.status = 'success'
         log_rec.lot_id_created = last_lot_id
         log_rec.uploaded_at = datetime.now(timezone.utc)
+        
+        # 物理删除该文件此前的所有失败历史日志，保持日志列表干净
+        try:
+            db.query(FtpUploadLog).filter(
+                FtpUploadLog.osat_id == log_rec.osat_id,
+                FtpUploadLog.remote_path == log_rec.remote_path,
+                FtpUploadLog.status == 'failed'
+            ).delete(synchronize_session=False)
+        except Exception as ex:
+            print(f"[ftp_service] Cleanup failed logs error in _do_parse: {ex}")
+            
         db.commit()
         print(f"[ftp_parse] ✅ 解析成功: {filename}, lot_id={last_lot_id}")
         return {"ok": True, "lot_id": last_lot_id}
