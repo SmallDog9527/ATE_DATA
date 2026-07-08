@@ -787,6 +787,25 @@ def get_mp_yield_overview(
         from app.models.lot import DataSource
         from collections import defaultdict
 
+        redis_key = f"mp_yield_overview:{range_type}:{range_value}:{months}:{product_name or ''}"
+        from app.core.redis_client import get_redis
+        import json
+        
+        r_client = None
+        try:
+            r_client = get_redis()
+        except Exception as re:
+            print(f"[redis] Failed to get redis client: {re}")
+            
+        if r_client:
+            try:
+                cached_val = r_client.get(redis_key)
+                if cached_val:
+                    print(f"[redis] Cache hit for key: {redis_key}")
+                    return json.loads(cached_val)
+            except Exception as re:
+                print(f"[redis] Cache read failed for key {redis_key}: {re}")
+
         if months is not None:
             range_type = "month"
             range_value = months
@@ -966,12 +985,21 @@ def get_mp_yield_overview(
             for name, total_pass in osat_bin1_totals.items()
         ]
 
-        return {
+        result_data = {
             "products": products,
             "weekly_output": weekly_output,
             "weekly_yield": weekly_yield,
             "osats": osats,
         }
+
+        if r_client:
+            try:
+                r_client.setex(redis_key, 691200, json.dumps(result_data))
+                print(f"[redis] Cache set for key: {redis_key}")
+            except Exception as re:
+                print(f"[redis] Cache write failed for key {redis_key}: {re}")
+
+        return result_data
 
     except Exception as e:
         import traceback
