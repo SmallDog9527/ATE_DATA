@@ -787,6 +787,16 @@ def get_mp_yield_overview(
         from app.models.lot import DataSource
         from collections import defaultdict
 
+        # Sanitize parameters if called directly in python outside FastAPI request context
+        if type(months).__name__ == 'Query':
+            months = None
+        if type(range_value).__name__ == 'Query':
+            range_value = None
+        if type(range_type).__name__ == 'Query':
+            range_type = "month"
+        if type(product_name).__name__ == 'Query':
+            product_name = None
+
         redis_key = f"mp_yield_overview:{range_type}:{range_value}:{months}:{product_name or ''}"
         from app.core.redis_client import get_redis
         import json
