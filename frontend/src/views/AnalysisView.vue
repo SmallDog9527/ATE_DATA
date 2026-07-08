@@ -57,6 +57,19 @@
             <template v-if="!exporting">📁 导出 Excel</template>
             <template v-else>导出中 {{ exportProgress }}%</template>
           </button>
+          
+          <template v-if="options.mean_limit === 'hide'">
+            <button class="btn-bin" style="margin-left: 120px;" @click="triggerExportLimit">📤 导出 Limit</button>
+            <button class="btn-bin" @click="triggerImportLimit">📥 导入 Limit</button>
+            <button class="btn-bin" @click="toggleFilterEdited">
+              {{ filterEditedOnly ? '🔍 显示全部' : '🔍 仅看已修改' }}
+            </button>
+            <button class="btn-bin" style="background-color: #1890ff; color: white;" @click="handleRecalc">🧮 Calc</button>
+            <span v-if="overallYieldNew !== null" style="font-size: 13px; font-weight: bold; color: #1890ff; margin-left: 8px; white-space: nowrap;">
+              重算总良率: {{ (overallYieldNew * 100).toFixed(2) }}%
+            </span>
+            <input type="file" ref="limitFileInput" style="display: none" @change="onLimitFileSelected" />
+          </template>
         </div>
       </div>
     </div>
@@ -108,6 +121,13 @@
             min="0" 
           />
         </div>
+        <div class="option-group">
+          <label>Mean_limit</label>
+          <div class="radio-group row">
+            <label><input type="radio" v-model="options.mean_limit" value="show" /> Show</label>
+            <label><input type="radio" v-model="options.mean_limit" value="hide" /> Hide</label>
+          </div>
+        </div>
     </div>
 
       <!-- 右侧内容区 -->
@@ -125,6 +145,9 @@
             style="width:100%;height:100%"
             @grid-ready="onGridReady"
             @cell-clicked="onCellClicked"
+            @cell-value-changed="onCellValueChanged"
+            :isExternalFilterPresent="isExternalFilterPresent"
+            :doesExternalFilterPass="doesExternalFilterPass"
           />
         </div>
       </div>
@@ -164,6 +187,7 @@ const options = ref({
   sigma: 3,
   chars_row: 3,
   delta_site: 3,
+  mean_limit: 'hide',
 })
 
 const exporting = ref(false)
@@ -257,70 +281,322 @@ const columnDefs = computed(() => {
     },
   ];
 
-  // Find unique sites from testItems
-  const siteKeys = new Set<string>();
-  testItems.value.forEach(item => {
-    Object.keys(item).forEach(key => {
-      if (key.startsWith('mean_s')) {
-        siteKeys.add(key);
-      }
-    });
-  });
-
-  const sortedSiteKeys = Array.from(siteKeys).sort((a, b) => {
-    const numA = parseInt(a.replace('mean_s', ''));
-    const numB = parseInt(b.replace('mean_s', ''));
-    return numA - numB;
-  });
-
-  sortedSiteKeys.forEach(key => {
-    const siteNum = key.replace('mean_s', '');
-    baseDefs.push({
-      headerName: `Mean_S${siteNum}`,
-      field: key,
-      width: 100,
-      valueFormatter: (p: any) => p.value?.toFixed(4) ?? '-'
-    });
-  });
-
-  // Add the Delta and Percentage columns
-  if (sortedSiteKeys.length > 0) {
-    baseDefs.push({
-      headerName: 'Mean Delta',
-      field: 'mean_delta',
-      width: 120,
-      valueGetter: (params: any) => {
-        const values = sortedSiteKeys.map(k => params.data[k]).filter(v => v !== null && v !== undefined);
-        if (values.length < 2) return null;
-        return Math.max(...values) - Math.min(...values);
-      },
-      valueFormatter: (p: any) => p.value?.toFixed(4) ?? '-',
-      cellStyle: (params: any) => {
-        const delta = params.value;
-        const allSiteMean = params.data.mean;
-        const deltaSitePct = options.value.delta_site / 100;
-        if (delta !== null && allSiteMean !== null && delta > Math.abs(allSiteMean * deltaSitePct)) {
-          return { color: 'red', fontWeight: 'bold' };
+  if (options.value.mean_limit === 'show') {
+    // Find unique sites from testItems
+    const siteKeys = new Set<string>();
+    testItems.value.forEach(item => {
+      Object.keys(item).forEach(key => {
+        if (key.startsWith('mean_s')) {
+          siteKeys.add(key);
         }
-        return {};
-      }
+      });
     });
 
-    baseDefs.push({
-      headerName: 'Mean_%',
-      width: 100,
-      valueGetter: (params: any) => {
-        const delta = params.getValue('mean_delta');
-        const allSiteMean = params.data.mean;
-        if (delta === null || !allSiteMean) return null;
-        return delta / allSiteMean;
-      },
-      valueFormatter: (p: any) => p.value !== null ? (p.value * 100).toFixed(2) + '%' : '-'
+    const sortedSiteKeys = Array.from(siteKeys).sort((a, b) => {
+      const numA = parseInt(a.replace('mean_s', ''));
+      const numB = parseInt(b.replace('mean_s', ''));
+      return numA - numB;
     });
+
+    sortedSiteKeys.forEach(key => {
+      const siteNum = key.replace('mean_s', '');
+      baseDefs.push({
+        headerName: `Mean_S${siteNum}`,
+        field: key,
+        width: 100,
+        valueFormatter: (p: any) => p.value?.toFixed(4) ?? '-'
+      });
+    });
+
+    // Add the Delta and Percentage columns
+    if (sortedSiteKeys.length > 0) {
+      baseDefs.push({
+        headerName: 'Mean Delta',
+        field: 'mean_delta',
+        width: 120,
+        valueGetter: (params: any) => {
+          const values = sortedSiteKeys.map(k => params.data[k]).filter(v => v !== null && v !== undefined);
+          if (values.length < 2) return null;
+          return Math.max(...values) - Math.min(...values);
+        },
+        valueFormatter: (p: any) => p.value?.toFixed(4) ?? '-',
+        cellStyle: (params: any) => {
+          const delta = params.value;
+          const allSiteMean = params.data.mean;
+          const deltaSitePct = options.value.delta_site / 100;
+          if (delta !== null && allSiteMean !== null && delta > Math.abs(allSiteMean * deltaSitePct)) {
+            return { color: 'red', fontWeight: 'bold' };
+          }
+          return {};
+        }
+      });
+
+      baseDefs.push({
+        headerName: 'Mean_%',
+        width: 100,
+        valueGetter: (params: any) => {
+          const delta = params.getValue('mean_delta');
+          const allSiteMean = params.data.mean;
+          if (delta === null || !allSiteMean) return null;
+          return delta / allSiteMean;
+        },
+        valueFormatter: (p: any) => p.value !== null ? (p.value * 100).toFixed(2) + '%' : '-'
+      });
+    }
+  } else {
+    // If mean_limit is 'hide', add the 4 new columns: LL_new, UL_new, fail_new, yield_new
+    baseDefs.push(
+      {
+        headerName: 'LL_new',
+        field: 'll_new',
+        width: 100,
+        editable: true,
+        cellClass: 'editable-cell',
+        valueParser: (p: any) => p.newValue !== '' && p.newValue !== null ? Number(p.newValue) : null,
+      },
+      {
+        headerName: 'UL_new',
+        field: 'ul_new',
+        width: 100,
+        editable: true,
+        cellClass: 'editable-cell',
+        valueParser: (p: any) => p.newValue !== '' && p.newValue !== null ? Number(p.newValue) : null,
+      },
+      {
+        headerName: 'fail_new',
+        field: 'fail_new',
+        width: 100,
+        valueFormatter: (p: any) => p.value !== null && p.value !== undefined ? p.value : '—',
+      },
+      {
+        headerName: 'yield_new',
+        field: 'yield_new',
+        width: 100,
+        valueFormatter: (p: any) => p.value !== null && p.value !== undefined ? (p.value * 100).toFixed(2) + '%' : '—',
+      }
+    );
   }
 
   return baseDefs;
 });
+
+const overallYieldNew = ref<number | null>(null)
+const limitFileInput = ref<any>(null)
+
+function triggerExportLimit() {
+  const headers = ['#', 'Bin', 'TestItem', 'L.Limit', 'U.Limit', 'Units', 'Min', 'Max', 'Exec Qty', 'Failures', 'Fail Rate', 'Yield', 'Mean', 'll_new', 'ul_new']
+  const csvRows = [headers.join(',')]
+  
+  testItems.value.forEach(row => {
+    const quote = (val: any) => {
+      const s = val === null || val === undefined ? '' : String(val)
+      if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+        return `"${s.replace(/"/g, '""')}"`
+      }
+      return s
+    }
+    
+    const failRateVal = row.fail_count / row.exec_qty
+    const yieldVal = row.yield_rate
+    
+    const fields = [
+      quote(row.item_number),
+      quote(row.first_fail_bin),
+      quote(row.item_name),
+      quote(row.lower_limit),
+      quote(row.upper_limit),
+      quote(row.unit),
+      quote(row.min_val),
+      quote(row.max_val),
+      quote(row.exec_qty),
+      quote(row.fail_count),
+      quote(isNaN(failRateVal) ? 0 : failRateVal),
+      quote(yieldVal),
+      quote(row.mean),
+      quote(row.ll_new),
+      quote(row.ul_new)
+    ]
+    csvRows.push(fields.join(','))
+  })
+  
+  const csvContent = '\ufeff' + csvRows.join('\n')
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.setAttribute('download', `Limit_Export_Lot_${lotId.value}.csv`)
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+function triggerImportLimit() {
+  if (limitFileInput.value) {
+    limitFileInput.value.click()
+  }
+}
+
+function onLimitFileSelected(event: any) {
+  const file = event.target.files[0]
+  if (!file) return
+  
+  const reader = new FileReader()
+  reader.onload = (e: any) => {
+    const text = e.target.result
+    const parsed = parseCSV(text)
+    
+    parsed.forEach(parts => {
+      if (parts.length < 15) return
+      const itemName = parts[2]
+      const llNewStr = parts[13]
+      const ulNewStr = parts[14]
+      
+      const llNew = llNewStr !== '' ? Number(llNewStr) : null
+      const ulNew = ulNewStr !== '' ? Number(ulNewStr) : null
+      
+      const row = testItems.value.find(item => item.item_name === itemName)
+      if (row) {
+        if (!isNaN(Number(llNew)) && llNewStr !== '') row.ll_new = llNew
+        else if (llNewStr === '') row.ll_new = null
+        
+        if (!isNaN(Number(ulNew)) && ulNewStr !== '') row.ul_new = ulNew
+        else if (ulNewStr === '') row.ul_new = null
+      }
+    })
+    
+    if (gridApi.value) {
+      if (typeof gridApi.value.setGridOption === 'function') {
+        gridApi.value.setGridOption('rowData', testItems.value)
+      } else if (typeof gridApi.value.setRowData === 'function') {
+        gridApi.value.setRowData(testItems.value)
+      } else {
+        gridApi.value.refreshCells()
+      }
+    }
+    if (gridApi.value) {
+      gridApi.value.onFilterChanged()
+    }
+    saveCustomLimitsToBackend()
+  }
+  reader.readAsText(file)
+  event.target.value = ''
+}
+
+function parseCSV(text: string) {
+  const lines = text.split(/\r?\n/)
+  const result: any[] = []
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim()
+    if (!line) continue
+    const parts: string[] = []
+    let current = ''
+    let inQuotes = false
+    for (let char of line) {
+      if (char === '"') {
+        inQuotes = !inQuotes
+      } else if (char === ',' && !inQuotes) {
+        parts.push(current.trim())
+        current = ''
+      } else {
+        current += char
+      }
+    }
+    parts.push(current.trim())
+    result.push(parts)
+  }
+  return result
+}
+
+async function saveCustomLimitsToBackend() {
+  const reqData = testItems.value
+    .filter(row => (row.ll_new !== null && row.ll_new !== undefined && row.ll_new !== '') || (row.ul_new !== null && row.ul_new !== undefined && row.ul_new !== ''))
+    .map(row => ({
+      item_name: row.item_name,
+      ll_new: row.ll_new !== null && row.ll_new !== undefined && row.ll_new !== '' ? Number(row.ll_new) : null,
+      ul_new: row.ul_new !== null && row.ul_new !== undefined && row.ul_new !== '' ? Number(row.ul_new) : null,
+    }))
+  try {
+    await api.post(`/analysis/lot/${lotId.value}/save_custom_limits`, reqData)
+  } catch (e) {
+    console.error('Failed to save custom limits:', e)
+  }
+}
+
+const filterEditedOnly = ref(false)
+
+const isExternalFilterPresent = () => {
+  return filterEditedOnly.value
+}
+
+const doesExternalFilterPass = (node: any) => {
+  const row = node.data
+  return (row.ll_new !== null && row.ll_new !== undefined && row.ll_new !== '') || 
+         (row.ul_new !== null && row.ul_new !== undefined && row.ul_new !== '')
+}
+
+function toggleFilterEdited() {
+  filterEditedOnly.value = !filterEditedOnly.value
+  if (gridApi.value) {
+    gridApi.value.onFilterChanged()
+  }
+}
+
+function onCellValueChanged(event: any) {
+  if (event.column.getColId() === 'll_new' || event.column.getColId() === 'ul_new') {
+    saveCustomLimitsToBackend()
+    if (gridApi.value) {
+      gridApi.value.onFilterChanged()
+    }
+  }
+}
+
+async function handleRecalc() {
+  const reqData = testItems.value
+    .filter(row => (row.ll_new !== null && row.ll_new !== undefined && row.ll_new !== '') || (row.ul_new !== null && row.ul_new !== undefined && row.ul_new !== ''))
+    .map(row => ({
+      item_name: row.item_name,
+      ll_new: row.ll_new !== null && row.ll_new !== undefined && row.ll_new !== '' ? Number(row.ll_new) : null,
+      ul_new: row.ul_new !== null && row.ul_new !== undefined && row.ul_new !== '' ? Number(row.ul_new) : null,
+    }))
+    
+  try {
+    const res: any = await api.post(`/analysis/lot/${lotId.value}/recalc_all_limits`, reqData, {
+      params: {
+        filter_type: options.value.filter_type,
+        sigma: options.value.sigma,
+        data_range: options.value.data_range
+      }
+    })
+    
+    overallYieldNew.value = res.overall_yield_new
+    
+    res.items.forEach((item: any) => {
+      const row = testItems.value.find(r => r.item_name === item.item_name)
+      if (row) {
+        row.fail_new = item.fail_new
+        row.yield_new = item.yield_new
+      }
+    })
+    
+    if (testItems.value.length > 0) {
+      testItems.value[0].yield_new = res.overall_yield_new
+    }
+    
+    if (gridApi.value) {
+      if (typeof gridApi.value.setGridOption === 'function') {
+        gridApi.value.setGridOption('rowData', testItems.value)
+      } else if (typeof gridApi.value.setRowData === 'function') {
+        gridApi.value.setRowData(testItems.value)
+      } else {
+        gridApi.value.refreshCells()
+      }
+    }
+  } catch (e: any) {
+    console.error('Failed to recalculate overall yield:', e)
+    alert('计算失败: ' + (e.message || e))
+  }
+}
 
 async function fetchLotInfo() {
   lotInfo.value = await api.get(`/analysis/lot/${lotId.value}/info`)
@@ -334,8 +610,33 @@ async function fetchItems() {
       data_range: options.value.data_range
     }
   })
+  
+  // Load saved custom limits
+  try {
+    const savedLimits: any[] = await api.get(`/analysis/lot/${lotId.value}/custom_limits`)
+    if (savedLimits && savedLimits.length > 0) {
+      savedLimits.forEach((lim: any) => {
+        const matched = data.find(item => item.item_name === lim.item_name)
+        if (matched) {
+          matched.ll_new = lim.ll_new
+          matched.ul_new = lim.ul_new
+        }
+      })
+    }
+  } catch (e) {
+    console.error('Failed to fetch custom limits:', e)
+  }
+
   testItems.value = data
   itemCount.value = data.length
+  
+  // Auto-calculate yield if custom limits are loaded
+  const hasCustom = data.some(row => (row.ll_new !== null && row.ll_new !== undefined && row.ll_new !== '') || (row.ul_new !== null && row.ul_new !== undefined && row.ul_new !== ''))
+  if (hasCustom) {
+    nextTick(() => {
+      handleRecalc()
+    })
+  }
 }
 
 async function handleExport() {
@@ -655,5 +956,9 @@ onMounted(async () => {
 
 :deep(.ag-floating-filter-button) {
   display: none !important;
+}
+:deep(.editable-cell) {
+  background-color: #f6ffed !important;
+  cursor: pointer;
 }
 </style>

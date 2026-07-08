@@ -139,6 +139,388 @@ def get_test_items_summary(
 
     return result
 
+
+@router.post("/lot/{lot_id}/recalc_all_limits")
+def recalc_all_limits(
+    lot_id: int,
+    req_data: List[dict] = Body(...),
+    filter_type: str = Query("all"),
+    sigma: float = Query(3.0),
+    data_range: str = Query("final"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Recalculate yield rate and fail counts for all items under new limits, and compute overall lot yield (based on Bin 1)."""
+    lot = db.query(Lot).filter(Lot.id == lot_id).first()
+    if not lot or not lot.parquet_path:
+        raise HTTPException(status_code=404, detail="Data not found")
+
+    df = pd.read_parquet(lot.parquet_path)
+    
+    # Coordinate de-duplication
+    if lot.data_type == 'CP' and 'X_COORD' in df.columns and 'Y_COORD' in df.columns:
+        if data_range == 'final':
+            df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='last')
+        elif data_range == 'original':
+            df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='first')
+
+    # Get original limits for all items to compute overall yield
+    db_items = db.query(TestItem).filter(
+        and_(TestItem.lot_id == lot_id, TestItem.site == 0)
+    ).all()
+    
+    orig_limits = {}
+    for it in db_items:
+        orig_limits[it.item_name] = (it.lower_limit, it.upper_limit)
+
+    # Map request data for quick lookup
+    custom_limits = {}
+    for item in req_data:
+        name = item.get("item_name")
+        ll = item.get("ll_new")
+        ul = item.get("ul_new")
+        custom_limits[name] = (ll, ul)
+
+    # Identify invalid original limits columns (where original passing dies fail the DB limits)
+    PASS_BINS = [1, 2]
+    if 'SOFT_BIN' in df.columns:
+        df_pass = df[pd.to_numeric(df['SOFT_BIN'], errors='coerce').fillna(-1).astype(int).isin(PASS_BINS)]
+    else:
+        df_pass = df
+
+    invalid_cols = set()
+    for col in df.columns:
+        if col not in orig_limits:
+            continue
+        vals_pass = pd.to_numeric(df_pass[col], errors='coerce').values
+        ll, ul = orig_limits[col]
+        
+        fail_pass_mask = np.zeros(len(df_pass), dtype=bool)
+        if ll is not None:
+            fail_pass_mask |= (vals_pass < ll)
+        if ul is not None:
+            fail_pass_mask |= (vals_pass > ul)
+            
+        if np.sum(fail_pass_mask) > 0:
+            invalid_cols.add(col)
+
+    # Calculate overall pass/fail mask for each die in the entire lot
+    overall_pass = np.ones(len(df), dtype=bool)
+
+    # We will also compute individual item fail count and yield rate
+    recalc_items = []
+    
+    from app.services.stats import apply_filter
+
+    for col in df.columns:
+        if col not in orig_limits:
+            continue
+            
+        # Skip check if the column is untouched and has invalid original limits
+        if col not in custom_limits and col in invalid_cols:
+            continue
+            
+        vals = pd.to_numeric(df[col], errors='coerce').values
+        orig_ll, orig_ul = orig_limits[col]
+        
+        # Apply custom limits if provided, falling back to original limits if None
+        if col in custom_limits:
+            ll_custom, ul_custom = custom_limits[col]
+            ll_new = ll_custom if ll_custom is not None else orig_ll
+            ul_new = ul_custom if ul_custom is not None else orig_ul
+        else:
+            ll_new, ul_new = orig_ll, orig_ul
+            
+        # Check how it affects ALL dies in the lot (Absolute Yield)
+        col_pass = np.ones(len(df), dtype=bool)
+        if ll_new is not None:
+            col_pass &= ~(vals < ll_new)
+        if ul_new is not None:
+            col_pass &= ~(vals > ul_new)
+        # Combine to overall pass mask for all dies
+        overall_pass &= col_pass
+
+        # Compute individual stats for custom-limited items
+        if col in custom_limits:
+            clean = vals[~np.isnan(vals)]
+            total_valid = len(clean)
+            
+            # Apply filter
+            filtered_values = apply_filter(vals, filter_type, ll_new, ul_new, sigma)
+            clean_filtered = filtered_values[~np.isnan(filtered_values)]
+            
+            fail_count = 0
+            if ll_new is not None:
+                fail_count += int(np.sum(clean_filtered < ll_new))
+            if ul_new is not None:
+                fail_count += int(np.sum(clean_filtered > ul_new))
+                
+            yield_rate = (total_valid - fail_count) / total_valid if total_valid > 0 else 1.0
+            
+            recalc_items.append({
+                "item_name": col,
+                "fail_new": fail_count,
+                "yield_new": round(yield_rate, 6)
+            })
+
+    # Compute overall lot yield rate based on the entire wafer de-duplicated total dies
+    total_dies = len(df)
+    new_pass_count = int(np.sum(overall_pass))
+    overall_yield_rate = float(new_pass_count / total_dies) if total_dies > 0 else 1.0
+
+    return {
+        "overall_yield_new": round(overall_yield_rate, 6),
+        "items": recalc_items
+    }
+
+
+@router.post("/multi_lot/recalc_all_limits")
+def recalc_multi_lot_limits(
+    lot_ids: str = Query(...),
+    req_data: List[dict] = Body(...),
+    filter_type: str = Query("all"),
+    sigma: float = Query(3.0),
+    data_range: str = Query("final"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Recalculate yield rate and fail counts for multi-lot items under new limits, and compute overall combined yield (based on Bin 1)."""
+    id_list = [int(x) for x in lot_ids.split(",") if x.strip()]
+    if not id_list:
+        raise HTTPException(status_code=400, detail="Invalid lot IDs")
+
+    lots = db.query(Lot).filter(Lot.id.in_(id_list)).all()
+    if not lots:
+        raise HTTPException(status_code=404, detail="Lots not found")
+
+    # Map request data for quick lookup
+    custom_limits = {}
+    for item in req_data:
+        name = item.get("item_name")
+        ll = item.get("ll_new")
+        ul = item.get("ul_new")
+        custom_limits[name] = (ll, ul)
+
+    total_dies_all_lots = 0
+    total_new_bin1_dies_all_lots = 0
+    
+    # Accumulate stats per item across all lots
+    item_stats = {name: {"total_valid": 0, "fail_count": 0} for name in custom_limits}
+    
+    from app.services.stats import apply_filter
+
+    for lot in lots:
+        if not lot.parquet_path:
+            continue
+            
+        df = pd.read_parquet(lot.parquet_path)
+        
+        # Coordinate de-duplication
+        if lot.data_type == 'CP' and 'X_COORD' in df.columns and 'Y_COORD' in df.columns:
+            if data_range == 'final':
+                df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='last')
+            elif data_range == 'original':
+                df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='first')
+
+        # Get original limits for all items to compute overall yield
+        db_items = db.query(TestItem).filter(
+            and_(TestItem.lot_id == lot.id, TestItem.site == 0)
+        ).all()
+        
+        orig_limits = {}
+        for it in db_items:
+            orig_limits[it.item_name] = (it.lower_limit, it.upper_limit)
+
+    total_dies_all_lots = 0
+    total_new_pass_dies_all_lots = 0
+    
+    # Accumulate stats per item across all lots
+    item_stats = {name: {"total_valid": 0, "fail_count": 0} for name in custom_limits}
+    
+    from app.services.stats import apply_filter
+
+    for lot in lots:
+        if not lot.parquet_path:
+            continue
+            
+        df = pd.read_parquet(lot.parquet_path)
+        
+        # Coordinate de-duplication
+        if lot.data_type == 'CP' and 'X_COORD' in df.columns and 'Y_COORD' in df.columns:
+            if data_range == 'final':
+                df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='last')
+            elif data_range == 'original':
+                df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='first')
+
+        # Get original limits for all items to compute overall yield
+        db_items = db.query(TestItem).filter(
+            and_(TestItem.lot_id == lot.id, TestItem.site == 0)
+        ).all()
+        
+        orig_limits = {}
+        for it in db_items:
+            orig_limits[it.item_name] = (it.lower_limit, it.upper_limit)
+
+        # Identify invalid original limits columns (where original passing dies fail the DB limits) for this lot
+        PASS_BINS = [1, 2]
+        if 'SOFT_BIN' in df.columns:
+            df_pass = df[pd.to_numeric(df['SOFT_BIN'], errors='coerce').fillna(-1).astype(int).isin(PASS_BINS)]
+        else:
+            df_pass = df
+
+        invalid_cols = set()
+        for col in df.columns:
+            if col not in orig_limits:
+                continue
+            vals_pass = pd.to_numeric(df_pass[col], errors='coerce').values
+            ll, ul = orig_limits[col]
+            
+            fail_pass_mask = np.zeros(len(df_pass), dtype=bool)
+            if ll is not None:
+                fail_pass_mask |= (vals_pass < ll)
+            if ul is not None:
+                fail_pass_mask |= (vals_pass > ul)
+                
+            if np.sum(fail_pass_mask) > 0:
+                invalid_cols.add(col)
+
+        # Calculate overall pass/fail mask for each die in the entire lot
+        overall_pass = np.ones(len(df), dtype=bool)
+
+        for col in df.columns:
+            if col not in orig_limits:
+                continue
+                
+            # Skip check if the column is untouched and has invalid original limits
+            if col not in custom_limits and col in invalid_cols:
+                continue
+                
+            vals = pd.to_numeric(df[col], errors='coerce').values
+            orig_ll, orig_ul = orig_limits[col]
+            
+            # Apply custom limits if provided, falling back to original limits if None
+            if col in custom_limits:
+                ll_custom, ul_custom = custom_limits[col]
+                ll_new = ll_custom if ll_custom is not None else orig_ll
+                ul_new = ul_custom if ul_custom is not None else orig_ul
+            else:
+                ll_new, ul_new = orig_ll, orig_ul
+                
+            # Check how it affects ALL dies in the lot
+            col_pass = np.ones(len(df), dtype=bool)
+            if ll_new is not None:
+                col_pass &= ~(vals < ll_new)
+            if ul_new is not None:
+                col_pass &= ~(vals > ul_new)
+            # Combine to overall pass mask for all dies
+            overall_pass &= col_pass
+
+            # Compute individual stats for custom-limited items
+            if col in custom_limits:
+                clean = vals[~np.isnan(vals)]
+                
+                # Apply filter
+                filtered_values = apply_filter(vals, filter_type, ll_new, ul_new, sigma)
+                clean_filtered = filtered_values[~np.isnan(filtered_values)]
+                
+                fail_count = 0
+                if ll_new is not None:
+                    fail_count += int(np.sum(clean_filtered < ll_new))
+                if ul_new is not None:
+                    fail_count += int(np.sum(clean_filtered > ul_new))
+                    
+                item_stats[col]["total_valid"] += len(clean)
+                item_stats[col]["fail_count"] += fail_count
+
+        total_dies_all_lots += len(df)
+        total_new_pass_dies_all_lots += int(np.sum(overall_pass))
+
+    # Format individual item results
+    recalc_items = []
+    for col, stats in item_stats.items():
+        tv = stats["total_valid"]
+        fc = stats["fail_count"]
+        yr = (tv - fc) / tv if tv > 0 else 1.0
+        recalc_items.append({
+            "item_name": col,
+            "fail_new": fc,
+            "yield_new": round(yr, 6)
+        })
+
+    overall_yield_rate = float(total_new_pass_dies_all_lots / total_dies_all_lots) if total_dies_all_lots > 0 else 1.0
+
+    return {
+        "overall_yield_new": round(overall_yield_rate, 6),
+        "items": recalc_items
+    }
+
+
+import json
+
+CUSTOM_LIMITS_DIR = os.path.join(os.path.dirname(UPLOAD_DIR), "custom_limits")
+os.makedirs(CUSTOM_LIMITS_DIR, exist_ok=True)
+
+@router.post("/lot/{lot_id}/save_custom_limits")
+def save_custom_limits(
+    lot_id: int,
+    req_data: List[dict] = Body(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Save custom limits for a lot persistently to disk."""
+    filepath = os.path.join(CUSTOM_LIMITS_DIR, f"lot_{lot_id}.json")
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(req_data, f, ensure_ascii=False, indent=2)
+    return {"status": "success"}
+
+@router.get("/lot/{lot_id}/custom_limits")
+def get_custom_limits(
+    lot_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Retrieve saved custom limits for a lot."""
+    filepath = os.path.join(CUSTOM_LIMITS_DIR, f"lot_{lot_id}.json")
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+@router.post("/multi_lot/save_custom_limits")
+def save_multi_lot_custom_limits(
+    lot_ids: str = Query(...),
+    req_data: List[dict] = Body(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Save custom limits for multiple lots persistently to disk."""
+    sorted_ids = "_".join(sorted(x.strip() for x in lot_ids.split(",") if x.strip()))
+    filepath = os.path.join(CUSTOM_LIMITS_DIR, f"multilot_{sorted_ids}.json")
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(req_data, f, ensure_ascii=False, indent=2)
+    return {"status": "success"}
+
+@router.get("/multi_lot/custom_limits")
+def get_multi_lot_custom_limits(
+    lot_ids: str = Query(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Retrieve saved custom limits for multiple lots."""
+    sorted_ids = "_".join(sorted(x.strip() for x in lot_ids.split(",") if x.strip()))
+    filepath = os.path.join(CUSTOM_LIMITS_DIR, f"multilot_{sorted_ids}.json")
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
 @router.post("/lot/{lot_id}/export_items/start")
 def start_export_test_items(
     lot_id: int,
