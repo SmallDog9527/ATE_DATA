@@ -25,10 +25,28 @@ def parse_t2k_folder(folder_path: str) -> dict:
     Judge(...) calls.
     """
     ls_files, bdefs_files, cpp_files = _collect_program_files(folder_path)
+    h_files = _collect_h_files(folder_path)
     limits = _parse_limit_sets(ls_files)
     bins = _parse_bin_defs(bdefs_files)
+    macros = _parse_h_macros(h_files)
     cpp_path = find_t2k_main_cpp(cpp_files)
-    params = _parse_cpp_params(cpp_path, limits, bins) if cpp_path else []
+
+    params = []
+    if cpp_path:
+        # Resolve all C++ files in the same directory as the main coordinator (e.g. TPG.cpp)
+        main_dir = os.path.dirname(cpp_path)
+        tpg_cpp_files = []
+        for filename in sorted(os.listdir(main_dir)):
+            if filename.lower().endswith(".cpp") and not filename.lower().endswith("_dllsetup.cpp"):
+                tpg_cpp_files.append(os.path.join(main_dir, filename))
+
+        row_counter = 1
+        for path in tpg_cpp_files:
+            file_params = _parse_cpp_params(path, limits, bins, macros)
+            for p in file_params:
+                p["row_no"] = row_counter
+                row_counter += 1
+                params.append(p)
 
     used_sw_bins = _used_sw_bins(params)
     if 1 not in used_sw_bins:
@@ -80,6 +98,32 @@ def _collect_program_files(folder_path: str) -> tuple[list[str], list[str], list
     bdefs_files.sort(key=_t2k_file_priority)
     cpp_files.sort(key=_t2k_file_priority)
     return ls_files, bdefs_files, cpp_files
+
+
+def _collect_h_files(folder_path: str) -> list[str]:
+    h_files: list[str] = []
+    for root, _dirs, files in os.walk(folder_path):
+        for filename in files:
+            ext = os.path.splitext(filename)[1].lower()
+            path = os.path.join(root, filename)
+            if ext == ".h":
+                h_files.append(path)
+    h_files.sort(key=_t2k_file_priority)
+    return h_files
+
+
+def _parse_h_macros(h_files: list[str]) -> dict[str, str]:
+    macros = {}
+    for path in h_files:
+        try:
+            text = _read_text(path)
+            for match in re.finditer(r'#define\s+([A-Za-z_]\w*)\s+("[^"]*"|\S+)', text):
+                name = match.group(1)
+                value = match.group(2)
+                macros[name] = value
+        except Exception:
+            continue
+    return macros
 
 
 def _t2k_file_priority(path: str) -> tuple[int, str]:
@@ -227,7 +271,7 @@ def _parse_limit_sets(ls_files: list[str]) -> dict[str, dict[str, Any]]:
                 continue
             body, _end = block
             for entry in re.finditer(
-                r"\b([A-Za-z_]\w*)\s*\{\s*WTHT\s*\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)",
+                r"\b([A-Za-z_]\w*)\s*\{\s*WT[HR]T\s*\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)",
                 body,
                 re.DOTALL,
             ):
@@ -289,6 +333,7 @@ def _parse_cpp_params(
     cpp_path: str,
     limits: dict[str, dict[str, Any]],
     bins: dict[str, BinInfo],
+    macros: dict[str, str],
 ) -> list[dict[str, Any]]:
     text = _strip_comments(_read_text(cpp_path))
     function_ranges = _find_cpp_functions(text)
@@ -305,19 +350,19 @@ def _parse_cpp_params(
 
         for call in calls:
             args = _split_cpp_args(call["args"])
-            if len(args) < 5:
+            if len(args) < 2:
                 continue
 
             test_no = _test_number(args[0], test_id_value, len(rows) + 1)
             if re.fullmatch(r"test_id", args[0].strip()) and test_id_value is not None:
                 test_id_value += 1
 
-            param_name = _unquote(args[1])
-            if not param_name:
+            parsed = _parse_judge_args(args, limits, bins, macros)
+            if not parsed:
                 continue
 
-            parsed = _parse_judge_args(args, limits, bins)
-            if not parsed:
+            param_name = parsed.get("param_name") or _unquote(args[1])
+            if not param_name:
                 continue
 
             sw_bin = parsed["sw_bin"]
@@ -465,7 +510,7 @@ def _extract_braced_block(text: str, open_pos: int) -> Optional[tuple[str, int]]
 
 def _find_judge_calls(body: str) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
-    pattern = re.compile(r"(?<![A-Za-z0-9_])(?:(?:Ips_Library_Base|this)\s*::\s*)?Judge\s*\(")
+    pattern = re.compile(r"(?<![A-Za-z0-9_])(?:(?:Ips_Library_Base|this)\s*::\s*)?(?:Judge|JUDGE)\s*\(")
 
     for match in pattern.finditer(body):
         open_pos = body.find("(", match.start())
@@ -651,12 +696,61 @@ def _parse_judge_args(
     args: list[str],
     limits: dict[str, dict[str, Any]],
     bins: dict[str, BinInfo],
+    macros: dict[str, str],
 ) -> Optional[dict[str, Any]]:
-    # Judge(id, desc, "LimitSet.Param", value, "SoftBins.BIN7")
-    if len(args) == 5 and _is_string_literal(args[2]) and _is_string_literal(args[4]):
-        limit_ref = _unquote(args[2])
+    resolved_args = []
+    for arg in args:
+        val = arg.strip()
+        for _ in range(3):
+            if val in macros:
+                val = macros[val].strip()
+            else:
+                break
+        if re.fullmatch(r"SBIN_(\d+)", val):
+            val = f'"SoftBins.BIN{re.match(r"SBIN_(\d+)", val).group(1)}"'
+        resolved_args.append(val)
+
+    # 2-argument call: JUDGE(id, val) -> expands to Judge(id, "", val, SBIN_2)
+    if len(resolved_args) == 2:
+        val_expr = resolved_args[1].strip()
+        bin_ref = "SoftBins.BIN2"
+        bin_info = _bin_info(bin_ref, bins)
+        return {
+            "min": None,
+            "max": None,
+            "unit": "",
+            "sw_bin": bin_info["sw_bin"],
+            "hw_bin": bin_info["hw_bin"],
+            "description": bin_info["description"],
+            "limit_ref": None,
+            "bin_ref": bin_ref,
+            "param_name": val_expr,
+        }
+
+    # 4-argument call: Judge(id, desc, value, bin)
+    if len(resolved_args) == 4:
+        desc = _unquote(resolved_args[1])
+        val_expr = resolved_args[2].strip()
+        param_name = desc if desc else val_expr
+        bin_ref = _unquote(resolved_args[3])
+        bin_info = _bin_info(bin_ref, bins)
+        return {
+            "min": None,
+            "max": None,
+            "unit": "",
+            "sw_bin": bin_info["sw_bin"],
+            "hw_bin": bin_info["hw_bin"],
+            "description": bin_info["description"],
+            "limit_ref": None,
+            "bin_ref": bin_ref,
+            "param_name": param_name,
+        }
+
+    # 5-argument call: Judge(id, desc, limit_ref, value, bin)
+    if len(resolved_args) == 5 and _is_string_literal(resolved_args[2]) and _is_string_literal(resolved_args[4]):
+        limit_ref = _unquote(resolved_args[2])
         limit = limits.get(limit_ref, {"min": None, "max": None, "unit": ""})
-        bin_ref = _unquote(args[4])
+        bin_ref = _unquote(resolved_args[4])
         bin_info = _bin_info(bin_ref, bins)
         return {
             "min": limit.get("min"),
@@ -667,16 +761,17 @@ def _parse_judge_args(
             "description": bin_info["description"],
             "limit_ref": limit_ref,
             "bin_ref": bin_ref,
+            "param_name": _unquote(resolved_args[1]),
         }
 
-    # Judge(id, desc, value, lower, upper, lowerBin, upperBin, unit)
-    if len(args) >= 8 and _is_string_literal(args[5]) and _is_string_literal(args[6]):
-        lower = _literal_float(args[3])
-        upper = _literal_float(args[4])
-        unit = _unquote(args[7]) if _is_string_literal(args[7]) else args[7].strip()
+    # 8-argument call: Judge(id, desc, value, lower, upper, lowerBin, upperBin, unit)
+    if len(resolved_args) >= 8 and _is_string_literal(resolved_args[5]) and _is_string_literal(resolved_args[6]):
+        lower = _literal_float(resolved_args[3])
+        upper = _literal_float(resolved_args[4])
+        unit = _unquote(resolved_args[7]) if _is_string_literal(resolved_args[7]) else resolved_args[7].strip()
         normalized = _normalize_direct_limits(lower, upper, unit)
-        lower_bin_ref = _unquote(args[5])
-        upper_bin_ref = _unquote(args[6])
+        lower_bin_ref = _unquote(resolved_args[5])
+        upper_bin_ref = _unquote(resolved_args[6])
         lower_bin = _bin_info(lower_bin_ref, bins)
         upper_bin = _bin_info(upper_bin_ref, bins)
         return {
@@ -688,6 +783,7 @@ def _parse_judge_args(
             "description": _merge_bin_values(lower_bin["description"], upper_bin["description"]),
             "limit_ref": None,
             "bin_ref": _merge_bin_values(lower_bin_ref, upper_bin_ref),
+            "param_name": _unquote(resolved_args[1]),
         }
 
     return None

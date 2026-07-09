@@ -775,6 +775,7 @@ def get_mp_yield_overview(
     range_value: Optional[int] = Query(3),
     months: Optional[int] = Query(None),
     product_name: Optional[str] = None,
+    bypass_cache: bool = False,
 ):
     """
     Get per-product overview statistics for the MP Yield overview tab.
@@ -797,6 +798,9 @@ def get_mp_yield_overview(
         if type(product_name).__name__ == 'Query':
             product_name = None
 
+        if range_type == "all":
+            range_value = None
+
         redis_key = f"mp_yield_overview:{range_type}:{range_value}:{months}:{product_name or ''}"
         from app.core.redis_client import get_redis
         import json
@@ -807,7 +811,7 @@ def get_mp_yield_overview(
         except Exception as re:
             print(f"[redis] Failed to get redis client: {re}")
             
-        if r_client:
+        if r_client and not bypass_cache:
             try:
                 cached_val = r_client.get(redis_key)
                 if cached_val:
@@ -820,11 +824,34 @@ def get_mp_yield_overview(
             range_type = "month"
             range_value = months
 
-        filters = [
-            Lot.data_source == DataSource.ftp,
-            Lot.data_type == "MP_Yield",
-            Lot.status != "deleted",
-        ]
+        # Check user role permissions to determine data source access (default to True if current_user is None for system tasks)
+        is_admin_or_eng = True
+        if current_user is not None:
+            is_admin_or_eng = current_user.role in ['admin', 'eng']
+
+        if is_admin_or_eng:
+            filters = [
+                Lot.data_type == "MP_Yield",
+                Lot.status != "deleted",
+            ]
+        else:
+            shared_lot_ids = (
+                db.query(LotShare.lot_id)
+                .filter(
+                    LotShare.shared_to == current_user.id,
+                    LotShare.expires_at > datetime.now(timezone.utc),
+                )
+                .subquery()
+            )
+            filters = [
+                Lot.data_type == "MP_Yield",
+                Lot.status != "deleted",
+                or_(
+                    Lot.user_id == current_user.id,
+                    Lot.id.in_(shared_lot_ids),
+                    Lot.data_source == DataSource.ftp
+                )
+            ]
 
         if range_type == "month":
             val = range_value if range_value is not None else 3
@@ -840,11 +867,27 @@ def get_mp_yield_overview(
             recent_lots_q = (
                 db.query(Lot.lot_id)
                 .filter(
-                    Lot.data_source == DataSource.ftp,
                     Lot.data_type == "MP_Yield",
                     Lot.status != "deleted",
                 )
             )
+            # Apply user role visibility filters for non-privileged users
+            if current_user is not None and current_user.role not in ['admin', 'eng']:
+                shared_lot_ids = (
+                    db.query(LotShare.lot_id)
+                    .filter(
+                        LotShare.shared_to == current_user.id,
+                        LotShare.expires_at > datetime.now(timezone.utc),
+                    )
+                    .subquery()
+                )
+                recent_lots_q = recent_lots_q.filter(
+                    or_(
+                        Lot.user_id == current_user.id,
+                        Lot.id.in_(shared_lot_ids),
+                        Lot.data_source == DataSource.ftp
+                    )
+                )
             if product_name:
                 recent_lots_q = recent_lots_q.filter(Lot.product_name.ilike(f"%{product_name}%"))
             recent_lots_results = (
@@ -1510,6 +1553,19 @@ def merge_lots(data: MergeRequest, db: Session = Depends(get_db)):
     if len(lots) != len(data.ids):
         raise HTTPException(status_code=404, detail="部分LOT不存在")
 
+    # Identify STS8200 or STS8300 if test machine name or mp tester contains '8200' or '8300'
+    for lot in lots:
+        if lot.test_machine:
+            if "8200" in lot.test_machine:
+                lot.test_machine = "STS8200"
+            elif "8300" in lot.test_machine:
+                lot.test_machine = "STS8300"
+        if lot.mp_tester:
+            if "8200" in lot.mp_tester:
+                lot.mp_tester = "STS8200"
+            elif "8300" in lot.mp_tester:
+                lot.mp_tester = "STS8300"
+
     # 按 test_date 排序，测试时间早的数据在前；缺失时用 beginning_time/upload_date 兜底。
     lots.sort(key=lambda l: l.test_date or l.beginning_time or l.upload_date or datetime.min)
     print(f"[merge] 合并顺序: {[l.filename for l in lots]}")
@@ -1702,6 +1758,19 @@ def merge_many_lots(data: MergeManyRequest, db: Session = Depends(get_db)):
     lots = db.query(Lot).filter(Lot.id.in_(data.ids)).all()
     if len(lots) != len(data.ids):
         raise HTTPException(status_code=404, detail="部分LOT不存在")
+
+    # Identify STS8200 or STS8300 if test machine name or mp tester contains '8200' or '8300'
+    for lot in lots:
+        if lot.test_machine:
+            if "8200" in lot.test_machine:
+                lot.test_machine = "STS8200"
+            elif "8300" in lot.test_machine:
+                lot.test_machine = "STS8300"
+        if lot.mp_tester:
+            if "8200" in lot.mp_tester:
+                lot.mp_tester = "STS8200"
+            elif "8300" in lot.mp_tester:
+                lot.mp_tester = "STS8300"
 
     lots.sort(key=lambda l: l.test_date or l.beginning_time or l.upload_date or datetime.min)
 
@@ -1960,6 +2029,19 @@ def merge_cp_lot(data: MergeCpLotRequest, db: Session = Depends(get_db)):
 
     if not wafers_query:
         raise HTTPException(status_code=400, detail=f"批号 {lot_id} 下没有可合并的 Wafer 数据记录")
+
+    # Identify STS8200 or STS8300 if test machine name or mp tester contains '8200' or '8300'
+    for w in wafers_query:
+        if w.test_machine:
+            if "8200" in w.test_machine:
+                w.test_machine = "STS8200"
+            elif "8300" in w.test_machine:
+                w.test_machine = "STS8300"
+        if w.mp_tester:
+            if "8200" in w.mp_tester:
+                w.mp_tester = "STS8200"
+            elif "8300" in w.mp_tester:
+                w.mp_tester = "STS8300"
 
     # 文件名去重
     seen_filenames = set()

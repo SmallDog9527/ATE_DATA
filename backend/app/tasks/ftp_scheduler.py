@@ -57,7 +57,7 @@ def ftp_check_job():
         for osat in osats:
             if is_in_window(osat.schedule_start, osat.schedule_end):
                 print(f"[scheduler] 触发 OSAT={osat.name} 抓取任务")
-                _executor.submit(run_osat_fetch, osat.id)
+                _executor.submit(run_osat_fetch, osat.id, False)
             else:
                 pass  # 不在时间窗口，静默跳过
     except Exception as e:
@@ -287,12 +287,12 @@ def send_daily_failure_report_job():
 
 
 def precalculate_mp_yield_job():
-    """每周日晚上22:00定时预计算量产良率大盘的12种组合快照并写入Redis，TTL为24小时"""
+    """Precalculate the 12 combinations of mass production yield snapshots daily at 02:00:00 and save to Redis, TTL = 8 days"""
     from app.core.database import SessionLocal
     from app.api.routes.lots import get_mp_yield_overview
     import time
 
-    print("[scheduler] ⏰ 开始执行每周量产良率大盘预计算任务...")
+    print("[scheduler] ⏰ Starting daily mass production yield overview precalculation job...")
     
     combinations = [
         ("month", 1), ("month", 3), ("month", 6), ("month", 12),
@@ -312,14 +312,33 @@ def precalculate_mp_yield_job():
                     range_type=r_type,
                     range_value=r_val if r_type != "all" else None,
                     months=None,
-                    product_name=None
+                    product_name=None,
+                    bypass_cache=True
                 )
-                print(f"[scheduler] 成功计算并缓存组合 ({r_type}, {r_val})，耗时: {time.time() - t0:.2f} 秒")
+                print(f"[scheduler] Successfully computed and cached combination ({r_type}, {r_val}), time: {time.time() - t0:.2f} seconds")
             except Exception as ex:
-                print(f"[scheduler] 预计算组合 ({r_type}, {r_val}) 失败: {ex}")
-        print("[scheduler] ✅ 每周量产良率大盘预计算任务圆满完成！")
+                print(f"[scheduler] Precalculating combination ({r_type}, {r_val}) failed: {ex}")
+        print("[scheduler] ✅ Daily mass production yield overview precalculation job completed successfully!")
     except Exception as e:
-        print(f"[scheduler] precalculate_mp_yield_job 异常: {e}")
+        print(f"[scheduler] precalculate_mp_yield_job exception: {e}")
+    finally:
+        db.close()
+
+
+def daily_ftp_scan_snapshot_job():
+    """Run daily scan snapshot at 08:00 for all enabled OSATs."""
+    from app.core.database import SessionLocal
+    from app.models.osat_config import OsatConfig
+    from app.services.ftp_service import run_osat_fetch
+    
+    print("[scheduler] ⏰ Starting daily FTP scan snapshot job (08:00)...")
+    db = SessionLocal()
+    try:
+        configs = db.query(OsatConfig).filter(OsatConfig.enabled == True).all()
+        for o in configs:
+            _executor.submit(run_osat_fetch, o.id, True)
+    except Exception as e:
+        print(f"[scheduler] daily_ftp_scan_snapshot_job exception: {e}")
     finally:
         db.close()
 
@@ -335,6 +354,16 @@ def start_scheduler():
             replace_existing=True,
             misfire_grace_time=60,
         )
+        # 每天 08:00 整执行 FTP 扫描并更新快照
+        _scheduler.add_job(
+            daily_ftp_scan_snapshot_job,
+            trigger='cron',
+            hour=8,
+            minute=0,
+            id='daily_ftp_scan_snapshot',
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
         # 每天 09:00 整将失效文件汇总并发件
         _scheduler.add_job(
             send_daily_failure_report_job,
@@ -345,19 +374,18 @@ def start_scheduler():
             replace_existing=True,
             misfire_grace_time=3600,
         )
-        # 每周日 22:00:00 运行 of 量产良率大盘预计算任务
+        # Daily 02:00:00 precalculate mass production yield overview snapshot
         _scheduler.add_job(
             precalculate_mp_yield_job,
             trigger='cron',
-            day_of_week='sun',
-            hour=22,
+            hour=2,
             minute=0,
             id='precalculate_mp_yield_snapshot',
             replace_existing=True,
             misfire_grace_time=3600,
         )
         _scheduler.start()
-        print("[scheduler] FTP 定时调度器已启动（包含每5分钟检查及每日09:00汇总报告）")
+        print("[scheduler] FTP 定时调度器已启动（包含每5分钟检查、每日08:00扫描及每日09:00汇总报告）")
 
 
 def stop_scheduler():
@@ -371,5 +399,5 @@ def stop_scheduler():
 def trigger_osat_now(osat_id: int):
     """手动立即触发一个 OSAT 的抓取任务（在后台线程中执行）"""
     from app.services.ftp_service import run_osat_fetch
-    _executor.submit(run_osat_fetch, osat_id)
+    _executor.submit(run_osat_fetch, osat_id, True)
     print(f"[scheduler] 手动触发 OSAT id={osat_id} 抓取任务")

@@ -130,7 +130,7 @@
     <!-- 底部三栏 -->
     <div class="bottom-area">
       <!-- 左：Bin Map -->
-      <div class="map-section" v-if="false">
+      <div class="map-section" v-show="hasCoords">
         <div class="section-title">Bin Map</div>
         <div class="map-with-legend" style="position:relative">
           <canvas ref="binMapCanvas" width="800" height="800"

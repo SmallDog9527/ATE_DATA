@@ -602,6 +602,10 @@
                       <span :style="{ color: row.stats[o.id].failed > 0 ? '#dc2626' : '#64748b', fontWeight: row.stats[o.id].failed > 0 ? '600' : 'normal' }">
                         {{ row.stats[o.id].failed }}
                       </span>
+                      <template v-if="row.stats[o.id].total !== undefined">
+                        <span style="color: #64748b;">/</span>
+                        <span style="color: #0284c7; font-weight: 600;">{{ row.stats[o.id].total }}</span>
+                      </template>
                     </span>
                     <span v-else style="color: #cbd5e1;">—</span>
                   </td>

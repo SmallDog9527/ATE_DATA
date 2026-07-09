@@ -2,15 +2,23 @@
   <div class="auth-page">
     <div class="auth-card">
       <div class="card-header">
+        <div class="form-top-title">
+          <span v-if="mode === 'login'">欢迎回来</span>
+          <span v-else-if="mode === 'register' && regStep === 1">创建账号</span>
+          <span v-else-if="mode === 'register' && regStep === 2">验证邮箱</span>
+          <span v-else-if="mode === 'forgot'">重置密码</span>
+          <span v-else-if="mode === 'reset'">设置新密码</span>
+        </div>
         <div class="logo-area">
           <span class="logo-icon">⚡</span>
-          <h1 class="logo-title">ATE 数据分析系统</h1>
+          <h1 class="logo-title">Data & Knowledge Platform</h1>
+          <div class="logo-subtitle">企业ATE测试数据资产平台</div>
         </div>
       </div>
 
       <!-- 登录 -->
       <div v-if="mode === 'login'" class="form-section">
-        <h2 class="form-title">欢迎回来</h2>
+        
         <form @submit.prevent="handleLogin">
           <div class="field">
             <label>用户名</label>
@@ -33,7 +41,7 @@
 
       <!-- 注册 Step 1：填写信息 + 发验证码 -->
       <div v-else-if="mode === 'register' && regStep === 1" class="form-section">
-        <h2 class="form-title">创建账号</h2>
+        
         <form @submit.prevent="handleSendCode">
           <div class="field">
             <label>用户名</label>
@@ -60,7 +68,7 @@
 
       <!-- 注册 Step 2：输入验证码 -->
       <div v-else-if="mode === 'register' && regStep === 2" class="form-section">
-        <h2 class="form-title">验证邮箱</h2>
+        
         <p class="sub-text">验证码已发送至 <strong>{{ regForm.email }}</strong>，10分钟内有效</p>
         <form @submit.prevent="handleRegister">
           <div class="field">
@@ -86,7 +94,7 @@
 
       <!-- 忘记密码 -->
       <div v-else-if="mode === 'forgot'" class="form-section">
-        <h2 class="form-title">重置密码</h2>
+        
         <form @submit.prevent="handleForgot">
           <div class="field">
             <label>注册邮箱</label>
@@ -105,7 +113,7 @@
 
       <!-- 重置密码（从邮件链接进入） -->
       <div v-else-if="mode === 'reset'" class="form-section">
-        <h2 class="form-title">设置新密码</h2>
+        
         <form @submit.prevent="handleReset">
           <div class="field">
             <label>新密码</label>
@@ -295,10 +303,45 @@ async function handleReset() {
   color: white;
 }
 
-.card-header { margin-bottom: 32px; text-align: center; }
-.logo-area { display: flex; align-items: center; justify-content: center; gap: 12px; }
-.logo-icon { font-size: 28px; }
-.logo-title { font-size: 20px; font-weight: 700; color: white; margin: 0; }
+.card-header {
+  margin-bottom: 28px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.form-top-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.5);
+  margin-bottom: 18px;
+  letter-spacing: 1px;
+}
+.logo-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.logo-icon {
+  font-size: 32px;
+  margin-bottom: 2px;
+}
+.logo-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: white;
+  margin: 0;
+  line-height: 1.2;
+  text-align: center;
+}
+.logo-subtitle {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.6);
+  margin-top: 4px;
+  font-weight: 400;
+  text-align: center;
+}
 
 .form-title {
   font-size: 22px;

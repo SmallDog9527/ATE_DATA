@@ -15,3 +15,4 @@ from app.models.program_change_extra import ProgramChangeExtra
 from app.models.pgs_placeholder import PgsPlaceholder
 from app.models.program_data_snapshot import ProgramDataSnapshot
 from app.models.datasheet_spec import Datasheet, DatasheetParameter, ParameterMapping
+from app.models.ftp_scan_snapshot import FtpScanSnapshot

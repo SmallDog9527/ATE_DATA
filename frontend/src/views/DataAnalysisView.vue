@@ -44,6 +44,15 @@
               <option value="all">全部</option>
             </select>
           </div>
+          <div class="ov-filter-item">
+            <label>产品名称</label>
+            <input 
+              type="text" 
+              v-model="ovProductName" 
+              placeholder="输入产品名过滤" 
+              class="ov-filter-input"
+            />
+          </div>
           <div class="ov-filter-item ov-filter-right">
             <button class="btn btn-primary" @click="fetchOverview(true)">刷新</button>
           </div>
@@ -76,7 +85,7 @@
         <AgGridVue
           class="ag-theme-alpine"
           :theme="'legacy'"
-          :rowData="ovProducts"
+          :rowData="filteredOvProducts"
           :columnDefs="ovColDefs"
           :defaultColDef="defaultColDef"
           style="width: 100%; flex: 1; min-height: 0;"
@@ -196,6 +205,27 @@
                 PGM
               </button>
             </div>
+
+            <!-- Table Specific Filter Input -->
+            <div style="margin-left: 20px; display: inline-flex; align-items: center; position: relative;">
+              <span style="font-size: 13px; color: #475569; margin-right: 8px; font-weight: 500;">
+                表格筛选:
+              </span>
+              <input
+                v-model="deviceLotFilterInput"
+                type="text"
+                placeholder="输入 LOT / PGM 过滤..."
+                style="padding: 4px 10px; font-size: 13px; border: 1px solid #cbd5e1; border-radius: 4px; width: 200px; outline: none; background: #fff;"
+                @keydown.esc="deviceLotFilterInput = ''"
+              />
+              <button 
+                v-if="deviceLotFilterInput"
+                @click="deviceLotFilterInput = ''" 
+                style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); border: none; background: transparent; cursor: pointer; color: #94a3b8; font-size: 14px;"
+              >
+                ×
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -230,7 +260,7 @@
         <AgGridVue
           class="ag-theme-alpine"
           :theme="'legacy'"
-          :rowData="deviceLots"
+          :rowData="filteredDeviceLots"
           :columnDefs="deviceColDefs"
           :defaultColDef="defaultColDef"
           style="width: 100%; flex: 1; min-height: 0;"
@@ -251,6 +281,7 @@ const globalOvLoaded = ref(false)
 const globalRangeType = ref('month')
 const globalRangeValue = ref(3)
 const globalFilterSelection = ref('month-3')
+const globalOvProductName = ref('')
 const globalOvProducts = shallowRef<any[]>([])
 const globalOvWeeklyOutput = ref<any[]>([])
 const globalOvOsats = ref<any[]>([])
@@ -266,10 +297,10 @@ import * as echarts from 'echarts'
 import api from '@/api'
 import { useRouter } from 'vue-router'
 import { AgGridVue } from 'ag-grid-vue3'
-
-const router = useRouter()
 import 'ag-grid-community/styles/ag-grid.css'
 import 'ag-grid-community/styles/ag-theme-alpine.css'
+
+const router = useRouter()
 
 // Bind global cache
 const ovLoaded = globalOvLoaded
@@ -279,6 +310,15 @@ const filterSelection = globalFilterSelection
 const ovProducts = globalOvProducts
 const ovWeeklyOutput = globalOvWeeklyOutput
 const ovOsats = globalOvOsats
+const ovProductName = globalOvProductName
+
+const filteredOvProducts = computed(() => {
+  if (!ovProductName.value) return ovProducts.value
+  const query = ovProductName.value.toLowerCase().trim()
+  return ovProducts.value.filter((p: any) => 
+    p.product_name && p.product_name.toLowerCase().includes(query)
+  )
+})
 
 function onFilterSelectionChange() {
   const parts = filterSelection.value.split('-')
@@ -768,6 +808,24 @@ let deviceYieldChart: any = null
 let waferYieldChart: any = null // Wafer yield chart instance
 
 const deviceGroupMode = ref<'LOT' | 'PGM'>('LOT')
+
+const deviceLotFilterInput = ref('')
+const filteredDeviceLots = computed(() => {
+  const val = deviceLotFilterInput.value.trim().toLowerCase()
+  if (!val) return deviceLots.value
+  return deviceLots.value.filter(item => {
+    const lotId = (item.lot_id || '').toString().toLowerCase()
+    const program = (item.program || '').toString().toLowerCase()
+    return lotId.includes(val) || program.includes(val)
+  })
+})
+
+watch(deviceViewDevice, () => {
+  deviceLotFilterInput.value = ''
+})
+watch(deviceGroupMode, () => {
+  deviceLotFilterInput.value = ''
+})
 
 function setDeviceGroupMode(mode: 'LOT' | 'PGM') {
   if (deviceGroupMode.value === mode) return
@@ -1723,6 +1781,24 @@ onMounted(() => {
 }
 
 .filter-select-dropdown:focus {
+  border-color: #1890ff;
+  box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+}
+
+.ov-filter-input {
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #0f172a;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  outline: none;
+  height: 30px;
+  min-width: 140px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.ov-filter-input:focus {
   border-color: #1890ff;
   box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
 }

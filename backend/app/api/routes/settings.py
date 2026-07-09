@@ -411,56 +411,62 @@ def get_ftp_logs_daily_summary(
     _: User = Depends(require_admin_or_eng),
 ):
     """Query FTP upload logs daily summary aggregated by production date and OSAT."""
-    from sqlalchemy import text
+    from app.models.ftp_scan_snapshot import FtpScanSnapshot
+    from app.models.ftp_upload_log import FtpUploadLog
+    from sqlalchemy import func
     
     osats = [
         {"id": o.id, "name": o.name}
         for o in db.query(OsatConfig).order_by(OsatConfig.id).all()
     ]
     
-    sql = """
-        SELECT 
-            (uploaded_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai' - INTERVAL '8 hours')::date AS prod_date,
-            osat_id,
-            status,
-            COUNT(*) AS cnt
-        FROM 
-            ftp_upload_logs
-        WHERE 
-            uploaded_at IS NOT NULL
-        GROUP BY 
-            prod_date, osat_id, status
-        ORDER BY 
-            prod_date DESC, osat_id
-    """
-    
-    result = db.execute(text(sql)).all()
-    
-    rows_dict = {}
+    # 1. Calculate overall historical totals from ftp_upload_logs
     total_stats = {}
-    for row in result:
-        date_str = str(row[0])
-        osat_id = row[1]
-        status = row[2]
-        count = row[3]
-        
-        if date_str not in rows_dict:
-            rows_dict[date_str] = {}
-        if osat_id not in rows_dict[date_str]:
-            rows_dict[date_str][osat_id] = {"success": 0, "failed": 0}
-            
-        if status == "success":
-            rows_dict[date_str][osat_id]["success"] += count
-        elif status == "failed":
-            rows_dict[date_str][osat_id]["failed"] += count
-
+    db_totals = db.query(
+        FtpUploadLog.osat_id,
+        FtpUploadLog.status,
+        func.count(FtpUploadLog.id)
+    ).filter(
+        FtpUploadLog.uploaded_at.isnot(None)
+    ).group_by(FtpUploadLog.osat_id, FtpUploadLog.status).all()
+    
+    for osat_id, status, count in db_totals:
         if osat_id not in total_stats:
             total_stats[osat_id] = {"success": 0, "failed": 0}
         if status == "success":
             total_stats[osat_id]["success"] += count
         elif status == "failed":
             total_stats[osat_id]["failed"] += count
-            
+
+    # 2. Get snapshots from FtpScanSnapshot
+    snapshots = db.query(FtpScanSnapshot).order_by(
+        FtpScanSnapshot.scan_date.desc(),
+        FtpScanSnapshot.osat_id
+    ).all()
+    
+    # Group snapshots by scan_date
+    date_groups = {}
+    for snap in snapshots:
+        from datetime import timezone, timedelta
+        tz_sh = timezone(timedelta(hours=8))
+        local_time = snap.last_scan_time.astimezone(tz_sh)
+        date_key = snap.scan_date
+        
+        if date_key not in date_groups:
+            date_groups[date_key] = {
+                "latest_time": local_time,
+                "stats": {}
+            }
+        else:
+            if local_time > date_groups[date_key]["latest_time"]:
+                date_groups[date_key]["latest_time"] = local_time
+                
+        date_groups[date_key]["stats"][snap.osat_id] = {
+            "success": snap.success_count,
+            "failed": snap.failed_count,
+            "total": snap.scanned_count
+        }
+
     rows = []
     if total_stats:
         rows.append({
@@ -468,10 +474,12 @@ def get_ftp_logs_daily_summary(
             "stats": total_stats
         })
 
-    for date_str in sorted(rows_dict.keys(), reverse=True):
+    for date_key in sorted(date_groups.keys(), reverse=True):
+        group = date_groups[date_key]
+        formatted_date = group["latest_time"].strftime("%Y-%m-%d-%H:%M")
         rows.append({
-            "date": date_str,
-            "stats": rows_dict[date_str]
+            "date": formatted_date,
+            "stats": group["stats"]
         })
         
     return {

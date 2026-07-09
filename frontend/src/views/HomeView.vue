@@ -317,6 +317,8 @@
             <option value="CP">CP</option>
             <option value="FT">FT</option>
             <option value="QA">QA</option>
+            <option value="Summary">Summary</option>
+            <option value="CP_LOT">CP_LOT</option>
           </select>
         </template>
         <template v-else-if="displayEditDialog.field === 'test_machine'">
@@ -967,7 +969,7 @@ const columnDefs: ColDef[] = [
     floatingFilterComponent: SelectFloatingFilter,
     floatingFilterComponentParams: {
       // 固定列表：不受当前 Tab 过滤影响，始终显示所有可能的 Data Type
-      options: () => ['CP', 'FT', 'QA', 'Summary'],
+      options: () => ['CP', 'FT', 'QA', 'Summary', 'CP_LOT'],
       placeholder: 'Data Type',
     },
   },

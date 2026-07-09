@@ -2,8 +2,8 @@
   <div class="layout">
     <aside :class="['sidebar', { collapsed }]">
       <div class="logo">
-        <span class="logo-icon">⚙</span>
-        <span v-if="!collapsed" class="logo-text">ATE 分析系统</span>
+        <span class="logo-icon">⚡</span>
+        <span v-if="!collapsed" class="logo-text">Data & Knowledge Platform</span>
       </div>
 
       <nav class="menu">
@@ -128,13 +128,20 @@ function handleLogout() {
   height: 56px;
   display: flex;
   align-items: center;
-  padding: 0 16px;
-  gap: 10px;
+  padding: 0 10px;
+  gap: 6px;
   border-bottom: 1px solid rgba(255,255,255,0.1);
   font-size: 16px;
   font-weight: bold;
 }
 .logo-icon { font-size: 20px; }
+.logo-text {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .menu { flex: 1; padding: 8px 0; }
 .menu-item {
