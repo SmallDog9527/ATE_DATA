@@ -165,7 +165,7 @@ def _make_sftp(osat) -> SftpAdapter:
         port=port,
         username=osat.ftp_user,
         password=password,
-        timeout=15,
+        timeout=120,
         allow_agent=False,
         look_for_keys=False
     )
@@ -187,10 +187,10 @@ def _make_ftp(osat):
     encryption = getattr(osat, "ftp_encryption", "plain") or "plain"
     if encryption == "implicit_tls_required":
         ftp = ImplicitFTP_TLS()
-        ftp.connect(osat.ftp_host, osat.ftp_port or 990, timeout=15)
+        ftp.connect(osat.ftp_host, osat.ftp_port or 990, timeout=120)
     elif encryption in ("explicit_tls_optional", "explicit_tls_required"):
         ftp = ftplib.FTP_TLS()
-        ftp.connect(osat.ftp_host, osat.ftp_port, timeout=15)
+        ftp.connect(osat.ftp_host, osat.ftp_port, timeout=120)
         try:
             ftp.auth()
         except Exception:
@@ -198,7 +198,7 @@ def _make_ftp(osat):
                 raise
     else:
         ftp = ftplib.FTP()
-        ftp.connect(osat.ftp_host, osat.ftp_port, timeout=15)
+        ftp.connect(osat.ftp_host, osat.ftp_port, timeout=120)
     ftp.encoding = 'latin-1'
     ftp.login(osat.ftp_user, password)
     if isinstance(ftp, ftplib.FTP_TLS) and encryption != "plain":
@@ -377,13 +377,13 @@ def get_new_files(db, osat_id: int, all_remote_paths: List[str]) -> List[str]:
     from sqlalchemy import func
     from datetime import datetime, timezone
 
-    # ???????????
+    # 查找已处理过的文件
     already_done = set(
         row.remote_path
         for row in db.query(FtpUploadLog.remote_path)
         .filter(
             FtpUploadLog.osat_id == osat_id,
-            FtpUploadLog.status.in_(['success', 'processing'])
+            FtpUploadLog.status.in_(['success', 'processing', 'pending', 'downing'])
         )
         .all()
     )
@@ -444,7 +444,7 @@ def _reset_stuck_processing_logs(db) -> int:
     from sqlalchemy import func
 
     stuck = db.query(FtpUploadLog).filter(
-        FtpUploadLog.status == 'processing',
+        FtpUploadLog.status.in_(['processing', 'pending', 'downing']),
         FtpUploadLog.uploaded_at < func.now() - timedelta(minutes=PROCESSING_TIMEOUT_MINUTES)
     ).all()
 
@@ -525,11 +525,10 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
         _file_in_progress.add(_lock_key)
 
     try:
-        # 再次查询 DB，防止两轮扫描间隙的竞态（双重检查）
         existing_log = db.query(FtpUploadLog).filter(
             FtpUploadLog.osat_id == osat.id,
             FtpUploadLog.remote_path == remote_path,
-            FtpUploadLog.status.in_(['success', 'processing'])
+            FtpUploadLog.status.in_(['success', 'processing', 'pending', 'downing'])
         ).first()
         if existing_log:
             print(f"[ftp_fetch] ⚠ 文件 {filename} 已存在有效日志记录"
@@ -678,6 +677,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                         last_lot_id = created_lots[-1].id
                 except Exception as ex:
                     traceback.print_exc()
+                    raise ex
                 continue
 
             if csv_filename.lower().endswith('.txt') and 'ets' in csv_filename.lower():
@@ -1108,12 +1108,11 @@ def _do_download_with_ftp(ftp, osat_id: int, remote_path: str, admin_user_id: in
         db.close()
 
 
-def _do_download(osat_id: int, remote_path: str, admin_user_id: int):
+def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int):
     """
     【下载阶段】在独立线程中执行，拥有自己的 DB 会话：
-    1. 进程内锁 + DB 双重检查（防并发重复）
-    2. 标记 processing
-    3. FTP 下载 + ZIP/GZ 解压
+    1. 标记 downing
+    2. FTP 下载 + ZIP/GZ 解压
     返回 (log_id, tmp_dir, csv_files_to_process)，或 None（跳过），或抛出异常（标记 failed）。
     """
     from app.models.ftp_upload_log import FtpUploadLog
@@ -1132,7 +1131,6 @@ def _do_download(osat_id: int, remote_path: str, admin_user_id: int):
         _file_in_progress.add(_lock_key)
 
     db = SessionLocal()
-    log_id = None
     try:
         osat = db.query(OsatConfig).filter(OsatConfig.id == osat_id).first()
         if not osat:
@@ -1142,23 +1140,17 @@ def _do_download(osat_id: int, remote_path: str, admin_user_id: int):
         existing = db.query(FtpUploadLog).filter(
             FtpUploadLog.osat_id == osat_id,
             FtpUploadLog.remote_path == remote_path,
-            FtpUploadLog.status.in_(['success', 'processing'])
+            FtpUploadLog.status == 'success'
         ).first()
         if existing:
-            print(f"[ftp_dl] ⚠ {filename} already has record (status={existing.status}), skipping")
+            print(f"[ftp_dl] ⚠ {filename} already has successful record (status={existing.status}), skipping")
             return None
 
-        # Mark as processing
-        log = FtpUploadLog(
-            osat_id=osat_id,
-            remote_path=remote_path,
-            filename=filename,
-            status='processing',
-        )
-        db.add(log)
-        db.commit()
-        db.refresh(log)
-        log_id = log.id
+        # Update status to downing
+        log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+        if log:
+            log.status = 'downing'
+            db.commit()
 
         # ── FTP 下载 ──────────────────────────────────────────────────────
         tmp_dir = tempfile.mkdtemp(prefix='ftp_dl_')
@@ -1321,6 +1313,7 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
         log_rec = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
         if log_rec:
             from datetime import timezone
+            log_rec.status = 'processing'
             log_rec.uploaded_at = datetime.now(timezone.utc)
             db.commit()
         # Close metadata session immediately to release connection
@@ -1365,6 +1358,7 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
                         last_lot_id = created_lots[-1].id
                 except Exception as ex:
                     traceback.print_exc()
+                    raise ex
                 db.close()
                 continue
 
@@ -1671,6 +1665,7 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
     try:
         from app.models.osat_config import OsatConfig
         from app.models.user import User
+        from app.models.ftp_upload_log import FtpUploadLog
 
         osat = db.query(OsatConfig).filter(OsatConfig.id == osat_id).first()
         if not osat:
@@ -1735,11 +1730,30 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                 return
             print(f"[ftp_fetch] 开始 {batch_name} 批次并发下载与解析，共 {len(paths)} 个文件...")
 
-            # 1. 提交下载任务到 download_pool
+            # 1. Create log entries with 'pending' status and submit to download_pool
             dl_futures = {}
             for path in paths:
                 fname = os.path.basename(path)
-                df = download_pool.submit(_do_download, osat_id, path, admin_user_id)
+                existing = db.query(FtpUploadLog).filter(
+                    FtpUploadLog.osat_id == osat_id,
+                    FtpUploadLog.remote_path == path,
+                    FtpUploadLog.status.in_(['success', 'processing', 'pending', 'downing'])
+                ).first()
+                if existing:
+                    log_id = existing.id
+                else:
+                    log = FtpUploadLog(
+                        osat_id=osat_id,
+                        remote_path=path,
+                        filename=fname,
+                        status='pending',
+                    )
+                    db.add(log)
+                    db.commit()
+                    db.refresh(log)
+                    log_id = log.id
+
+                df = download_pool.submit(_do_download, log_id, osat_id, path, admin_user_id)
                 dl_futures[df] = (path, fname)
 
             # 2. 监听下载完成，立即提交解析到 parse_pool

@@ -396,8 +396,10 @@
               <select v-model="logFilterStatus" @change="loadFtpLogs" class="filter-select-sm">
                 <option value="">全部状态</option>
                 <option value="success">✅ 成功</option>
-                <option value="failed">❌ 失败</option>
-                <option value="processing">⏳ 处理中</option>
+                <option value="failed">❌ 失效</option>
+                <option value="downing">⏳ downing</option>
+                <option value="pending">⏳ Pending</option>
+                <option value="processing">⏳ Processing</option>
               </select>
               <button class="btn-sm" @click="loadFtpLogs">🔄 刷新</button>
               <button class="btn-sm btn-warn" @click="loadStuckFiles" style="margin-left:auto">
@@ -463,7 +465,7 @@
               <colgroup>
                 <col style="width:120px" />
                 <col />
-                <col style="width:100px" />
+                <col style="width:130px" />
                 <col style="width:100px" />
                 <col style="width:150px" />
                 <col />
@@ -484,7 +486,10 @@
                   <td class="log-path" :title="log.remote_path">{{ log.filename || log.remote_path }}</td>
                   <td>
                     <span v-if="log.status === 'success'" class="badge green">✅ 成功</span>
-                    <span v-else-if="log.status === 'failed'" class="badge red">❌ 失败</span>
+                    <span v-else-if="log.status === 'failed'" class="badge red">❌ 失效</span>
+                    <span v-else-if="log.status === 'downing'" class="badge blue">⏳ downing</span>
+                    <span v-else-if="log.status === 'pending'" class="badge gray">⏳ Pending</span>
+                    <span v-else-if="log.status === 'processing'" class="badge purple">⏳ Processing</span>
                     <span v-else class="badge blue">⏳ 处理中</span>
                   </td>
                   <td>{{ log.file_size ? fmtBytes(log.file_size) : '—' }}</td>

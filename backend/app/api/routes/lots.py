@@ -1313,7 +1313,8 @@ def get_lots(
                 or_(
                     Lot.user_id == current_user.id,
                     Lot.id.in_(shared_lot_ids),
-                    Lot.data_source == DataSource.ftp  # 所有人均可访问 OSAT (FTP) 数据
+                    Lot.data_source == DataSource.ftp,  # 所有人均可访问 OSAT (FTP) 数据
+                    Lot.data_type == 'CP_LOT'  # Everyone can access CP_LOT data
                 )
             )
         

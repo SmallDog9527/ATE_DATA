@@ -717,7 +717,7 @@ const detailColDefs = [
   { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
   { field: 'osat_name', headerName: 'OSAT', width: 90, pinned: 'left' },
   { field: 'product_name', headerName: 'Device', width: 140, pinned: 'left' },
-  { field: 'lot_id', headerName: 'LOT ID', width: 140, pinned: 'left' },
+  { field: 'lot_id', headerName: 'LOT ID', width: 140, pinned: 'left', cellClass: 'selectable-cell' },
   { field: 'wafer_id', headerName: 'WAFER ID', width: 100, pinned: 'left' },
   { field: 'total', headerName: 'TOTAL', width: 90, type: 'numericColumn' },
   { field: 'pass', headerName: 'PASS', width: 90, type: 'numericColumn' },
@@ -879,7 +879,8 @@ const deviceColDefs = computed(() => {
       field: isPgmMode ? 'program' : 'lot_id', 
       headerName: isPgmMode ? 'PGM' : 'LOT ID', 
       width: isPgmMode ? 280 : 180, 
-      pinned: 'left' 
+      pinned: 'left',
+      cellClass: 'selectable-cell'
     },
     ...(isPgmMode ? [] : [
       {
@@ -1964,5 +1965,10 @@ onMounted(() => {
 
 .mode-switch-btn:hover:not(.active) {
   color: #1890ff;
+}
+
+:deep(.selectable-cell) {
+  cursor: text;
+  user-select: text;
 }
 </style>

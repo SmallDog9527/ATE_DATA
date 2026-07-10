@@ -20,7 +20,10 @@
           <tr>
             <th class="th-no">序号</th>
             <th class="th-product">产品名</th>
-            <th class="th-program">程序名</th>
+            <th class="th-program" :style="programColStyle">
+              程序名
+              <div class="resize-handle" @mousedown.prevent.stop="startResize"></div>
+            </th>
             <th>Date</th>
             <th>Site</th>
             <th>TestTime (s)</th>
@@ -59,6 +62,7 @@
 
                 <td
                   class="td-program"
+                  :style="programColStyle"
                   @click="openPgmProgram(row.product_name, row.programs[0])"
                 >
                   <span class="prog-link">{{ getProgramNameToShow(row, row.programs[0]) }}</span>
@@ -195,6 +199,62 @@ const listData = ref<any[]>([])
 const loading = ref(false)
 const pgsInput = ref<HTMLInputElement>()
 const searchQuery = ref('')
+
+// ─── 程序名列宽自适应与拉伸记忆 ───
+const programColWidth = ref(130)
+
+// 初始化读取上次记忆的宽度值
+const savedWidth = localStorage.getItem('program_col_width')
+if (savedWidth) {
+  const parsed = parseInt(savedWidth, 10)
+  if (!isNaN(parsed) && parsed > 50) {
+    programColWidth.value = parsed
+  }
+}
+
+const programColStyle = computed(() => ({
+  width: `${programColWidth.value}px`,
+  minWidth: `${programColWidth.value}px`,
+  maxWidth: `${programColWidth.value}px`,
+}))
+
+let isResizing = false
+let startX = 0
+let startWidth = 0
+
+function startResize(e: MouseEvent) {
+  isResizing = true
+  startX = e.clientX
+  startWidth = programColWidth.value
+  document.addEventListener('mousemove', handleResize)
+  document.addEventListener('mouseup', stopResize)
+  document.body.style.cursor = 'col-resize'
+  
+  const handle = e.target as HTMLElement
+  handle.classList.add('resizing')
+}
+
+function handleResize(e: MouseEvent) {
+  if (!isResizing) return
+  const diffX = e.clientX - startX
+  // 限制最小宽度为 80px
+  programColWidth.value = Math.max(80, startWidth + diffX)
+}
+
+function stopResize() {
+  if (!isResizing) return
+  isResizing = false
+  document.removeEventListener('mousemove', handleResize)
+  document.removeEventListener('mouseup', stopResize)
+  document.body.style.cursor = ''
+  
+  // 保存到 localStorage
+  localStorage.setItem('program_col_width', programColWidth.value.toString())
+  
+  document.querySelectorAll('.resize-handle.resizing').forEach(el => {
+    el.classList.remove('resizing')
+  })
+}
 
 const editState = reactive<{ lot_id: number; field: string; value: any; progRef: any }>({
   lot_id: 0, field: '', value: '', progRef: null
@@ -454,9 +514,23 @@ onMounted(() => { fetchList(); fetchSuggestions() })
 }
 .td-product:hover { color: #40a9ff; text-decoration: underline; }
 .th-program, .td-program {
-  min-width: 130px;
-  max-width: 130px;
   word-break: break-all;
+  position: relative;
+}
+.resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  background-color: transparent;
+  z-index: 10;
+  transition: background-color 0.15s;
+}
+.resize-handle:hover,
+.resize-handle.resizing {
+  background-color: #1890ff;
 }
 .th-remark, .remark-cell {
   width: 320px;
