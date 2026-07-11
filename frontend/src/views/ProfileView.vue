@@ -486,7 +486,10 @@
                   <td class="log-path" :title="log.remote_path">{{ log.filename || log.remote_path }}</td>
                   <td>
                     <span v-if="log.status === 'success'" class="badge green">✅ 成功</span>
-                    <span v-else-if="log.status === 'failed'" class="badge red">❌ 失效</span>
+                    <div v-else-if="log.status === 'failed'" style="display: inline-flex; align-items: center; gap: 6px;">
+                      <span class="badge red">❌ 失效</span>
+                      <button @click="retryFtpLog(log.id)" class="btn-sm btn-retry" style="padding: 2px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; border: 1px solid #dcdfe6; background: #fff;">重试</button>
+                    </div>
                     <span v-else-if="log.status === 'downing'" class="badge blue">⏳ downing</span>
                     <span v-else-if="log.status === 'pending'" class="badge gray">⏳ Pending</span>
                     <span v-else-if="log.status === 'processing'" class="badge purple">⏳ Processing</span>
@@ -1372,6 +1375,16 @@ async function loadFtpLogs() {
     logTotal.value = data.total || 0
   } catch {} finally {
     logsLoading.value = false
+  }
+}
+
+async function retryFtpLog(logId: number) {
+  try {
+    const res: any = await api.post(`/settings/ftp-logs/${logId}/retry`)
+    alert(res.message || '重试任务已提交')
+    await loadFtpLogs()
+  } catch (err: any) {
+    alert(err.response?.data?.detail || '重试失败')
   }
 }
 

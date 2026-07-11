@@ -159,11 +159,29 @@ def parse_and_save_lbs_summary(filepath: str, db: Session, user_id: int = None, 
                             if wc + 1 < df_wafer.shape[1]:
                                 test_start_time = parse_xls_date(df_wafer.iloc[wr, wc + 1])
                                 
+        if total_tested is None:
+            # Calculate total_tested as sum of all Cxx columns in this row
+            temp_sum = 0
+            for c_idx in range(df0.shape[1]):
+                c_name = cols[c_idx]
+                if c_name.startswith('c') and c_name[1:].isdigit():
+                    c_val = df0.iloc[r, c_idx]
+                    if pd.notna(c_val):
+                        try:
+                            temp_sum += int(float(str(c_val).strip()))
+                        except ValueError:
+                            pass
+            if temp_sum > 0:
+                total_tested = temp_sum
+
         if total_tested is None or total_tested <= 0:
             continue
             
         if pass_count is None:
-            pass_count = sbin_counts.get(1, 0) + sbin_counts.get(2, 0)
+            if yield_rate is not None:
+                pass_count = int(round(yield_rate * total_tested))
+            else:
+                pass_count = sbin_counts.get(1, 0) + sbin_counts.get(2, 0)
             
         if yield_rate is None:
             yield_rate = round(pass_count / total_tested, 4)

@@ -277,6 +277,53 @@ def get_ftp_logs(
     return FtpLogPage(total=total, page=page, page_size=page_size, items=items)
 
 
+@router.post("/ftp-logs/{log_id}/retry")
+def retry_failed_ftp_log(
+    log_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_eng),
+):
+    """
+    Retry parsing a failed FTP upload log.
+    If the file is already downloaded and extracted, we re-submit parsing.
+    Otherwise, we reset status to 'pending' to trigger download retry.
+    """
+    from app.models.ftp_upload_log import FtpUploadLog
+    from app.services.ftp_service import _do_parse, run_osat_fetch
+    from app.tasks.ftp_scheduler import _executor
+    
+    log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Log not found")
+        
+    if log.status != 'failed':
+        raise HTTPException(status_code=400, detail="Only failed logs can be retried")
+        
+    EXTRACTED_DIR = "/tmp/FTP/extracted"
+    prefix = f"{log_id}_"
+    files = []
+    if os.path.exists(EXTRACTED_DIR):
+        for name in os.listdir(EXTRACTED_DIR):
+            if name.startswith(prefix):
+                files.append(os.path.join(EXTRACTED_DIR, name))
+                
+    if not files:
+        log.status = 'pending'
+        log.error_msg = None
+        db.commit()
+        
+        _executor.submit(run_osat_fetch, log.osat_id, False)
+        return {"message": "Files not found in cache. Reset to pending and triggered re-download."}
+        
+    log.status = 'processing'
+    log.error_msg = None
+    db.commit()
+    
+    admin_user_id = current_user.id if current_user else 1
+    _executor.submit(_do_parse, log.id, log.osat_id, log.remote_path, None, files, admin_user_id)
+    return {"message": "Re-parsing task submitted in background"}
+
+
 @router.delete("/ftp-logs/failed")
 def reset_failed_logs(
     db: Session = Depends(get_db),

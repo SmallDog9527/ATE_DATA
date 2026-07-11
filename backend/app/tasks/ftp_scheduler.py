@@ -343,16 +343,46 @@ def daily_ftp_scan_snapshot_job():
         db.close()
 
 
+def cleanup_del_folder_job():
+    """Clean up the '/tmp/FTP/del' folder once every 5 hours."""
+    import os, shutil
+    del_dir = "/tmp/FTP/del"
+    if os.path.exists(del_dir):
+        print(f"[scheduler] Starting cleanup of {del_dir}...")
+        for name in os.listdir(del_dir):
+            path = os.path.join(del_dir, name)
+            try:
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+            except Exception as e:
+                print(f"[scheduler] Failed to delete {path}: {e}")
+        print("[scheduler] Cleanup of del folder completed.")
+
+
 def start_scheduler():
     """在应用启动时调用，注册定时任务"""
     if not _scheduler.running:
+        from zoneinfo import ZoneInfo
+        shanghai_tz = ZoneInfo("Asia/Shanghai")
         _scheduler.add_job(
             ftp_check_job,
             trigger='interval',
             minutes=5,
             id='ftp_check',
+            next_run_time=datetime.now(shanghai_tz),
             replace_existing=True,
             misfire_grace_time=60,
+        )
+        # Clean up '/tmp/FTP/del' folder once every 5 hours
+        _scheduler.add_job(
+            cleanup_del_folder_job,
+            trigger='interval',
+            hours=5,
+            id='cleanup_del_folder',
+            replace_existing=True,
+            misfire_grace_time=600,
         )
         # 每天 08:00 整执行 FTP 扫描并更新快照
         _scheduler.add_job(

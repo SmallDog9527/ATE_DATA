@@ -78,6 +78,10 @@ class ImplicitFTP_TLS(ftplib.FTP_TLS):
 _file_in_progress: set = set()
 _file_in_progress_lock = threading.Lock()
 
+# Concurrent execution lock for OSAT fetch jobs
+_osat_in_progress: set = set()
+_osat_in_progress_lock = threading.Lock()
+
 
 class SftpAdapter:
     def __init__(self, ssh_client, sftp_client):
@@ -360,24 +364,23 @@ def scan_ftp_files(osat) -> List[str]:
 # Maximum failed retries allowed for a single file (files exceeding this limit will be skipped)
 _MAX_FAIL_RETRIES = 3
 PROCESSING_TIMEOUT_MINUTES = 40   # Records stuck in processing for more than this many minutes are marked as failed
-_DOWNLOAD_WORKERS = 3             # Number of concurrent FTP download threads
+_DOWNLOAD_WORKERS = 10            # Number of concurrent FTP download threads
 _PARSE_WORKERS = 3                # 并发解析线程数
 
 
-def get_new_files(db, osat_id: int, all_remote_paths: List[str]) -> List[str]:
+def get_new_files(db, osat_id: int, all_remote_paths: list) -> list:
     """
-    ? ftp_upload_logs ??????? remote_path???????????????
-    ?????
-    1. status='success'  ? ????????
-    2. status='processing' ? ????????????????
-    3. status='failed' ????? >= _MAX_FAIL_RETRIES ? ??????????
-    4. status='failed' ?????????????????????????
+    Check ftp_upload_logs to filter out remote paths that are already processed.
+    Excluded cases:
+    1. status='success' or 'processing' or 'pending' or 'downing'
+    2. status='failed' and total failures >= _MAX_FAIL_RETRIES
+    3. status='failed' and within the retry backoff window
+    4. status='failed' due to parsing error (should not be re-downloaded)
     """
     from app.models.ftp_upload_log import FtpUploadLog
     from sqlalchemy import func
     from datetime import datetime, timezone
 
-    # 查找已处理过的文件
     already_done = set(
         row.remote_path
         for row in db.query(FtpUploadLog.remote_path)
@@ -388,7 +391,6 @@ def get_new_files(db, osat_id: int, all_remote_paths: List[str]) -> List[str]:
         .all()
     )
 
-    # ???????????????
     failure_stats = db.query(
         FtpUploadLog.remote_path,
         func.count(FtpUploadLog.id).label('fail_count'),
@@ -400,8 +402,6 @@ def get_new_files(db, osat_id: int, all_remote_paths: List[str]) -> List[str]:
 
     too_many_failures = set()
     too_soon_to_retry = set()
-    
-    # ??????????? (? UTC ????)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     for path, fail_count, last_fail_time in failure_stats:
@@ -409,7 +409,6 @@ def get_new_files(db, osat_id: int, all_remote_paths: List[str]) -> List[str]:
             too_many_failures.add(path)
             continue
         
-        # ???????1??10?????2??30?????3?????60??
         if fail_count == 1:
             backoff_minutes = 10
         elif fail_count == 2:
@@ -421,15 +420,27 @@ def get_new_files(db, osat_id: int, all_remote_paths: List[str]) -> List[str]:
         if (now - last_fail_time_naive).total_seconds() < backoff_minutes * 60:
             too_soon_to_retry.add(path)
 
+    # Exclude files that failed during parsing to avoid redundant download
+    parse_failed = set(
+        row.remote_path
+        for row in db.query(FtpUploadLog.remote_path)
+        .filter(
+            FtpUploadLog.osat_id == osat_id,
+            FtpUploadLog.status == 'failed',
+            FtpUploadLog.error_msg.like('%[Parse Failed]%')
+        )
+        .all()
+    )
+
     if too_many_failures:
-        print(f"[ftp_fetch] ?? {len(too_many_failures)} ?????????({_MAX_FAIL_RETRIES})???")
+        print(f"[ftp_fetch] Filtered {len(too_many_failures)} files exceeding retry limit ({_MAX_FAIL_RETRIES})")
     if too_soon_to_retry:
-        print(f"[ftp_fetch] ?? {len(too_soon_to_retry)} ????????????????")
+        print(f"[ftp_fetch] Filtered {len(too_soon_to_retry)} files in backoff period")
+    if parse_failed:
+        print(f"[ftp_fetch] Filtered {len(parse_failed)} files that failed during parsing")
 
-    excluded = already_done | too_many_failures | too_soon_to_retry
+    excluded = already_done | too_many_failures | too_soon_to_retry | parse_failed
     return [p for p in all_remote_paths if p not in excluded]
-
-
 # ??????????????????????????????????????????
 # ?? processing ????
 # ??????????????????????????????????????????
@@ -444,7 +455,7 @@ def _reset_stuck_processing_logs(db) -> int:
     from sqlalchemy import func
 
     stuck = db.query(FtpUploadLog).filter(
-        FtpUploadLog.status.in_(['processing', 'pending', 'downing']),
+        FtpUploadLog.status.in_(['processing', 'downing']),
         FtpUploadLog.uploaded_at < func.now() - timedelta(minutes=PROCESSING_TIMEOUT_MINUTES)
     ).all()
 
@@ -559,6 +570,8 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
         try:
             ftp.sendcmd('TYPE I')
             file_size = ftp.size(remote_path) or 0
+            if file_size > 2 * 1024 * 1024 * 1024:
+                raise Exception(f"Remote file size {file_size} exceeds 2GB limit, download aborted")
             with open(local_file, 'wb') as f:
                 ftp.retrbinary(f'RETR {remote_path}', f.write)
         finally:
@@ -1110,23 +1123,24 @@ def _do_download_with_ftp(ftp, osat_id: int, remote_path: str, admin_user_id: in
 
 def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int):
     """
-    【下载阶段】在独立线程中执行，拥有自己的 DB 会话：
-    1. 标记 downing
-    2. FTP 下载 + ZIP/GZ 解压
-    返回 (log_id, tmp_dir, csv_files_to_process)，或 None（跳过），或抛出异常（标记 failed）。
+    [Download Stage] Run in a separate thread with its own DB session:
+    1. Mark log status as 'downing'
+    2. Download file from FTP to DOWNLOAD_DIR
+    3. Extract if it's an archive, classify files to EXTRACTED_DIR or DEL_DIR
+    4. Clean up downloaded archive immediately
+    5. Set FtpUploadLog status to 'processing' (maps to frontend Processing badge)
     """
     from app.models.ftp_upload_log import FtpUploadLog
     from app.models.osat_config import OsatConfig
+    from app.models.lot import Lot
     import zipfile, gzip, shutil
-
+    
     filename = os.path.basename(remote_path)
     _lock_key = (osat_id, remote_path)
-    tmp_dir = None
-
-    # ── 进程内线程锁 ──────────────────────────────────────────────────────
+    
     with _file_in_progress_lock:
         if _lock_key in _file_in_progress:
-            print(f"[ftp_dl] ⚠ {filename} 正被其他线程处理，跳过")
+            print(f"[ftp_dl] Warning: {filename} is already being processed by another thread, skipping")
             return None
         _file_in_progress.add(_lock_key)
 
@@ -1135,36 +1149,44 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
         osat = db.query(OsatConfig).filter(OsatConfig.id == osat_id).first()
         if not osat:
             raise Exception(f"OSAT id={osat_id} does not exist")
+        effective_osat_name = osat.name.split('_')[0] if osat.name and '_' in osat.name else osat.name
 
-        # Double check DB to prevent race condition between multiple scans
+        # Prevent concurrent scan race conditions
         existing = db.query(FtpUploadLog).filter(
             FtpUploadLog.osat_id == osat_id,
             FtpUploadLog.remote_path == remote_path,
             FtpUploadLog.status == 'success'
         ).first()
         if existing:
-            print(f"[ftp_dl] ⚠ {filename} already has successful record (status={existing.status}), skipping")
+            print(f"[ftp_dl] Warning: {filename} already has a success record, skipping")
             return None
 
         # Update status to downing
         log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
         if log:
+            from datetime import timezone
             log.status = 'downing'
+            log.uploaded_at = datetime.now(timezone.utc)
             db.commit()
 
-        # ── FTP 下载 ──────────────────────────────────────────────────────
-        tmp_dir = tempfile.mkdtemp(prefix='ftp_dl_')
-        local_file = os.path.join(tmp_dir, filename)
+        # Initialize directories
+        DOWNLOAD_DIR = "/tmp/FTP/download"
+        EXTRACTED_DIR = "/tmp/FTP/extracted"
+        DEL_DIR = "/tmp/FTP/del"
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        os.makedirs(EXTRACTED_DIR, exist_ok=True)
+        os.makedirs(DEL_DIR, exist_ok=True)
 
-        # Make connection while DB session is still open to avoid DetachedInstanceError
+        local_file = os.path.join(DOWNLOAD_DIR, f"{log_id}_{filename}")
         ftp = _make_ftp(osat)
-        
-        # Release DB connection before slow FTP download
         db.close()
+        
         file_size = 0
         try:
             ftp.sendcmd('TYPE I')
             file_size = ftp.size(remote_path) or 0
+            if file_size > 2 * 1024 * 1024 * 1024:
+                raise Exception(f"Remote file size {file_size} exceeds 2GB limit, download aborted")
             with open(local_file, 'wb') as f:
                 ftp.retrbinary(f'RETR {remote_path}', f.write)
         finally:
@@ -1173,89 +1195,151 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
             except Exception:
                 pass
 
-        # Reopen DB session after download completes
+        # Reopen DB session
         db = SessionLocal()
         log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
         if log:
             log.file_size = file_size
             db.commit()
 
-        # ── 解压 ──────────────────────────────────────────────────────────
-        _, ext = os.path.splitext(filename)
-        ext = ext.lower()
+        # Helper functions to check if file already exists/processed
+        def file_exists_in_extracted(fname: str) -> bool:
+            for f in os.listdir(EXTRACTED_DIR):
+                if f.endswith(f"_{fname}"):
+                    return True
+            return False
+
+        def file_exists_in_db(fname: str) -> bool:
+            existing_lot = db.query(Lot).filter(
+                Lot.filename == fname,
+                Lot.osat_name == effective_osat_name,
+                Lot.status.in_(['processed', 'pending', 'processing'])
+            ).first()
+            return existing_lot is not None
+
+        def is_processable_file(fname: str) -> bool:
+            name_lower = fname.lower()
+            if name_lower.endswith(('.csv', '.xls', '.xlsx')):
+                return True
+            if name_lower.endswith('.txt') and 'ets' in name_lower:
+                return True
+            return False
+
+        def is_archive_file(fname: str) -> bool:
+            name_lower = fname.lower()
+            return name_lower.endswith(('.zip', '.rar', '.gz'))
+
         csv_files_to_process = []
 
-        if ext in ('.zip', '.rar'):
-            extract_dir = os.path.join(tmp_dir, 'extracted')
-            os.makedirs(extract_dir, exist_ok=True)
-            if ext == '.zip':
-                with zipfile.ZipFile(local_file, 'r') as z:
-                    z.extractall(extract_dir)
-            else:
-                _extract_rar_archive(local_file, extract_dir)
-            has_log_files = False
-            for root, _, files in os.walk(extract_dir):
-                for f in files:
-                    flower = f.lower()
-                    if (flower.endswith('.csv') or (flower.endswith('.txt') and 'ets' in flower)
-                            or flower.endswith('.xls') or flower.endswith('.xlsx')):
-                        csv_files_to_process.append(os.path.join(root, f))
-                    elif flower.endswith('.log'):
-                        has_log_files = True
-            if not csv_files_to_process:
-                if has_log_files:
-                    print(f"[ftp_dl] ZIP/RAR 仅包含 .log 文件，放弃并标记成功")
-                    log.status = 'success'
-                    log.uploaded_at = datetime.now(timezone.utc)
-                    db.commit()
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
-                    return None
-                else:
-                    raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt (含ets), .xls 或 .xlsx 文件")
+        if is_archive_file(filename):
+            _, ext = os.path.splitext(filename)
+            ext = ext.lower()
+            extract_temp_dir = tempfile.mkdtemp(prefix=f'extracted_temp_{log_id}_')
+            try:
+                if ext == '.zip':
+                    with zipfile.ZipFile(local_file, 'r') as z:
+                        z.extractall(extract_temp_dir)
+                elif ext == '.rar':
+                    _extract_rar_archive(local_file, extract_temp_dir)
+                elif ext == '.gz':
+                    inner_name = os.path.splitext(filename)[0]
+                    inner_path = os.path.join(extract_temp_dir, inner_name)
+                    with gzip.open(local_file, 'rb') as gz_f:
+                        with open(inner_path, 'wb') as out_f:
+                            shutil.copyfileobj(gz_f, out_f)
 
-        elif ext == '.gz':
-            inner_name = os.path.splitext(filename)[0]
-            inner_ext = os.path.splitext(inner_name)[1].lower()
-            if inner_ext not in ('.csv', '.txt') or (inner_ext == '.txt' and 'ets' not in inner_name.lower()):
-                # 内部文件不是 CSV/TXT，或者是无 ets 的 TXT，直接标记成功并跳过解析
-                print(f"[ftp_dl] GZ 内部文件 '{inner_name}' 不是 CSV/ETS TXT，跳过解析")
+                # Classify all files inside the archive
+                for root, _, files in os.walk(extract_temp_dir):
+                    for f in files:
+                        full_f_path = os.path.join(root, f)
+                        if is_processable_file(f):
+                            # Duplicate check: discard if file exists in extracted or DB
+                            if file_exists_in_extracted(f) or file_exists_in_db(f):
+                                print(f"[ftp_dl] Duplicate file '{f}' discarded during extraction")
+                                continue
+                            
+                            dest_path = os.path.join(EXTRACTED_DIR, f"{log_id}_{f}")
+                            shutil.copy2(full_f_path, dest_path)
+                            csv_files_to_process.append(dest_path)
+                        else:
+                            # Move non-processable files to DEL_DIR
+                            dest_path = os.path.join(DEL_DIR, f"{log_id}_{f}")
+                            shutil.copy2(full_f_path, dest_path)
+            finally:
+                # Clean up extract temp dir and raw archive file
+                shutil.rmtree(extract_temp_dir, ignore_errors=True)
+                if os.path.exists(local_file):
+                    os.remove(local_file)
+
+            if not csv_files_to_process:
+                print(f"[ftp_dl] Archive '{filename}' contains no new processable files, marking success")
                 log.status = 'success'
                 log.uploaded_at = datetime.now(timezone.utc)
                 db.commit()
-                shutil.rmtree(tmp_dir, ignore_errors=True)
                 return None
 
-            extract_dir = os.path.join(tmp_dir, 'extracted')
-            os.makedirs(extract_dir, exist_ok=True)
-            inner_path = os.path.join(extract_dir, inner_name)
-            with gzip.open(local_file, 'rb') as gz_f:
-                with open(inner_path, 'wb') as out_f:
-                    shutil.copyfileobj(gz_f, out_f)
-            csv_files_to_process.append(inner_path)
-            print(f"[ftp_dl] GZ 已解压: {filename} -> {inner_name}")
-
-        elif ext == '.log':
-            print(f"[ftp_dl] 发现 .log 文件 '{filename}'，放弃并标记成功")
-            log.status = 'success'
-            log.uploaded_at = datetime.now(timezone.utc)
-            db.commit()
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            return None
-
-        elif ext in ('.csv', '.xls', '.xlsx') or (ext == '.txt' and 'ets' in filename.lower()):
-            csv_files_to_process.append(local_file)
         else:
-            raise Exception(f"不支持的文件格式: {ext}")
+            # Single file download
+            if is_processable_file(filename):
+                if file_exists_in_extracted(filename) or file_exists_in_db(filename):
+                    print(f"[ftp_dl] Duplicate file '{filename}' discarded")
+                    log.status = 'success'
+                    log.uploaded_at = datetime.now(timezone.utc)
+                    db.commit()
+                    if os.path.exists(local_file):
+                        os.remove(local_file)
+                    return None
 
-        csv_files_to_process.sort(key=lambda p: (1 if (p.lower().endswith('.txt') and 'ets' in os.path.basename(p).lower() or p.lower().endswith(('.xls', '.xlsx'))) else 0, p))
-        print(f"[ftp_dl] ✅ 下载完成: {filename} ({len(csv_files_to_process)} 个文件待解析)")
-        return (log_id, tmp_dir, csv_files_to_process)
+                dest_path = os.path.join(EXTRACTED_DIR, f"{log_id}_{filename}")
+                shutil.copy2(local_file, dest_path)
+                csv_files_to_process.append(dest_path)
+            else:
+                dest_path = os.path.join(DEL_DIR, f"{log_id}_{filename}")
+                shutil.copy2(local_file, dest_path)
+                print(f"[ftp_dl] Single file '{filename}' is non-processable, moved to del folder")
+                log.status = 'success'
+                log.uploaded_at = datetime.now(timezone.utc)
+                db.commit()
+                if os.path.exists(local_file):
+                    os.remove(local_file)
+                return None
+
+            if os.path.exists(local_file):
+                os.remove(local_file)
+
+        if csv_files_to_process:
+            names = []
+            for p in csv_files_to_process:
+                base = os.path.basename(p)
+                if '_' in base:
+                    parts = base.split('_', 1)
+                    if parts[0].isdigit():
+                        names.append(parts[1])
+                    else:
+                        names.append(base)
+                else:
+                    names.append(base)
+            log.filename = ", ".join(names)
+
+        # Mark log status as 'processing'
+        log.status = 'processing'
+        db.commit()
+
+        csv_files_to_process.sort()
+        print(f"[ftp_dl] ✅ Download and classification completed for {filename}: {len(csv_files_to_process)} files to parse")
+        return (log_id, None, csv_files_to_process)
 
     except Exception as e:
         traceback.print_exc()
         err_msg = str(e)[:500]
+        local_file = os.path.join(DOWNLOAD_DIR, f"{log_id}_{filename}")
+        if os.path.exists(local_file):
+            try:
+                os.remove(local_file)
+            except Exception:
+                pass
+
         if log_id is not None:
-            # Open a new session to record failure to avoid using potentially closed session
             err_db = SessionLocal()
             try:
                 log_rec = err_db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
@@ -1268,12 +1352,6 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
                 err_db.rollback()
             finally:
                 err_db.close()
-        if tmp_dir:
-            try:
-                import shutil as _shutil
-                _shutil.rmtree(tmp_dir, ignore_errors=True)
-            except Exception:
-                pass
         raise
     finally:
         with _file_in_progress_lock:
@@ -1282,8 +1360,6 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
             db.close()
         except Exception:
             pass
-
-
 # ──────────────────────────────────────────
 # 解析阶段（线程安全，独立 DB 会话）
 # ──────────────────────────────────────────
@@ -1291,10 +1367,11 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
 def _do_parse(log_id: int, osat_id: int, remote_path: str,
               tmp_dir: str, csv_files_to_process: list, admin_user_id: int) -> dict:
     """
-    【解析阶段】在独立线程中执行，拥有自己的 DB 会话：
-    1. 逐个解析 CSV/TXT → 创建 Lot 记录 → 调用 _parse_and_save
-    2. 更新 FtpUploadLog 为 success / failed
-    3. 清理临时目录
+    [Parse Stage] Run in a separate thread:
+    1. Parse files in csv_files_to_process from EXTRACTED_DIR
+    2. If filename already exists in DB: delete file from EXTRACTED_DIR and skip
+    3. On success: copy to UPLOAD_DIR, compress it, delete from EXTRACTED_DIR
+    4. On failure: keep in EXTRACTED_DIR, mark log status as 'failed' with '[Parse Failed]' error prefix
     """
     from app.models.ftp_upload_log import FtpUploadLog
     from app.models.lot import Lot
@@ -1316,53 +1393,79 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
             log_rec.status = 'processing'
             log_rec.uploaded_at = datetime.now(timezone.utc)
             db.commit()
-        # Close metadata session immediately to release connection
         db.close()
+        
         UPLOAD_DIR = os.path.expanduser(app_settings.UPLOAD_DIR)
         last_lot_id = None
+        parsed_successfully = []
 
         for csv_filepath in csv_files_to_process:
             csv_filename = os.path.basename(csv_filepath)
-            save_name = csv_filename
+            
+            # Restore original filename from log_id prefix
+            if '_' in csv_filename:
+                parts = csv_filename.split('_', 1)
+                if parts[0].isdigit() and int(parts[0]) == log_id:
+                    save_name = parts[1]
+                else:
+                    save_name = csv_filename
+            else:
+                save_name = csv_filename
+                
             save_path = os.path.join(UPLOAD_DIR, save_name)
 
-            # Open session for individual file parsing to avoid long transaction locks
             db = SessionLocal()
-            
-            # Query osat inside loop so it remains bound to the active session
             osat = db.query(OsatConfig).filter(OsatConfig.id == osat_id).first()
 
-            # ── 重名文件处理 ──────────────────────────────────────────────
-            existing_lot = db.query(Lot).filter(
-                Lot.filename == csv_filename,
+            # Double check lot duplication
+            # 1. Skip if already processed successfully
+            existing_processed_lot = db.query(Lot).filter(
+                Lot.filename == save_name,
                 Lot.osat_name == effective_osat_name,
-                Lot.status.in_(['processed', 'pending', 'processing'])
+                Lot.status == 'processed'
             ).first()
-            if existing_lot:
-                print(f"[ftp_parse] 文件 {csv_filename} 已有对应 Lot 记录"
-                      f"（id={existing_lot.id}, status={existing_lot.status}），跳过")
-                last_lot_id = existing_lot.id
+            if existing_processed_lot:
+                print(f"[ftp_parse] File '{save_name}' already exists in Lot DB as processed, skipping and deleting from extracted")
+                last_lot_id = existing_processed_lot.id
                 db.close()
+                parsed_successfully.append(csv_filepath)
                 continue
 
-            if os.path.exists(save_path):
-                print(f"[ftp_parse] 文件 {csv_filename} 在本地 uploads 目录中已存在但无对应 Lot 记录，覆盖写入")
+            # 2. Clean up any existing failed or stuck lots for this file before parsing
+            stuck_lots = db.query(Lot).filter(
+                Lot.filename == save_name,
+                Lot.osat_name == effective_osat_name,
+                Lot.status.in_(['pending', 'processing', 'failed'])
+            ).all()
+            for stuck_lot in stuck_lots:
+                print(f"[ftp_parse] Cleaning up stuck/failed lot record (id={stuck_lot.id}, status={stuck_lot.status}) for '{save_name}'")
+                from app.models.bin_summary import BinSummary
+                from app.models.test_item import TestItem
+                db.query(BinSummary).filter(BinSummary.lot_id == stuck_lot.id).delete()
+                db.query(TestItem).filter(TestItem.lot_id == stuck_lot.id).delete()
+                db.delete(stuck_lot)
+            db.commit()
 
+            if os.path.exists(save_path):
+                print(f"[ftp_parse] File '{save_name}' already exists in local uploads, overwriting")
+
+            # Copy to UPLOAD_DIR
             shutil.copy2(csv_filepath, save_path)
 
-            if csv_filename.lower().endswith(('.xls', '.xlsx')):
+            if save_name.lower().endswith(('.xls', '.xlsx')):
                 try:
                     from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
                     created_lots = parse_and_save_xls_summary(save_path, db, None, osat_name=effective_osat_name)
                     if created_lots:
                         last_lot_id = created_lots[-1].id
+                    parsed_successfully.append(csv_filepath)
                 except Exception as ex:
                     traceback.print_exc()
                     raise ex
                 db.close()
                 continue
 
-            if csv_filename.lower().endswith('.txt') and 'ets' in csv_filename.lower():
+            if save_name.lower().endswith('.txt') and 'ets' in save_name.lower():
                 lot = Lot(
                     filename=save_name,
                     storage_path=save_path,
@@ -1436,7 +1539,7 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
                     db.add(bin_sum)
                 db.commit()
 
-                csv_mapped_name = find_corresponding_csv_filename(csv_filename)
+                csv_mapped_name = find_corresponding_csv_filename(save_name)
                 csv_base = os.path.splitext(csv_mapped_name)[0]
                 csv_lots = db.query(Lot).filter(
                     Lot.filename.like(f"%{csv_base}%"),
@@ -1447,19 +1550,37 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
 
                 last_lot_id = lot.id
                 db.close()
+                parsed_successfully.append(csv_filepath)
+                
+                # Compress Summary (.txt)
+                zip_path = save_path + '.zip'
+                try:
+                    import zipfile
+                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        zf.write(save_path, os.path.basename(save_path))
+                    if os.path.exists(zip_path) and os.path.getsize(zip_path) > 0:
+                        os.remove(save_path)
+                        db = SessionLocal()
+                        l = db.query(Lot).filter(Lot.id == lot.id).first()
+                        if l:
+                            l.storage_path = zip_path
+                            db.commit()
+                        db.close()
+                except Exception as e:
+                    print(f"[cleanup] Failed to compress summary: {e}")
                 continue
 
-            # CSV 文件：解析元数据
+            # CSV File
             tester = detect_tester(save_path)
             display_tester = 'STS8200' if tester == 'LBS' else tester
             try:
                 meta_result = parse_file(save_path)
-                # 如果没有有效数据行，直接丢弃该文件，跳过 Lot 数据库记录创建
                 if meta_result.error == "未找到有效数据行":
-                    print(f"[ftp_parse] 文件 {csv_filename} 没有有效数据行，抛弃该文件，跳过 Lot 创建")
+                    print(f"[ftp_parse] File '{save_name}' has no valid rows, discarding")
                     if os.path.exists(save_path):
                         os.remove(save_path)
                     db.close()
+                    parsed_successfully.append(csv_filepath)
                     continue
 
                 meta = {} if meta_result.error else {
@@ -1516,11 +1637,20 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
             from app.api.routes.lots import _parse_and_save
             try:
                 _parse_and_save(lot_id, save_path, db)
+                parsed_successfully.append(csv_filepath)
             finally:
                 db.close()
             last_lot_id = lot_id
 
-        # Mark record as success under a new session
+        # Delete successfully parsed files from EXTRACTED_DIR
+        for fp in parsed_successfully:
+            if os.path.exists(fp):
+                try:
+                    os.remove(fp)
+                except Exception as ex:
+                    print(f"[ftp_parse] Failed to remove {fp}: {ex}")
+
+        # Mark record as success
         db = SessionLocal()
         try:
             log_rec = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
@@ -1529,7 +1659,6 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
                 log_rec.lot_id_created = last_lot_id
                 log_rec.uploaded_at = datetime.now(timezone.utc)
                 
-                # Physically delete all previous failed history logs for this file to keep logs list clean
                 try:
                     db.query(FtpUploadLog).filter(
                         FtpUploadLog.osat_id == log_rec.osat_id,
@@ -1538,7 +1667,7 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
                         FtpUploadLog.id != log_id
                     ).delete(synchronize_session=False)
                 except Exception as ex:
-                    print(f"[ftp_service] Cleanup failed logs error in _do_parse: {ex}")
+                    print(f"[ftp_service] Cleanup failed logs error: {ex}")
                     
                 db.commit()
                 print(f"[ftp_parse] ✅ Parse success: {filename}, lot_id={last_lot_id}")
@@ -1548,8 +1677,13 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
 
     except Exception as e:
         traceback.print_exc()
-        err_msg = str(e)[:500]
-        # Record failure under a fresh session to avoid using closed sessions
+        if 'save_path' in locals() and save_path and os.path.exists(save_path):
+            try:
+                os.remove(save_path)
+                print(f"[ftp_parse] Cleanup: Deleted failed parse file from uploads: {save_path}")
+            except Exception as ex:
+                print(f"[ftp_parse] Failed to delete failed file {save_path}: {ex}")
+        err_msg = f"[Parse Failed] {str(e)[:450]}"
         err_db = SessionLocal()
         try:
             log_rec = err_db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
@@ -1569,13 +1703,12 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
                 db.close()
         except Exception:
             pass
-        try:
-            import shutil as _shutil
-            _shutil.rmtree(tmp_dir, ignore_errors=True)
-        except Exception:
-            pass
-
-
+        if tmp_dir:
+            try:
+                import shutil as _shutil
+                _shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
 # ──────────────────────────────────────────
 # 保存 FTP 扫描快照数据
 # ──────────────────────────────────────────
@@ -1648,89 +1781,243 @@ def _save_scan_snapshot(db, osat_id: int, all_paths: list):
         print(f"[ftp_fetch] Failed to save scan snapshot for OSAT {osat_id}: {e}")
 
 
+
+def has_giant_file_in_tmp() -> bool:
+    """
+    Check if any single file in /tmp/ exceeds 2GB (2 * 1024 * 1024 * 1024 bytes).
+    Only called once per OSAT fetch run to minimize IO overhead.
+    """
+    import os
+    limit = 2 * 1024 * 1024 * 1024  # 2GB
+    target_dir = "/tmp"
+    if not os.path.exists(target_dir):
+        return False
+    try:
+        for root, _, files in os.walk(target_dir):
+            for f in files:
+                fp = os.path.join(root, f)
+                try:
+                    if os.path.getsize(fp) > limit:
+                        print(f"[ftp_fetch] Giant file found under /tmp: {fp} ({os.path.getsize(fp)} bytes)")
+                        return True
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[ftp_fetch] Error walking {target_dir}: {e}")
+    return False
+
+
 # ──────────────────────────────────────────
 # 执行单个 OSAT 的完整抓取流程（并发流水线版）
 # ──────────────────────────────────────────
 
+
 def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
     """
-    完整执行一个 OSAT 的 FTP 抓取任务（并发流水线版本）：
-    1. 重置超时（> PROCESSING_TIMEOUT_MINUTES 分钟）的 processing 记录为 failed
-    2. 连接 FTP，扫描目录，去重
-    3. _DOWNLOAD_WORKERS 个线程并发下载，_PARSE_WORKERS 个线程并发解析
-       下载完成立即提交解析，两阶段流水线并行，一个文件卡住不影响其余文件。
-    在独立线程中调用，不阻塞主进程。
+    Execute the FTP fetch task for a single OSAT (concurrent pipeline version):
+    1. Lock the OSAT to prevent concurrent runs.
+    2. Reset stuck processing logs to failed.
+    3. Check if a scan snapshot has already been taken today. If not, scan the FTP directory,
+       bulk insert newly found files to ftp_upload_logs as pending, and save/update the daily snapshot.
+    4. Fetch the next batch of pending and retryable failed files from DB.
+    5. Download up to max_batch_size files concurrently using _DOWNLOAD_WORKERS and parse them.
     """
+    # Prevent concurrent runs of the same OSAT
+    with _osat_in_progress_lock:
+        if osat_id in _osat_in_progress:
+            print(f"[ftp_fetch] OSAT id={osat_id} is already running, skipping concurrent run")
+            return
+        _osat_in_progress.add(osat_id)
+
     db = SessionLocal()
+    # Check disk safety (Giant file check under /tmp)
+    if has_giant_file_in_tmp():
+        print(f"[ftp_fetch] OSAT id={osat_id} fetch aborted: Giant file (>2GB) exists under /tmp")
+        with _osat_in_progress_lock:
+            _osat_in_progress.discard(osat_id)
+        db.close()
+        return
+
     try:
         from app.models.osat_config import OsatConfig
         from app.models.user import User
         from app.models.ftp_upload_log import FtpUploadLog
+        from app.models.ftp_scan_snapshot import FtpScanSnapshot
+        from zoneinfo import ZoneInfo
 
         osat = db.query(OsatConfig).filter(OsatConfig.id == osat_id).first()
         if not osat:
-            print(f"[ftp_fetch] OSAT id={osat_id} 不存在")
+            print(f"[ftp_fetch] OSAT id={osat_id} does not exist")
             return
 
-        # 获取第一个 admin 用户作为上传者
+        # Get the first admin user as the uploader
         admin = db.query(User).filter(User.role == 'admin').first()
         admin_user_id = admin.id if admin else 1
 
-        print(f"[ftp_fetch] 开始抓取 OSAT={osat.name}, 目录={osat.ftp_remote_dir}")
+        print(f"[ftp_fetch] Start fetching OSAT={osat.name}, Dir={osat.ftp_remote_dir}")
 
-        # Step 0: 重置超时的 processing 记录
+        # Step 0: Reset stuck processing logs
         reset_count = _reset_stuck_processing_logs(db)
         if reset_count:
-            print(f"[ftp_fetch] ⏰ 已重置 {reset_count} 个超时 processing 记录为 failed")
+            print(f"[ftp_fetch] Reset {reset_count} stuck processing logs to failed")
 
-        # Step 1: 扫描 FTP 目录
-        all_paths = scan_ftp_files(osat)
-        print(f"[ftp_fetch] FTP 扫描到 {len(all_paths)} 个文件")
-        
-        # Save daily scan snapshot if requested
-        if save_snapshot:
+        # Step 1 & 2: Determine if we need to scan FTP today
+        shanghai_tz = ZoneInfo("Asia/Shanghai")
+        now_sh = datetime.now(shanghai_tz)
+        today_date = now_sh.date()
+
+        existing_snapshot = db.query(FtpScanSnapshot).filter(
+            FtpScanSnapshot.osat_id == osat_id,
+            FtpScanSnapshot.scan_date == today_date
+        ).first()
+
+        need_scan = save_snapshot or (existing_snapshot is None)
+
+        if need_scan:
+            # Scan FTP directory
+            all_paths = scan_ftp_files(osat)
+            print(f"[ftp_fetch] FTP scan finished. Found {len(all_paths)} files")
+
+            # Deduplicate csv / csv.gz pairs
+            all_paths = _deduplicate_csv_gz(all_paths)
+            print(f"[ftp_fetch] Deduplicated file list. {len(all_paths)} files remaining")
+
+            # Find new paths not yet recorded in the DB
+            existing_paths = set(
+                row.remote_path
+                for row in db.query(FtpUploadLog.remote_path)
+                .filter(FtpUploadLog.osat_id == osat_id)
+                .all()
+            )
+
+            new_paths_to_insert = [p for p in all_paths if p not in existing_paths]
+            # Exclude non-ETS txt files
+            new_paths_to_insert = [p for p in new_paths_to_insert if not (p.lower().endswith('.txt') and 'ets' not in os.path.basename(p).lower())]
+
+            # Bulk insert new pending log entries in DB
+            new_logs = []
+            for path in new_paths_to_insert:
+                fname = os.path.basename(path)
+                new_logs.append(FtpUploadLog(
+                    osat_id=osat_id,
+                    remote_path=path,
+                    filename=fname,
+                    status='pending',
+                ))
+            if new_logs:
+                db.bulk_save_objects(new_logs)
+                db.commit()
+                print(f"[ftp_fetch] Bulk created {len(new_logs)} pending log entries in DB")
+
+            # Save/update daily scan snapshot
             _save_scan_snapshot(db, osat_id, all_paths)
+        else:
+            print(f"[ftp_fetch] FTP directory scan skipped for OSAT={osat.name} (already scanned today)")
 
-        # Step 1.5: 去除 csv / csv.gz 重复对
-        all_paths = _deduplicate_csv_gz(all_paths)
-        print(f"[ftp_fetch] csv/gz 去重后剩余 {len(all_paths)} 个文件")
+        # Step 3: Fetch pending and retryable failed files from DB to process in this run
+        pending_paths = [
+            row.remote_path
+            for row in db.query(FtpUploadLog.remote_path)
+            .filter(
+                FtpUploadLog.osat_id == osat_id,
+                FtpUploadLog.status == 'pending'
+            )
+            .all()
+        ]
 
-        # Step 2: 去重（排除已成功 / 处理中 / 超限失败）
-        new_paths = get_new_files(db, osat_id, all_paths)
-        # 过滤掉非 ETS 的 .txt 文件
-        new_paths = [p for p in new_paths if not (p.lower().endswith('.txt') and 'ets' not in os.path.basename(p).lower())]
-        new_paths = sorted(new_paths, key=lambda p: (1 if (p.lower().endswith('.txt') and 'ets' in os.path.basename(p).lower()) else 0, p))
-        print(f"[ftp_fetch] 去重后待处理 {len(new_paths)} 个文件")
+        # Get retryable failed paths
+        from sqlalchemy import func
+        failed_stats = db.query(
+            FtpUploadLog.remote_path,
+            func.count(FtpUploadLog.id).label('fail_count'),
+            func.max(FtpUploadLog.uploaded_at).label('last_fail_time')
+        ).filter(
+            FtpUploadLog.osat_id == osat_id,
+            FtpUploadLog.status == 'failed'
+        ).group_by(FtpUploadLog.remote_path).all()
 
-        # ??????????????????????????????
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        retryable_failed_paths = []
+        for path, fail_count, last_fail_time in failed_stats:
+            # Check if this file has been processed successfully under another log
+            has_success = db.query(FtpUploadLog).filter(
+                FtpUploadLog.osat_id == osat_id,
+                FtpUploadLog.remote_path == path,
+                FtpUploadLog.status == 'success'
+            ).first() is not None
+            if has_success:
+                continue
+
+            if fail_count >= _MAX_FAIL_RETRIES:
+                continue
+
+            # Exclude files that failed during parsing to avoid redundant download
+            has_parse_failed = db.query(FtpUploadLog).filter(
+                FtpUploadLog.osat_id == osat_id,
+                FtpUploadLog.remote_path == path,
+                FtpUploadLog.status == 'failed',
+                FtpUploadLog.error_msg.like('%[Parse Failed]%')
+            ).first() is not None
+            if has_parse_failed:
+                continue
+
+            if fail_count == 1:
+                backoff_minutes = 10
+            elif fail_count == 2:
+                backoff_minutes = 30
+            else:
+                backoff_minutes = 60
+
+            last_fail_time_naive = last_fail_time.replace(tzinfo=None) if last_fail_time else now_utc
+            if (now_utc - last_fail_time_naive).total_seconds() >= backoff_minutes * 60:
+                retryable_failed_paths.append(path)
+
+        # Combined paths to process
+        paths_to_process = pending_paths + retryable_failed_paths
+
+        # Filter out txt files whose filename does not contain "ets" (case-insensitive)
+        paths_to_process = [
+            p for p in paths_to_process
+            if not (p.lower().endswith('.txt') and 'ets' not in os.path.basename(p).lower())
+        ]
+
+        # Sort paths to process (Summary .txt files first)
+        paths_to_process = sorted(paths_to_process, key=lambda p: (1 if (p.lower().endswith('.txt') and 'ets' in os.path.basename(p).lower()) else 0, p))
+
         max_batch_size = 50
-        if len(new_paths) > max_batch_size:
-            print(f"[ftp_fetch] ??????? {len(new_paths)} ?????? {max_batch_size}??????? {max_batch_size} ?")
-            new_paths = new_paths[:max_batch_size]
+        if len(paths_to_process) > max_batch_size:
+            print(f"[ftp_fetch] Paths to process {len(paths_to_process)} exceeds batch limit {max_batch_size}, processing first {max_batch_size}")
+            paths_to_process = paths_to_process[:max_batch_size]
 
-        if not new_paths:
-            print(f"[ftp_fetch] 无新文件，跳过")
+        if not paths_to_process:
+            print(f"[ftp_fetch] No pending or retryable files in DB, skipping")
             return
 
-        # Step 3: 并发下载 + 并发解析（两阶段流水线）
-        #   下载池（_DOWNLOAD_WORKERS 线程）：FTP 连接 / 下载 / 解压
-        #   解析池（_PARSE_WORKERS 线程）  ：CSV 解析 / Lot 入库
-        #   下载完成立即提交解析，两池并行运行，互不阻塞
-        download_pool = ThreadPoolExecutor(max_workers=_DOWNLOAD_WORKERS,
+        # Adjust download workers dynamically during FTP fetch window if it's below 5
+        download_workers = _DOWNLOAD_WORKERS
+        try:
+            from app.tasks.ftp_scheduler import is_in_window
+            if is_in_window(osat.schedule_start, osat.schedule_end):
+                if download_workers < 5:
+                    download_workers = 8
+                    print(f"[ftp_fetch] During FTP fetch window, download workers increased from {_DOWNLOAD_WORKERS} to {download_workers}")
+        except Exception as ex:
+            print(f"[ftp_fetch] Error checking fetch window for dynamic workers adjustment: {ex}")
+
+        # Step 4: Concurrent download + Concurrent parse (2-stage pipeline)
+        download_pool = ThreadPoolExecutor(max_workers=download_workers,
                                            thread_name_prefix="ftp_dl")
         parse_pool = ThreadPoolExecutor(max_workers=_PARSE_WORKERS,
                                         thread_name_prefix="ftp_parse")
 
-        # 区分 Summary 文件 (.txt) 和 Data 文件 (其他)
-        summary_paths = [p for p in new_paths if p.lower().endswith('.txt') and 'ets' in os.path.basename(p).lower()]
-        data_paths = [p for p in new_paths if not (p.lower().endswith('.txt') and 'ets' in os.path.basename(p).lower())]
+        summary_paths = [p for p in paths_to_process if p.lower().endswith('.txt') and 'ets' in os.path.basename(p).lower()]
+        data_paths = [p for p in paths_to_process if not (p.lower().endswith('.txt') and 'ets' in os.path.basename(p).lower())]
 
         def process_batch(paths, batch_name):
             if not paths:
                 return
-            print(f"[ftp_fetch] 开始 {batch_name} 批次并发下载与解析，共 {len(paths)} 个文件...")
+            print(f"[ftp_fetch] Start {batch_name} batch concurrent download and parse, count: {len(paths)}...")
 
-            # 1. Create log entries with 'pending' status and submit to download_pool
             dl_futures = {}
             for path in paths:
                 fname = os.path.basename(path)
@@ -1756,7 +2043,6 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                 df = download_pool.submit(_do_download, log_id, osat_id, path, admin_user_id)
                 dl_futures[df] = (path, fname)
 
-            # 2. 监听下载完成，立即提交解析到 parse_pool
             parse_futures = {}
             for fut in as_completed(dl_futures):
                 path, fname = dl_futures[fut]
@@ -1768,34 +2054,34 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                     pf = parse_pool.submit(_do_parse, log_id, osat_id, path,
                                            tmp_dir, csv_files, admin_user_id)
                     parse_futures[pf] = fname
-                    print(f"[ftp_fetch] 文件 {fname} 下载完成，已提交并发解析")
+                    print(f"[ftp_fetch] File {fname} download completed, submitted for concurrent parsing")
                 except Exception as e:
-                    print(f"[ftp_fetch] 并发下载失败 {fname}: {e}")
+                    print(f"[ftp_fetch] Concurrent download failed for {fname}: {e}")
 
-            # 3. 等待所有解析任务完成
             for fut in as_completed(parse_futures):
                 fname = parse_futures[fut]
                 try:
                     fut.result()
-                    print(f"[ftp_fetch] 文件 {fname} 全部处理完成")
+                    print(f"[ftp_fetch] File {fname} fully processed")
                 except Exception as e:
-                    print(f"[ftp_fetch] 并发解析/保存失败 {fname}: {e}")
+                    print(f"[ftp_fetch] Concurrent parse/save failed for {fname}: {e}")
 
         try:
-            # 第一阶段：先传并解析 Summary (.txt)
+            # Stage 1: Summary files (.txt)
             process_batch(summary_paths, "Summary (.txt)")
 
-            # 第二阶段：Summary 传完之后再传 Data (CSV/ZIP...)
+            # Stage 2: Data files (CSV/ZIP...)
             process_batch(data_paths, "Data (CSV/ZIP...)")
         finally:
             download_pool.shutdown(wait=False)
             parse_pool.shutdown(wait=False)
 
-        print(f"[ftp_fetch] OSAT={osat.name} 本轮抓取完成，"
-              f"共处理 {len(new_paths)} 个文件")
+        print(f"[ftp_fetch] OSAT={osat.name} run completed, processed {len(paths_to_process)} files")
 
     except Exception as e:
         traceback.print_exc()
-        print(f"[ftp_fetch] OSAT id={osat_id} 发生异常: {e}")
+        print(f"[ftp_fetch] OSAT id={osat_id} exception: {e}")
     finally:
+        with _osat_in_progress_lock:
+            _osat_in_progress.discard(osat_id)
         db.close()

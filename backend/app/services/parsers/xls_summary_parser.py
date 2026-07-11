@@ -102,22 +102,26 @@ def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, 
     elif "Bin_Summary" in sheet_names:
         # Resolve Chipmore vs LBS based on column headers inside Bin_Summary sheet
         is_lbs = True
-        try:
-            with pd.ExcelFile(filepath) as xl:
-                df = xl.parse("Bin_Summary", nrows=15, header=None)
-            for r in range(df.shape[0]):
-                val = df.iloc[r, 0]
-                if pd.notna(val) and str(val).strip().lower() == "lotid-waferid":
-                    if df.shape[1] > 1:
-                        col1_val = str(df.iloc[r, 1]).strip().lower()
-                        if col1_val == "yield(%)":
-                            is_lbs = False
-                            break
-                        elif col1_val in ("total test", "total tested"):
-                            is_lbs = True
-                            break
-        except Exception as e:
-            print(f"[xls_summary_parser] Error checking Bin_Summary columns: {e}")
+        filename_lower = os.path.basename(filepath).lower()
+        if "lbs" in filename_lower or (osat_name and "lbs" in str(osat_name).lower()):
+            is_lbs = True
+        else:
+            try:
+                with pd.ExcelFile(filepath) as xl:
+                    df = xl.parse("Bin_Summary", nrows=15, header=None)
+                for r in range(df.shape[0]):
+                    val = df.iloc[r, 0]
+                    if pd.notna(val) and str(val).strip().lower() == "lotid-waferid":
+                        if df.shape[1] > 1:
+                            col1_val = str(df.iloc[r, 1]).strip().lower()
+                            if col1_val == "yield(%)":
+                                is_lbs = False
+                                break
+                            elif col1_val in ("total test", "total tested"):
+                                is_lbs = True
+                                break
+            except Exception as e:
+                print(f"[xls_summary_parser] Error checking Bin_Summary columns: {e}")
             
         if is_lbs:
             print("[xls_summary_parser] Auto-detected LBS Format (has 'Bin_Summary' sheet with LBS columns)")
