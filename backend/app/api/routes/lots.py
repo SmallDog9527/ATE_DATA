@@ -105,9 +105,37 @@ def _collect_archive_data_files(extract_dir: str) -> list[str]:
     return sorted(data_files, key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
 
 
+def cleanup_temp_dir(path: str):
+    try:
+        import shutil
+        abs_path = os.path.abspath(path)
+        if "/tmp/upload_extract_" in abs_path:
+            parts = abs_path.split(os.sep)
+            extract_dir_idx = -1
+            for idx, part in enumerate(parts):
+                if part.startswith("upload_extract_"):
+                    extract_dir_idx = idx
+                    break
+            if extract_dir_idx != -1:
+                extract_dir = os.sep.join(parts[:extract_dir_idx + 1])
+                if os.path.isdir(extract_dir):
+                    has_files = False
+                    for root, _, files in os.walk(extract_dir):
+                        for f in files:
+                            if f.lower().endswith(('.csv', '.txt', '.xls', '.xlsx', '.zip', '.rar', '.gz')):
+                                has_files = True
+                                break
+                    if not has_files:
+                        shutil.rmtree(extract_dir, ignore_errors=True)
+                        print(f"[cleanup] Cleaned up temporary extract directory: {extract_dir}")
+    except Exception as e:
+        print(f"[cleanup] Error cleaning up temporary directory: {e}")
+
+
 def _extract_data_archive(archive_path: str, filename: str) -> tuple[list[str], str]:
     ext = os.path.splitext(filename)[-1].lower()
-    extract_dir = os.path.join(UPLOAD_DIR, os.path.splitext(filename)[0])
+    import uuid
+    extract_dir = os.path.join("/tmp", f"upload_extract_{uuid.uuid4().hex}")
     os.makedirs(extract_dir, exist_ok=True)
 
     if ext == '.zip':
@@ -124,7 +152,18 @@ def _extract_data_archive(archive_path: str, filename: str) -> tuple[list[str], 
     return data_files, extract_dir
 
 UPLOAD_DIR = os.path.expanduser(settings.UPLOAD_DIR)
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+DATA_DIR = os.path.join(UPLOAD_DIR, "Data")
+SUMMARY_DIR = os.path.join(UPLOAD_DIR, "Summary")
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(SUMMARY_DIR, exist_ok=True)
+
+def is_summary_file(fname: str) -> bool:
+    name_lower = fname.lower()
+    if name_lower.endswith(('.xls', '.xlsx')):
+        return True
+    if name_lower.endswith('.txt') and 'ets' in name_lower:
+        return True
+    return False
 
 
 @router.post("/upload")
@@ -149,12 +188,13 @@ async def _process_upload(file: UploadFile, db: Session, background_tasks: Backg
     ext = os.path.splitext(filename)[-1].lower()
     base_name = os.path.splitext(filename)[0]
 
-    # 重复文件名处理：自动追加数字
-    save_path = os.path.join(UPLOAD_DIR, filename)
+    # Determine folder based on file type
+    target_dir = SUMMARY_DIR if is_summary_file(filename) else DATA_DIR
+    save_path = os.path.join(target_dir, filename)
     counter = 1
     while os.path.exists(save_path):
         new_filename = f"{base_name}_{counter}{ext}"
-        save_path = os.path.join(UPLOAD_DIR, new_filename)
+        save_path = os.path.join(target_dir, new_filename)
         counter += 1
     filename = os.path.basename(save_path)
 
@@ -169,12 +209,12 @@ async def _process_upload(file: UploadFile, db: Session, background_tasks: Backg
         if not decompressed_filename.lower().endswith('.csv'):
             decompressed_filename += '.csv'
         
-        decompressed_save_path = os.path.join(UPLOAD_DIR, decompressed_filename)
+        decompressed_save_path = os.path.join(DATA_DIR, decompressed_filename)
         dec_base = os.path.splitext(decompressed_filename)[0]
         dec_ext = os.path.splitext(decompressed_filename)[1]
         dec_counter = 1
         while os.path.exists(decompressed_save_path):
-            decompressed_save_path = os.path.join(UPLOAD_DIR, f"{dec_base}_{dec_counter}{dec_ext}")
+            decompressed_save_path = os.path.join(DATA_DIR, f"{dec_base}_{dec_counter}{dec_ext}")
             dec_counter += 1
             
         import gzip
@@ -201,11 +241,11 @@ async def _process_upload(file: UploadFile, db: Session, background_tasks: Backg
         from app.services.parsers.stdf_converter import convert_stdf_to_csv
         csv_filename = _stdf_base_name(filename) + '.csv'
         # 避免 CSV 文件名冲突
-        csv_save_path = os.path.join(UPLOAD_DIR, csv_filename)
+        csv_save_path = os.path.join(DATA_DIR, csv_filename)
         csv_counter = 1
         while os.path.exists(csv_save_path):
             csv_base = _stdf_base_name(filename)
-            csv_save_path = os.path.join(UPLOAD_DIR, f"{csv_base}_{csv_counter}.csv")
+            csv_save_path = os.path.join(DATA_DIR, f"{csv_base}_{csv_counter}.csv")
             csv_counter += 1
 
         print(f"[upload] STDF 文件检测到，开始转换: {filename} → {os.path.basename(csv_save_path)}")
@@ -239,7 +279,8 @@ async def _process_upload(file: UploadFile, db: Session, background_tasks: Backg
             original_content=None
         )
     if is_zip:
-        extract_dir = os.path.join(UPLOAD_DIR, os.path.splitext(filename)[0])
+        import uuid
+        extract_dir = os.path.join("/tmp", f"upload_extract_{uuid.uuid4().hex}")
         os.makedirs(extract_dir, exist_ok=True)
         with zipfile.ZipFile(save_path, 'r') as z:
             z.extractall(extract_dir)
@@ -305,10 +346,42 @@ async def _process_csv_paths(
     for csv_path in csv_paths:
         csv_name = os.path.basename(csv_path)
 
+        # Check if file already exists in physical directory or Lot DB records (and not deleted)
+        if not is_summary_file(csv_name):
+            physical_zip_path = os.path.join(DATA_DIR, f"{csv_name}.zip")
+            if os.path.exists(physical_zip_path) or os.path.exists(os.path.join(DATA_DIR, csv_name)):
+                raise HTTPException(status_code=400, detail=f"数据文件 '{csv_name}' 已存在，无需重复上传解析")
+        else:
+            physical_sum_path = os.path.join(SUMMARY_DIR, csv_name)
+            if os.path.exists(physical_sum_path):
+                raise HTTPException(status_code=400, detail=f"汇总文件 '{csv_name}' 已存在，无需重复上传解析")
+
+        existing_lot = db.query(Lot).filter(
+            Lot.filename == csv_name,
+            Lot.status != 'deleted'
+        ).first()
+        if existing_lot:
+            raise HTTPException(status_code=400, detail=f"系统已包含同名数据记录 '{csv_name}'，无需重复解析")
+
         if csv_name.lower().endswith(('.xls', '.xlsx')):
             try:
                 from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
                 created_lots = parse_and_save_xls_summary(csv_path, db, user_id, osat_name="chipmore")
+                
+                # XLS/XLSX Summary compression
+                zip_path = csv_path + ".zip"
+                import zipfile
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    zf.write(csv_path, csv_name)
+                
+                if os.path.exists(zip_path) and os.path.getsize(zip_path) > 0:
+                    if os.path.exists(csv_path):
+                        os.remove(csv_path)
+                    for lot in created_lots:
+                        lot.storage_path = zip_path
+                        db.add(lot)
+                    db.commit()
+                
                 for lot in created_lots:
                     results.append({
                         "filename": csv_name,
@@ -330,6 +403,18 @@ async def _process_csv_paths(
             lot_storage_path = csv_path
             lot_file_size = os.path.getsize(csv_path)
             lot_filename = csv_name
+
+            # TXT Summary compression
+            zip_path = csv_path + ".zip"
+            import zipfile
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.write(csv_path, csv_name)
+            
+            if os.path.exists(zip_path) and os.path.getsize(zip_path) > 0:
+                if os.path.exists(csv_path):
+                    os.remove(csv_path)
+                lot_storage_path = zip_path
+                lot_file_size = os.path.getsize(zip_path)
 
             lot = Lot(
                 filename=lot_filename,
@@ -390,14 +475,20 @@ async def _process_csv_paths(
             continue
 
         if is_zip:
-            # 把该 CSV 单独压缩成一个 ZIP，storage_path 指向这个单独 ZIP
-            csv_base = os.path.splitext(csv_name)[0]
-            single_zip_path = os.path.join(extract_dir, f"{csv_base}.zip")
+            # Save the zipped file inside the persistent DATA_DIR instead of extract_dir
+            single_zip_path = os.path.join(DATA_DIR, f"{csv_name}.zip")
+            # Handle possible duplicate zip names in DATA_DIR
+            if os.path.exists(single_zip_path):
+                base_name = os.path.splitext(csv_name)[0]
+                counter = 1
+                while os.path.exists(single_zip_path):
+                    single_zip_path = os.path.join(DATA_DIR, f"{base_name}_{counter}.csv.zip")
+                    counter += 1
             with zipfile.ZipFile(single_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                 zf.write(csv_path, csv_name)
             lot_storage_path = single_zip_path
             lot_file_size = os.path.getsize(single_zip_path)
-            lot_filename = csv_name
+            lot_filename = os.path.basename(single_zip_path)
             # CSV 原文件保留，供后台异步解析使用
         else:
             lot_storage_path = csv_path
@@ -613,7 +704,7 @@ def _parse_and_save(lot_id: int, csv_path: str, db: Session):
         # --- 自动数据压缩与临时文件清理 ---
         if lot.storage_path and os.path.exists(lot.storage_path):
             if lot.storage_path.lower().endswith('.csv'):
-                zip_path = lot.storage_path[:-4] + '.zip'
+                zip_path = lot.storage_path + '.zip'
                 try:
                     import zipfile
                     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -635,6 +726,9 @@ def _parse_and_save(lot_id: int, csv_path: str, db: Session):
                     print(f"[cleanup] Removed temporary CSV: {csv_path}")
                 except Exception as e:
                     print(f"[cleanup] Failed to remove temporary CSV {csv_path}: {e}")
+                
+                # Clean up parent directory if empty
+                cleanup_temp_dir(csv_path)
 
         db.commit()
         print(f"[parse] 全部完成 lot_id={lot_id}")
@@ -657,20 +751,21 @@ def _prepare_reparse_csv(lot: Lot) -> tuple[str, Optional[str]]:
         raise FileNotFoundError(f"Source file not found for LOT {lot.id}")
 
     lower_path = lot.storage_path.lower()
-    if lower_path.endswith('.csv'):
+    if lower_path.endswith(('.csv', '.xls', '.xlsx', '.txt')):
         return lot.storage_path, None
 
     if lower_path.endswith('.zip'):
         tmp_dir = tempfile.mkdtemp(prefix=f"reparse_lot_{lot.id}_")
         with zipfile.ZipFile(lot.storage_path, 'r') as zf:
-            members = [
-                info for info in zf.infolist()
-                if not info.is_dir() and info.filename.lower().endswith('.csv')
+            members = [info for info in zf.infolist() if not info.is_dir()]
+            valid_members = [
+                info for info in members 
+                if info.filename.lower().endswith(('.csv', '.xls', '.xlsx', '.txt'))
             ]
-            if not members:
-                raise FileNotFoundError(f"ZIP source for LOT {lot.id} does not contain a CSV file")
-            members.sort(key=lambda info: len(info.filename.replace("\\", "/").split("/")))
-            picked = members[0]
+            if not valid_members:
+                raise FileNotFoundError(f"ZIP source for LOT {lot.id} does not contain a valid test data/summary file")
+            valid_members.sort(key=lambda info: len(info.filename.replace("\\", "/").split("/")))
+            picked = valid_members[0]
             csv_path = os.path.join(tmp_dir, os.path.basename(picked.filename))
             with zf.open(picked) as src, open(csv_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
@@ -690,11 +785,42 @@ def _reparse_lot_bg(lot_id: int):
         if not lot:
             return
             
-        lower_path = lot.storage_path.lower()
-        if lower_path.endswith('.xls') or lower_path.endswith('.xlsx'):
-            parse_and_save_xls_summary(lot.storage_path, db, user_id=lot.user_id, osat_name=lot.osat_name)
+        csv_path, tmp_dir = _prepare_reparse_csv(lot)
+        lower_csv_path = csv_path.lower()
+        if lower_csv_path.endswith(('.xls', '.xlsx')):
+            parse_and_save_xls_summary(csv_path, db, user_id=lot.user_id, osat_name=lot.osat_name)
+        elif lower_csv_path.endswith('.txt') and 'ets' in lower_csv_path:
+            # TXT Summary re-parse
+            from app.services.parsers.summary_parser import parse_summary_txt, apply_summary_to_csv, find_corresponding_csv_filename
+            summary_data = parse_summary_txt(csv_path)
+            if summary_data.get('beginning_time'):
+                lot.beginning_time = summary_data['beginning_time']
+                lot.test_date = summary_data['beginning_time']
+            if summary_data.get('ending_time'):
+                lot.ending_time = summary_data['ending_time']
+            if summary_data.get('tester'):
+                lot.mp_tester = summary_data['tester']
+            if summary_data.get('probecard'):
+                lot.probecard = summary_data['probecard']
+            if summary_data.get('program'):
+                lot.program = summary_data['program']
+            if summary_data.get('lot_id'):
+                lot.lot_id = summary_data['lot_id']
+            if summary_data.get('wafer_id'):
+                lot.wafer_id = summary_data['wafer_id']
+            if summary_data.get('handler'):
+                lot.handler = summary_data['handler']
+            db.commit()
+            
+            csv_mapped_name = find_corresponding_csv_filename(lot.filename)
+            csv_base = os.path.splitext(csv_mapped_name)[0]
+            csv_lots = db.query(Lot).filter(
+                Lot.filename.like(f"%{csv_base}%"),
+                Lot.data_source == lot.data_source
+            ).all()
+            for csv_lot in csv_lots:
+                apply_summary_to_csv(db, csv_lot.id, summary_data)
         else:
-            csv_path, tmp_dir = _prepare_reparse_csv(lot)
             _parse_and_save(lot.id, csv_path, db)
     except Exception as e:
         print(f"[_reparse_lot_bg] error lot_id={lot_id}: {e}")
@@ -1544,6 +1670,8 @@ def merge_lots(data: MergeRequest, db: Session = Depends(get_db)):
     3. 按 test_date 时序合并 parquet，坐标相同保留最后一次
     4. 重新计算统计，生成新 Lot 记录
     """
+    import time
+    t0 = time.time()
     import pandas as pd
     from datetime import timezone
 
@@ -1646,7 +1774,7 @@ def merge_lots(data: MergeRequest, db: Session = Depends(get_db)):
         program=ref_lot.program,
         test_machine=ref_lot.test_machine,
         handler=ref_lot.handler,
-        data_type='FT',
+        data_type='CP' if has_coords else 'FT',
         test_date=merged_beginning_time or ref_lot.test_date,
         beginning_time=merged_beginning_time,
         ending_time=merged_ending_time,
@@ -1862,9 +1990,7 @@ def merge_many_lots(data: MergeManyRequest, db: Session = Depends(get_db)):
     lot_ids = list(dict.fromkeys(l.lot_id for l in lots if l.lot_id))
     lot_str = "_".join(lot_ids)
     date_suffix = datetime.now().strftime("%Y%m%d%H%M")
-    dt_str = ref_lot.data_type
-    if dt_str == 'CP':
-        dt_str = 'CP_LOT'
+    dt_str = 'FT'
     constructed_filename = f"Merged_{product_name}_{lot_str}_{dt_str}_{date_suffix}.parquet"
 
     new_lot = Lot(
@@ -1875,7 +2001,7 @@ def merge_many_lots(data: MergeManyRequest, db: Session = Depends(get_db)):
         program=ref_lot.program,
         test_machine=ref_lot.test_machine,
         handler=ref_lot.handler,
-        data_type=ref_lot.data_type,
+        data_type='FT',
         test_date=merged_beginning_time or ref_lot.test_date,
         beginning_time=merged_beginning_time,
         ending_time=merged_ending_time,

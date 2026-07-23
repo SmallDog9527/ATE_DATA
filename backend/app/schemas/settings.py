@@ -167,3 +167,26 @@ class VersionUpdateIn(BaseModel):
     content: str
 
 
+
+
+# ----------------------------------------------
+# FTP Extracted Files Logs
+# ----------------------------------------------
+
+class FtpExtractedLogItem(BaseModel):
+    id: int
+    ftp_log_id: int
+    filename: str
+    status: str
+    error_msg: Optional[str] = None
+    processed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class FtpExtractedLogPage(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[FtpExtractedLogItem]

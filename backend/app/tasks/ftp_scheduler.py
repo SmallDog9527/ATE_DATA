@@ -325,6 +325,127 @@ def precalculate_mp_yield_job():
         db.close()
 
 
+# Directory Growth Watchdog State
+_last_dir_sizes = {
+    "/tmp/FTP/download": 0,
+    "/tmp/FTP/extracted": 0,
+    "/app/uploads": 0,
+    "/app": 0
+}
+
+def get_dir_size(path):
+    import os
+    total = 0
+    if not os.path.exists(path):
+        return 0
+    try:
+        for root, _, files in os.walk(path):
+            for f in files:
+                fp = os.path.join(root, f)
+                try:
+                    total += os.path.getsize(fp)
+                except:
+                    pass
+    except Exception:
+        pass
+    return total
+
+def directory_growth_monitor_job():
+    """
+    Directory growth watchdog.
+    Runs every 1 minute to check size changes of:
+    - /tmp/FTP/download
+    - /tmp/FTP/extracted
+    - /app/uploads
+    - /app (includes backend code, logs, and core dumps)
+    If any directory grows by > 2GB in 1 minute, or if temp folders exceed 5GB in total size,
+    or if the host partition free space drops below 5GB:
+    Set all OSAT configs to enabled=False, send SMTP email alert to admins.
+    """
+    global _last_dir_sizes
+    import shutil
+    from app.core.database import SessionLocal
+    from app.models.osat_config import OsatConfig
+    from app.services.smtp_dynamic import send_smtp_auto
+    from app.models.user import User
+
+    dirs = ["/tmp/FTP/download", "/tmp/FTP/extracted", "/app/uploads", "/app"]
+    limit_increase = 2 * 1024 * 1024 * 1024  # 2 GB
+    limit_absolute = 5 * 1024 * 1024 * 1024  # 5 GB absolute limit for temp folders
+
+    triggered = False
+    trigger_reason = ""
+
+    # 1. Check directory sizes and growth rates
+    for d in dirs:
+        current_size = get_dir_size(d)
+        last_size = _last_dir_sizes.get(d, 0)
+        
+        # Initialize if it was 0 (first run)
+        if last_size == 0 and current_size > 0:
+            _last_dir_sizes[d] = current_size
+            continue
+
+        increase = current_size - last_size
+        _last_dir_sizes[d] = current_size
+
+        if increase > limit_increase:
+            triggered = True
+            trigger_reason = f"Directory {d} grew by {increase / (1024**2):.1f} MB (exceeded 2GB limit) in 1 minute."
+            break
+            
+        # Absolute limit check for temp folders
+        if d in ["/tmp/FTP/download", "/tmp/FTP/extracted"] and current_size > limit_absolute:
+            triggered = True
+            trigger_reason = f"Directory {d} size is {current_size / (1024**3):.1f} GB (exceeded 5GB absolute limit)."
+            break
+
+    # 2. Check partition free space as double-insurance
+    if not triggered:
+        try:
+            _, _, free_bytes = shutil.disk_usage("/app")
+            if free_bytes < 5 * 1024 * 1024 * 1024:  # 5 GB free space threshold
+                triggered = True
+                trigger_reason = f"Host partition free space is dangerously low: {free_bytes / (1024**3):.1f} GB remaining."
+        except Exception as d_ex:
+            print(f"[watchdog] Failed to check disk usage: {d_ex}")
+
+    if triggered:
+        print(f"[watchdog] ⚠️ CRITICAL: {trigger_reason} Performing emergency stop!")
+        db = SessionLocal()
+        try:
+            # 1. Disable all OSATs
+            osats = db.query(OsatConfig).filter(OsatConfig.enabled == True).all()
+            for o in osats:
+                o.enabled = False
+                print(f"[watchdog] OSAT={o.name} has been auto-disabled.")
+            db.commit()
+
+            # 2. Query admin users and send SMTP alert
+            admins = db.query(User).filter(User.role == 'admin', User.is_active == True).all()
+            recipient_emails = [a.email for a in admins if a.email]
+            
+            if recipient_emails:
+                subject = "【CRITICAL ALERT】ATE Server Disk Space growth Emergency Stop!"
+                body_content = (
+                    f"Warning: The ATE Server directory growth watchdog has triggered an emergency shutdown.\n\n"
+                    f"Reason:\n{trigger_reason}\n\n"
+                    f"Action Taken:\nAll FTP OSAT schedulers have been automatically set to DISABLED to prevent server disk overflow.\n\n"
+                    f"Please check the server directories and logs immediately."
+                )
+                for email in recipient_emails:
+                    try:
+                        send_smtp_auto(db, email, subject, body_content)
+                        print(f"[watchdog] SMTP Alert sent to {email}")
+                    except Exception as s_ex:
+                        print(f"[watchdog] Failed to send SMTP alert to {email}: {s_ex}")
+        except Exception as ex:
+            print(f"[watchdog] Error executing emergency stop: {ex}")
+            db.rollback()
+        finally:
+            db.close()
+
+
 def daily_ftp_scan_snapshot_job():
     """Run daily scan snapshot at 08:00 for all enabled OSATs."""
     from app.core.database import SessionLocal
@@ -383,6 +504,15 @@ def start_scheduler():
             id='cleanup_del_folder',
             replace_existing=True,
             misfire_grace_time=600,
+        )
+        # 每 1 分钟检查一次本地临时目录的增长速度，防止异常爆盘
+        _scheduler.add_job(
+            directory_growth_monitor_job,
+            trigger='interval',
+            minutes=1,
+            id='directory_growth_monitor',
+            replace_existing=True,
+            misfire_grace_time=10,
         )
         # 每天 08:00 整执行 FTP 扫描并更新快照
         _scheduler.add_job(

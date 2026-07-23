@@ -402,7 +402,10 @@
                 <option value="processing">⏳ Processing</option>
               </select>
               <button class="btn-sm" @click="loadFtpLogs">🔄 刷新</button>
-              <button class="btn-sm btn-warn" @click="loadStuckFiles" style="margin-left:auto">
+              <button class="btn-sm" @click="handleProcessExistingLocal" :disabled="processingExistingLocal" style="margin-left: auto; background-color: #3b82f6; border-color: #2563eb; color: white;">
+                ⚙️ {{ processingExistingLocal ? '处理中...' : '处理现有本地文件' }}
+              </button>
+              <button class="btn-sm btn-warn" @click="loadStuckFiles" style="margin-left: 8px;">
                 ⚠ 查看卡住文件 <span v-if="stuckFiles.length > 0" class="stuck-badge">{{ stuckFiles.length }}</span>
               </button>
             </div>
@@ -510,7 +513,7 @@
             </div>
           </template>
 
-          <!-- ENG_上传日志 content (manual uploads) -->
+<!-- ENG_上传日志 content (manual uploads) -->
           <template v-if="activeLogSubTab === 'manual' || (!authStore.isAdmin && !authStore.isEng)">
             <div class="log-filter-row">
               <select v-model="manualLogFilterType" @change="loadManualLogs" class="filter-select-sm">
@@ -1364,6 +1367,8 @@ const logPage        = ref(1)
 const logPageSize    = ref(20)
 const logTotal       = ref(0)
 
+
+
 async function loadFtpLogs() {
   logsLoading.value = true
   try {
@@ -1592,6 +1597,22 @@ async function loadDailySummary() {
     console.error('Failed to load daily summary:', e)
   } finally {
     summaryLoading.value = false
+  }
+}
+
+const processingExistingLocal = ref(false)
+async function handleProcessExistingLocal() {
+  if (confirm("确定要立即扫描并处理目前本地 /download 和 /extracted 目录下的所有文件吗？\n（无论 OSAT 定时配置是否开启，都会立即启动后台解析和自动入库校验）")) {
+    processingExistingLocal.value = true
+    try {
+      const res: any = await api.post('/settings/ftp-logs/process-existing')
+      alert(res.message || "后台处理任务已成功提交！")
+      await loadFtpLogs()
+    } catch (e: any) {
+      alert("提交失败：" + (e.response?.data?.detail || e.message || "未知错误"))
+    } finally {
+      processingExistingLocal.value = false
+    }
   }
 }
 

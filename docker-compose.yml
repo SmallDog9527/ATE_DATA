@@ -74,7 +74,8 @@ services:
       APP_URL: ${APP_URL:-http://localhost:5174}
     volumes:
       - ./backend:/app
-      - uploads_data:/app/uploads
+      - /home/ATE_DATA/uploads:/app/uploads
+      - /home/ATE_DATA/FTP:/tmp/FTP
 
   frontend:
     image: node:20-alpine
@@ -96,7 +97,6 @@ services:
              npm run dev"
 
 volumes:
-  uploads_data:
   frontend_node_modules:
 
 networks:

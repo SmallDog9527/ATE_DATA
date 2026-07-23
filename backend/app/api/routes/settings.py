@@ -20,6 +20,7 @@ from app.schemas.settings import (
     SmtpConfigIn, SmtpConfigOut, SmtpTestRequest,
     OsatConfigIn, OsatConfigOut,
     FtpLogItem, FtpLogPage,
+    FtpExtractedLogItem, FtpExtractedLogPage,
     ManualLogItem, ManualLogPage,
     VersionUpdateIn,
 )
@@ -239,7 +240,8 @@ def get_ftp_logs(
     page_size: int = Query(20, ge=1, le=100),
 ):
     """查询 FTP 上传日志（支持按 OSAT / 状态筛选，分页）"""
-    query = db.query(FtpUploadLog)
+    # Exclude scanned files that are waiting to be downloaded
+    query = db.query(FtpUploadLog).filter(FtpUploadLog.status != 'scanned')
     if osat_id:
         query = query.filter(FtpUploadLog.osat_id == osat_id)
     if status:
@@ -308,12 +310,12 @@ def retry_failed_ftp_log(
                 files.append(os.path.join(EXTRACTED_DIR, name))
                 
     if not files:
-        log.status = 'pending'
+        log.status = 'scanned'
         log.error_msg = None
         db.commit()
         
         _executor.submit(run_osat_fetch, log.osat_id, False)
-        return {"message": "Files not found in cache. Reset to pending and triggered re-download."}
+        return {"message": "Files not found in cache. Reset to scanned and triggered re-download."}
         
     log.status = 'processing'
     log.error_msg = None
@@ -322,6 +324,147 @@ def retry_failed_ftp_log(
     admin_user_id = current_user.id if current_user else 1
     _executor.submit(_do_parse, log.id, log.osat_id, log.remote_path, None, files, admin_user_id)
     return {"message": "Re-parsing task submitted in background"}
+
+
+@router.post("/ftp-logs/process-existing")
+def process_existing_local_files(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_eng),
+):
+    """
+    Scan /tmp/FTP/download and /tmp/FTP/extracted to process and import all existing files.
+    """
+    import os
+    import zipfile
+    import shutil
+    import tempfile
+    from app.models.ftp_upload_log import FtpUploadLog
+    from app.models.lot import Lot
+    from app.services.ftp_service import _do_parse
+    from app.tasks.ftp_scheduler import _executor
+
+    DOWNLOAD_DIR = "/tmp/FTP/download"
+    EXTRACTED_DIR = "/tmp/FTP/extracted"
+    admin_user_id = current_user.id if current_user else 1
+
+    # 1. Unzip/copy files from DOWNLOAD_DIR to EXTRACTED_DIR if not already extracted
+    if os.path.exists(DOWNLOAD_DIR):
+        os.makedirs(EXTRACTED_DIR, exist_ok=True)
+        for name in os.listdir(DOWNLOAD_DIR):
+            filepath = os.path.join(DOWNLOAD_DIR, name)
+            if not os.path.isfile(filepath):
+                continue
+            if '_' in name:
+                parts = name.split('_', 1)
+                if parts[0].isdigit():
+                    log_id = int(parts[0])
+                    original_name = parts[1]
+
+                    log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+                    if log and log.status == 'success':
+                        try: os.remove(filepath)
+                        except: pass
+                        continue
+
+                    # Check if already extracted
+                    prefix = f"{log_id}_"
+                    has_extracted = False
+                    for ext_name in os.listdir(EXTRACTED_DIR):
+                        if ext_name.startswith(prefix):
+                            has_extracted = True
+                            break
+
+                    if not has_extracted:
+                        name_lower = original_name.lower()
+                        if name_lower.endswith('.zip'):
+                            try:
+                                tmp = tempfile.mkdtemp()
+                                with zipfile.ZipFile(filepath, 'r') as z:
+                                    z.extractall(tmp)
+                                for root, _, files_in_tmp in os.walk(tmp):
+                                    for f in files_in_tmp:
+                                        dest = os.path.join(EXTRACTED_DIR, f"{log_id}_{f}")
+                                        shutil.copy2(os.path.join(root, f), dest)
+                                shutil.rmtree(tmp, ignore_errors=True)
+                            except Exception as e:
+                                print(f"[process-existing] Failed to unzip {name}: {e}")
+                                # Delete corrupted zip file
+                                try: os.remove(filepath)
+                                except: pass
+                        elif name_lower.endswith(('.csv', '.xls', '.xlsx')) or (name_lower.endswith('.txt') and 'ets' in name_lower):
+                            try:
+                                shutil.copy2(filepath, os.path.join(EXTRACTED_DIR, name))
+                            except Exception as e:
+                                print(f"[process-existing] Failed to copy {name}: {e}")
+                    else:
+                        # Already extracted, delete from download directory
+                        try: os.remove(filepath)
+                        except: pass
+
+    # 2. Group files in EXTRACTED_DIR by log_id
+    extracted_files = {}
+    if os.path.exists(EXTRACTED_DIR):
+        for name in os.listdir(EXTRACTED_DIR):
+            filepath = os.path.join(EXTRACTED_DIR, name)
+            if not os.path.isfile(filepath):
+                continue
+            if '_' in name:
+                parts = name.split('_', 1)
+                if parts[0].isdigit():
+                    log_id = int(parts[0])
+                    extracted_files.setdefault(log_id, []).append(filepath)
+
+    submitted_count = 0
+    cleaned_count = 0
+
+    for log_id, files in extracted_files.items():
+        original_name = os.path.basename(files[0])
+        if '_' in original_name:
+            parts = original_name.split('_', 1)
+            if parts[0].isdigit() and int(parts[0]) == log_id:
+                orig_filename = parts[1]
+            else:
+                orig_filename = original_name
+        else:
+            orig_filename = original_name
+
+        check_names = [
+            orig_filename,
+            f"{log_id}_{orig_filename}",
+            orig_filename + ".zip",
+            f"{log_id}_{orig_filename}.zip"
+        ]
+
+        lot_rec = db.query(Lot).filter(Lot.filename.in_(check_names)).first()
+        if lot_rec:
+            for fp in files:
+                try: os.remove(fp)
+                except: pass
+            # Clean up raw archive in download folder if it exists
+            if os.path.exists(DOWNLOAD_DIR):
+                for name in os.listdir(DOWNLOAD_DIR):
+                    if name.startswith(f"{log_id}_"):
+                        try: os.remove(os.path.join(DOWNLOAD_DIR, name))
+                        except: pass
+            cleaned_count += 1
+            
+            log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+            if log and log.status != 'success':
+                log.status = 'success'
+                log.error_msg = None
+                db.commit()
+        else:
+            log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+            if log:
+                log.status = 'processing'
+                log.error_msg = None
+                db.commit()
+                _executor.submit(_do_parse, log.id, log.osat_id, log.remote_path, None, files, admin_user_id)
+                submitted_count += 1
+
+    return {
+        "message": f"成功提交了 {submitted_count} 个解析任务，并清理了 {cleaned_count} 个已入库的本地缓存。"
+    }
 
 
 @router.delete("/ftp-logs/failed")
@@ -806,3 +949,54 @@ def save_version_settings(
     return {"message": "版本更新内容已成功保存至历史文件"}
 
 
+
+
+# ----------------------------------------------
+# FTP Extracted Logs API
+# ----------------------------------------------
+
+@router.get("/ftp-extracted-logs", response_model=FtpExtractedLogPage)
+def get_ftp_extracted_logs(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin_or_eng),
+    ftp_log_id: Optional[int] = None,
+    status: Optional[str] = None,
+    filename: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+):
+    """
+    Query decompressed FTP files logs (supports status and filename filter, paginated).
+    All comments and logger descriptions are in English.
+    """
+    from app.models.ftp_extracted_file import FtpExtractedFile
+    from app.schemas.settings import FtpExtractedLogItem, FtpExtractedLogPage
+
+    query = db.query(FtpExtractedFile)
+    if ftp_log_id:
+        query = query.filter(FtpExtractedFile.ftp_log_id == ftp_log_id)
+    if status:
+        query = query.filter(FtpExtractedFile.status == status)
+    if filename:
+        query = query.filter(FtpExtractedFile.filename.ilike(f"%{filename}%"))
+
+    total = query.count()
+    logs = (
+        query.order_by(FtpExtractedFile.processed_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    items = []
+    for log in logs:
+        items.append(FtpExtractedLogItem(
+            id=log.id,
+            ftp_log_id=log.ftp_log_id,
+            filename=log.filename,
+            status=log.status,
+            error_msg=log.error_msg,
+            processed_at=log.processed_at,
+        ))
+
+    return FtpExtractedLogPage(total=total, page=page, page_size=page_size, items=items)

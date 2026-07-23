@@ -4,14 +4,14 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-LOT_RE = re.compile(r'(?<![A-Z0-9])([A-Z][A-Z0-9]{5}\d)(?![A-Z0-9])', re.IGNORECASE)
+LOT_RE = re.compile(r'(?<![A-Z0-9])([A-Z][A-Z0-9]{4,5}\d)(?![A-Z0-9])', re.IGNORECASE)
 WAFER_RE = re.compile(r'^(?:0?[1-9]|1\d|2[0-5])$')
 WAFER_TAG_RE = re.compile(
     r'(?:^|[^A-Z0-9])(?:W|WF|WAFER)[-_ ]?(0?[1-9]|1\d|2[0-5])(?:[^A-Z0-9]|$)',
     re.IGNORECASE,
 )
 LOT_WAFER_SUFFIX_RE = re.compile(
-    r'(?:^|[^A-Z0-9])([A-Z][A-Z0-9]{5}\d)[-_](0?[1-9]|1\d|2[0-5])[A-Z]\d+(?:[^A-Z0-9]|$)',
+    r'(?:^|[^A-Z0-9])([A-Z][A-Z0-9]{4,5}\d)[-_](0?[1-9]|1\d|2[0-5])[A-Z]\d+(?:[^A-Z0-9]|$)',
     re.IGNORECASE,
 )
 

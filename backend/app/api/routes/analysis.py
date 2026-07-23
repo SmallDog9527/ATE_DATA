@@ -2552,7 +2552,7 @@ def get_multi_lot_items(
             params.append(row)
 
         return {
-            "lots": [{"id": l.id, "filename": l.filename, "lot_id": l.lot_id} for l in ordered_lots],
+            "lots": [{"id": l.id, "filename": l.filename, "lot_id": l.lot_id, "wafer_id": l.wafer_id} for l in ordered_lots],
             "params": params,
         }
     except Exception as e:
@@ -2724,7 +2724,10 @@ def run_multi_export_task(
                 }
                 if export_mode == 'lot':
                     for idx, lot in enumerate(ordered_lots, start=1):
-                        lot_name = lot.wafer_id or lot.lot_id or lot.filename or f"LOT {idx}"
+                        if lot.lot_id and lot.wafer_id:
+                            lot_name = f"{lot.lot_id}-{lot.wafer_id}"
+                        else:
+                            lot_name = lot.wafer_id or lot.lot_id or lot.filename or f"LOT {idx}"
                         column_mapping[f'lot_{lot.id}_mean'] = f'{lot_name} Mean'
                         column_mapping[f'lot_{lot.id}_stdev'] = f'{lot_name} Stdev'
                     column_mapping['mean_delta'] = 'Mean Delta'

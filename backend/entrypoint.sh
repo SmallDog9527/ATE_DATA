@@ -1,6 +1,9 @@
 #!/bin/sh
 set -e
 
+# Disable core dumps to prevent large core.* files on container exit
+ulimit -c 0 || true
+
 echo "========================================"
 echo "  Chip ATE Analysis System - Backend"
 echo "========================================"

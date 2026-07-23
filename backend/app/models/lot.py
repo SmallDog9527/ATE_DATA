@@ -76,3 +76,48 @@ class Lot(Base):
     # FTP 路径与自动 Check 状态
     ftp_path = Column(String, nullable=True)
     check_status = Column(String, nullable=True)
+
+
+from sqlalchemy import event
+from sqlalchemy.orm import object_session
+
+@event.listens_for(Lot, 'before_insert')
+def auto_enrich_lot_info(mapper, connection, target):
+    """
+    Automatically link mp_tester and probecard between Summary and Data lot records.
+    """
+    session = object_session(target)
+    if not session or not target.lot_id or not target.wafer_id:
+        return
+        
+    filename_lower = (target.filename or "").lower()
+    is_summary = filename_lower.endswith(('.xls', '.xlsx'))
+    
+    if is_summary:
+        if target.mp_tester or target.probecard:
+            data_lots = session.query(Lot).filter(
+                ~Lot.filename.like('%.xls%') & ~Lot.filename.like('%.xlsx%')
+            ).filter(
+                Lot.lot_id == target.lot_id,
+                Lot.wafer_id == target.wafer_id
+            ).all()
+            for d in data_lots:
+                if target.mp_tester and d.mp_tester != target.mp_tester:
+                    d.mp_tester = target.mp_tester
+                if target.probecard and d.probecard != target.probecard:
+                    d.probecard = target.probecard
+    else:
+        if not target.mp_tester or not target.probecard:
+            summary_lot = session.query(Lot).filter(
+                Lot.filename.like('%.xls%') | Lot.filename.like('%.xlsx%')
+            ).filter(
+                Lot.lot_id == target.lot_id,
+                Lot.wafer_id == target.wafer_id
+            ).filter(
+                (Lot.mp_tester != None) | (Lot.probecard != None)
+            ).first()
+            if summary_lot:
+                if summary_lot.mp_tester and not target.mp_tester:
+                    target.mp_tester = summary_lot.mp_tester
+                if summary_lot.probecard and not target.probecard:
+                    target.probecard = summary_lot.probecard
