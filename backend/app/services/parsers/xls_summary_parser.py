@@ -92,6 +92,9 @@ def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, 
 
     # 2. Determine parser name based on auto-detection or fallback to osat_name
     name = str(osat_name).strip().lower()
+    if name == "htks":
+        name = "ksht"
+    
     
     if is_vendor_chipmore:
         print("[xls_summary_parser] Auto-detected Chipmore Format (has VENDOR: CHIPMORE)")
@@ -167,7 +170,7 @@ def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, 
         if "lbs" in filename_lower:
             print("[xls_summary_parser] Auto-detected LBS via filename")
             name = "lbs"
-        elif "ksht" in filename_lower:
+        elif "ksht" in filename_lower or "htks" in filename_lower:
             print("[xls_summary_parser] Auto-detected KSHT via filename")
             name = "ksht"
         elif "ucd" in filename_lower:

@@ -317,7 +317,7 @@ def retry_failed_ftp_log(
         _executor.submit(run_osat_fetch, log.osat_id, False)
         return {"message": "Files not found in cache. Reset to scanned and triggered re-download."}
         
-    log.status = 'processing'
+    log.status = 'pending'
     log.error_msg = None
     db.commit()
     
@@ -456,7 +456,7 @@ def process_existing_local_files(
         else:
             log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
             if log:
-                log.status = 'processing'
+                log.status = 'pending'
                 log.error_msg = None
                 db.commit()
                 _executor.submit(_do_parse, log.id, log.osat_id, log.remote_path, None, files, admin_user_id)

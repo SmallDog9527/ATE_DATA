@@ -146,12 +146,14 @@ def parse_and_save_ksht_summary(filepath: str, db: Session, user_id: int = None,
         header_row_idx = None
         for r in range(1, sh_sum.max_row + 1):
             val = sh_sum.cell(r, 1).value
-            if val and str(val).strip().lower() == "test start time":
-                header_row_idx = r
-                break
+            if val:
+                val_str = str(val).strip().lower()
+                if val_str in ("test start time", "lotno", "lot no", "lot_no"):
+                    header_row_idx = r
+                    break
                 
         if header_row_idx is None:
-            raise ValueError("Could not find 'Test Start Time' header row in Summary sheet")
+            raise ValueError("Could not find header row in Summary sheet")
             
         row_headers = [sh_sum.cell(header_row_idx, c).value for c in range(1, sh_sum.max_column + 1)]
         
@@ -162,6 +164,7 @@ def parse_and_save_ksht_summary(filepath: str, db: Session, user_id: int = None,
         c_total = row_headers.index("Total") if "Total" in row_headers else -1
         c_pass = row_headers.index("Pass") if "Pass" in row_headers else -1
         c_yield = row_headers.index("Yield") if "Yield" in row_headers else -1
+        c_lot = row_headers.index("LotNo") if "LotNo" in row_headers else (row_headers.index("Lot ID") if "Lot ID" in row_headers else -1)
         
         bin_cols = {}
         for c in range(len(row_headers)):
@@ -181,12 +184,28 @@ def parse_and_save_ksht_summary(filepath: str, db: Session, user_id: int = None,
                 continue
                 
             wafer_key_str = str(wafer_key).strip()
-            m = re.match(r"^([^-]+)-(\d+)", wafer_key_str)
-            if not m:
-                continue
-            lot_id = m.group(1).strip()
-            wafer_id = str(int(m.group(2).strip()))
             
+            # Read lot_id and wafer_id
+            if c_lot >= 0:
+                lot_val = sh_sum.cell(r, c_lot + 1).value
+                if not lot_val or str(lot_val).strip().lower() in ("total", "average", "percentage"):
+                    continue
+                lot_id = str(lot_val).strip()
+                suffix = wafer_key_str.replace(lot_id, "").strip("-_Ff")
+                if suffix.isdigit():
+                    wafer_id = str(int(suffix))
+                else:
+                    wafer_id = suffix
+            else:
+                m = re.match(r"^([^-]+)-(\d+)", wafer_key_str)
+                if not m:
+                    continue
+                lot_id = m.group(1).strip()
+                wafer_id = str(int(m.group(2).strip()))
+                
+            if not lot_id or not wafer_id:
+                continue
+                
             device_name = sh_sum.cell(r, c_device + 1).value if c_device >= 0 else ""
             test_start = parse_ksht_date(sh_sum.cell(r, c_started + 1).value) if c_started >= 0 else None
             test_finish = parse_ksht_date(sh_sum.cell(r, c_finished + 1).value) if c_finished >= 0 else None
@@ -202,7 +221,11 @@ def parse_and_save_ksht_summary(filepath: str, db: Session, user_id: int = None,
             yield_rate = None
             if yield_val is not None:
                 try:
-                    yield_rate = float(str(yield_val).replace('%', '').strip()) / 100.0
+                    yield_str = str(yield_val).replace('%', '').strip()
+                    val_float = float(yield_str)
+                    if val_float > 1.0:
+                        val_float /= 100.0
+                    yield_rate = round(val_float, 4)
                 except ValueError:
                     pass
                     
@@ -212,10 +235,14 @@ def parse_and_save_ksht_summary(filepath: str, db: Session, user_id: int = None,
                 
             for c_idx, b_num in bin_cols.items():
                 rate_val = sh_sum.cell(r, c_idx + 1).value
-                if rate_val is not None and die_count:
+                if rate_val is not None:
                     try:
-                        rate_float = float(str(rate_val).replace('%', '').strip()) / 100.0
-                        sbin_counts[b_num] = int(round(die_count * rate_float))
+                        rate_str = str(rate_val).replace('%', '').strip()
+                        val_float = float(rate_str)
+                        if '%' in str(rate_val) or (val_float > 0 and val_float < 1.0):
+                            sbin_counts[b_num] = int(round(die_count * val_float))
+                        else:
+                            sbin_counts[b_num] = int(round(val_float))
                     except ValueError:
                         pass
                         
@@ -279,9 +306,9 @@ def parse_and_save_ksht_summary(filepath: str, db: Session, user_id: int = None,
             pass_count=w["pass_count"],
             yield_rate=w["yield_rate"],
             osat_name=osat_name,
-            test_date=w["test_finish"],
+            test_date=w["test_finish"] if w["test_finish"] else datetime.now(),
             beginning_time=w["test_start"],
-            ending_time=w["test_finish"],
+            ending_time=w["test_finish"] if w["test_finish"] else datetime.now(),
         )
         
         db.add(lot)

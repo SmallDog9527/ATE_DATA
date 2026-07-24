@@ -552,13 +552,10 @@ def run_lot_auto_check(lot, db):
                 use_weights = weights_runs[run]
                 df = df_original.copy()
 
-                # 计算指纹值
-                param_data = df[selected_params].astype(float)
-                fingerprints = []
-                for idx, p in enumerate(selected_params):
-                    fingerprints.append(param_data[p] * use_weights[idx])
-                
-                df['fingerprint'] = pd.concat(fingerprints, axis=1).sum(axis=1)
+                # Optimize by using numpy matrix dot product, avoiding loop copy and pd.concat
+                param_values = df[selected_params].astype(float).fillna(0.0).values
+                weights_vector = np.array(use_weights)
+                df['fingerprint'] = param_values @ weights_vector
                 
                 site_col = 'SITE_NUM' if 'SITE_NUM' in df.columns else None
                 alarm_count = 0

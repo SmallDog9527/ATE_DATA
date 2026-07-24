@@ -592,14 +592,19 @@ def parse_lbs(filepath: str, tester: str) -> ParsedData:
 
     df = df.rename(columns=rename_map)
 
+    # Bulk convert columns to numeric to avoid DataFrame copy-on-write fragmentation
+    cols_to_convert = []
     for col in ['SITE_NUM', 'SOFT_BIN', 'X_COORD', 'Y_COORD']:
         if col not in df.columns:
             df[col] = None
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+        cols_to_convert.append(col)
 
     for pname in result.param_names:
         if pname in df.columns:
-            df[pname] = pd.to_numeric(df[pname], errors='coerce')
+            cols_to_convert.append(pname)
+
+    if cols_to_convert:
+        df[cols_to_convert] = df[cols_to_convert].apply(pd.to_numeric, errors='coerce')
 
     df = df.dropna(subset=['SITE_NUM']).reset_index(drop=True)
 

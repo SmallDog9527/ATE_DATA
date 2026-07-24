@@ -727,7 +727,10 @@
           <div class="form-grid">
             <div class="form-field">
               <label>OSAT 名称 *</label>
-              <input v-model="osatModal.name" placeholder="如 CMC、JCET" />
+              <input v-model="osatModal.name" placeholder="如 HTKS_JS, LBS, Chipmore, UCD" />
+              <span style="font-size: 11px; color: #64748b; margin-top: 4px; display: block; line-height: 1.4;">
+                支持的标准解析格式识别标识: <strong>chipmore, lbs, ksht/htks, ucd</strong> (忽略大小写)
+              </span>
             </div>
             <div class="form-field">
               <label>协议 *</label>

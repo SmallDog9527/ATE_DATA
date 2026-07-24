@@ -61,8 +61,8 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://admin:3344520Qq@db:5432/chip_data}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       SECRET_KEY: ${SECRET_KEY:-chip-ate-analysis-system-secret-key-2026}
-      APP_ENV: development
-      DEBUG: "true"
+      APP_ENV: ${APP_ENV:-production}
+      DEBUG: ${DEBUG:-false}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
       MAX_USER_STORAGE_GB: ${MAX_USER_STORAGE_GB:-10}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -74,8 +74,8 @@ services:
       APP_URL: ${APP_URL:-http://localhost:5174}
     volumes:
       - ./backend:/app
-      - /home/ATE_DATA/uploads:/app/uploads
-      - /home/ATE_DATA/FTP:/tmp/FTP
+      - /data/ATE_DATA/uploads:/app/uploads
+      - /data/ATE_DATA/FTP:/tmp/FTP
 
   frontend:
     image: node:20-alpine

@@ -5,7 +5,7 @@ from app.api.routes import settings as settings_router
 
 app = FastAPI(
     title="Chip ATE Analysis System",
-    version="0.2.0"
+    version="0.3.0"
 )
 
 app.add_middleware(

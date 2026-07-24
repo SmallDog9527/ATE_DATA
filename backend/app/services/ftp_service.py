@@ -23,6 +23,66 @@ from app.core.database import SessionLocal
 from app.services.smtp_dynamic import decrypt_password
 
 
+def get_memory_usage_percent() -> float:
+    try:
+        if os.path.exists("/proc/meminfo"):
+            with open("/proc/meminfo", "r") as f:
+                lines = f.readlines()
+            mem_total = 0
+            mem_avail = 0
+            for line in lines:
+                if line.startswith("MemTotal:"):
+                    mem_total = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    mem_avail = int(line.split()[1])
+            if mem_total > 0:
+                return 100.0 * (1.0 - (mem_avail / mem_total))
+    except Exception:
+        pass
+    
+    try:
+        import psutil
+        return psutil.virtual_memory().percent
+    except ImportError:
+        pass
+        
+    return 0.0
+
+class DynamicConcurrencyController:
+    def __init__(self, normal_limit: int = 3, high_mem_limit: int = 1):
+        self.normal_limit = normal_limit
+        self.high_mem_limit = high_mem_limit
+        self.current_limit = normal_limit
+        self.running_count = 0
+        self.cond = threading.Condition()
+
+    def acquire(self):
+        with self.cond:
+            while True:
+                percent = get_memory_usage_percent()
+                if percent >= 80.0:
+                    if self.current_limit != self.high_mem_limit:
+                        print(f"[concurrency] Memory usage is {percent:.1f}%, throttling concurrency limit to {self.high_mem_limit} thread.")
+                    self.current_limit = self.high_mem_limit
+                elif percent <= 60.0:
+                    if self.current_limit != self.normal_limit:
+                        print(f"[concurrency] Memory usage is {percent:.1f}%, restoring concurrency limit to {self.normal_limit} threads.")
+                    self.current_limit = self.normal_limit
+
+                if self.running_count < self.current_limit:
+                    self.running_count += 1
+                    break
+                self.cond.wait(timeout=1.0)
+
+    def release(self):
+        with self.cond:
+            self.running_count -= 1
+            self.cond.notify_all()
+
+concurrency_controller = DynamicConcurrencyController(normal_limit=3, high_mem_limit=1)
+
+
+
 
 def _detect_osat_data_type(osat, filename: str, parsed_test_stage: Optional[str]) -> str:
     base_name = os.path.splitext(os.path.basename(filename))[0].strip()
@@ -366,7 +426,23 @@ def scan_ftp_files(osat, scan_type: str = 'both') -> List[str]:
 _MAX_FAIL_RETRIES = 3
 PROCESSING_TIMEOUT_MINUTES = 40   # Records stuck in processing for more than this many minutes are marked as failed
 _DOWNLOAD_WORKERS = 10            # Number of concurrent FTP download threads
-_PARSE_WORKERS = 3                # 并发解析线程数
+_PARSE_WORKERS = 5
+
+def get_parse_workers_count() -> int:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
+        tz = ZoneInfo("Asia/Shanghai")
+        now = datetime.now(tz)
+        is_weekday = now.weekday() < 5
+        is_work_hours = 9 <= now.hour < 19
+        if is_weekday and is_work_hours:
+            return 8
+        else:
+            return 12
+    except Exception as e:
+        print("[concurrency] Failed to calculate dynamic parse workers count: " + str(e))
+        return 8                # 并发解析线程数
 
 
 def get_new_files(db, osat_id: int, all_remote_paths: list) -> list:
@@ -1440,6 +1516,14 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
 
 def _do_parse(log_id: int, osat_id: int, remote_path: str,
               tmp_dir: str, csv_files_to_process: list, admin_user_id: int) -> dict:
+    concurrency_controller.acquire()
+    try:
+        return _do_parse_internal(log_id, osat_id, remote_path, tmp_dir, csv_files_to_process, admin_user_id)
+    finally:
+        concurrency_controller.release()
+
+def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
+                       tmp_dir: str, csv_files_to_process: list, admin_user_id: int) -> dict:
     """
     [Parse Stage] Run in a separate thread:
     1. Parse files in csv_files_to_process from EXTRACTED_DIR
@@ -1931,19 +2015,61 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
                 print(f"[ftp_parse] Cleanup: Deleted failed parse file from uploads: {save_path}")
             except Exception as ex:
                 print(f"[ftp_parse] Failed to delete failed file {save_path}: {ex}")
+        # Check if the error is due to OLE2 corruption/truncation in an LBS summary file
+        is_corruption = False
+        err_str = str(e)
+        if 'filename' in locals() and filename and 'lbs' in filename.lower() and (
+            'CompDocError' in err_str or 
+            'XLRDError' in err_str or 
+            'MSAT' in err_str or 
+            'sector' in err_str or 
+            'index out of range' in err_str or 
+            'Expected BOF record' in err_str
+        ):
+            is_corruption = True
+
         err_msg = f"[Parse Failed] {str(e)[:450]}"
         err_db = SessionLocal()
         try:
             log_rec = err_db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
             if log_rec:
-                log_rec.status = 'failed'
-                log_rec.error_msg = err_msg
+                if is_corruption:
+                    log_rec.status = 'scanned'
+                    log_rec.error_msg = None
+                    print(f"[ftp_parse] Corrupted/truncated LBS file detected: {filename}. Resetting status to 'scanned' for re-download.")
+                else:
+                    log_rec.status = 'failed'
+                    log_rec.error_msg = err_msg
                 log_rec.uploaded_at = datetime.now(timezone.utc)
                 err_db.commit()
-        except Exception:
+        except Exception as db_ex:
+            print(f"[ftp_parse] Failed to update FtpUploadLog: {db_ex}")
             err_db.rollback()
         finally:
             err_db.close()
+
+        if is_corruption:
+            # 1. Clear database extracted log to allow re-extraction
+            try:
+                from app.models.ftp_extracted_file import FtpExtractedFile
+                db_ext = SessionLocal()
+                db_ext.query(FtpExtractedFile).filter(
+                    FtpExtractedFile.ftp_log_id == log_id
+                ).delete(synchronize_session=False)
+                db_ext.commit()
+                db_ext.close()
+            except Exception as db_ex:
+                print(f"[ftp_parse] Failed to delete FtpExtractedFile entries: {db_ex}")
+
+            # 2. Delete the local corrupted/truncated files from extracted directory
+            if 'csv_files_to_process' in locals() and csv_files_to_process:
+                for fp in csv_files_to_process:
+                    if os.path.exists(fp):
+                        try:
+                            os.remove(fp)
+                            print(f"[ftp_parse] Deleted corrupted extracted file: {fp}")
+                        except Exception as ex:
+                            print(f"[ftp_parse] Failed to delete extracted file {fp}: {ex}")
         raise
     finally:
         try:
@@ -2142,7 +2268,9 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
             print(f"[ftp_fetch] Error checking fetch window for dynamic workers adjustment: {ex}")
 
         download_pool = ThreadPoolExecutor(max_workers=download_workers, thread_name_prefix="ftp_dl")
-        parse_pool = ThreadPoolExecutor(max_workers=_PARSE_WORKERS, thread_name_prefix="ftp_parse")
+        workers_count = get_parse_workers_count()
+        print("[ftp_fetch] Initialized parse pool with " + str(workers_count) + " workers dynamically based on working hours.")
+        parse_pool = ThreadPoolExecutor(max_workers=workers_count, thread_name_prefix="ftp_parse")
 
         def process_batch(paths, batch_name):
             if not paths:

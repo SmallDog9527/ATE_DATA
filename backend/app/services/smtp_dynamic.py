@@ -63,6 +63,8 @@ def get_smtp_config(db) -> Optional[dict]:
 
 def send_smtp_with_config(config: dict, to_email: str, subject: str,
                           html_body: str, text_body: str = None):
+    print(f"[smtp_dynamic] Email sending is globally disabled. Skip sending config-based email to {to_email}")
+    return
     """
     使用指定配置发送邮件。
     config 来自 get_smtp_config() 或手动构建的 dict。
@@ -152,6 +154,8 @@ def send_smtp_auto(db, to_email: str, subject: str, html_body: str, text_body: s
 
 def send_smtp_attachment_auto(db, to_email: str, subject: str, html_body: str,
                               attachment_bytes: bytes, attachment_name: str):
+    print(f"[smtp_dynamic] Email sending with attachments is globally disabled. Skip sending to {to_email}")
+    return
     """
     发送带有附件的邮件，优先使用数据库中的配置，无配置则 fallback 到 .env。
     """

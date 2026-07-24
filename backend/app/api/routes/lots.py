@@ -347,14 +347,15 @@ async def _process_csv_paths(
         csv_name = os.path.basename(csv_path)
 
         # Check if file already exists in physical directory or Lot DB records (and not deleted)
-        if not is_summary_file(csv_name):
-            physical_zip_path = os.path.join(DATA_DIR, f"{csv_name}.zip")
-            if os.path.exists(physical_zip_path) or os.path.exists(os.path.join(DATA_DIR, csv_name)):
-                raise HTTPException(status_code=400, detail=f"数据文件 '{csv_name}' 已存在，无需重复上传解析")
-        else:
-            physical_sum_path = os.path.join(SUMMARY_DIR, csv_name)
-            if os.path.exists(physical_sum_path):
-                raise HTTPException(status_code=400, detail=f"汇总文件 '{csv_name}' 已存在，无需重复上传解析")
+        if is_zip:
+            if not is_summary_file(csv_name):
+                physical_zip_path = os.path.join(DATA_DIR, f"{csv_name}.zip")
+                if os.path.exists(physical_zip_path) or os.path.exists(os.path.join(DATA_DIR, csv_name)):
+                    raise HTTPException(status_code=400, detail=f"数据文件 '{csv_name}' 已存在，无需重复上传解析")
+            else:
+                physical_sum_path = os.path.join(SUMMARY_DIR, csv_name)
+                if os.path.exists(physical_sum_path):
+                    raise HTTPException(status_code=400, detail=f"汇总文件 '{csv_name}' 已存在，无需重复上传解析")
 
         existing_lot = db.query(Lot).filter(
             Lot.filename == csv_name,
@@ -1487,9 +1488,12 @@ def get_lots(
         # 这样 QA 文件（data_type='QA'）也会出现在对应的 OSAT_CP/OSAT_FT Tab 中
         if osat_type:
             from app.models.osat_config import OsatConfig
-            osat_names_for_type = [
-                r[0] for r in db.query(OsatConfig.name).filter(OsatConfig.data_type == osat_type).all()
-            ]
+            osat_names_for_type = []
+            for r in db.query(OsatConfig.name).filter(OsatConfig.data_type == osat_type).all():
+                name = r[0]
+                osat_names_for_type.append(name)
+                if '_' in name:
+                    osat_names_for_type.append(name.split('_')[0])
             query = query.filter(Lot.osat_name.in_(osat_names_for_type))
         if test_date_from:
             query = query.filter(Lot.test_date >= datetime.strptime(test_date_from, "%Y-%m-%d"))
@@ -1508,9 +1512,12 @@ def get_lots(
         # 填充 osat_type：从 osat_config 读取每个 lot 所属 OSAT 的 CP/FT 分类
         # 这样前端可以按 osat_type 过滤 Tab，而不是按 lot.data_type
         from app.models.osat_config import OsatConfig
-        osat_type_map = {
-            r[0]: r[1] for r in db.query(OsatConfig.name, OsatConfig.data_type).all()
-        }
+        osat_type_map = {}
+        for name, dtype in db.query(OsatConfig.name, OsatConfig.data_type).all():
+            osat_type_map[name] = dtype
+            if '_' in name:
+                osat_type_map[name.split('_')[0]] = dtype
+                
         for item in items:
             if item.osat_name and item.data_source == 'ftp':
                 item.osat_type = osat_type_map.get(item.osat_name)
