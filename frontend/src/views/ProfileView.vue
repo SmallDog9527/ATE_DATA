@@ -384,6 +384,9 @@
             <button :class="['preset-btn', activeLogSubTab === 'summary' ? 'active' : '']" @click="activeLogSubTab = 'summary'">
               📊 FTP 日志汇总
             </button>
+            <button :class="['preset-btn', activeLogSubTab === 'search' ? 'active' : '']" @click="activeLogSubTab = 'search'">
+              🔍 FTP 全量快照检索
+            </button>
           </div>
 
           <!-- FTP 自动上传日志 content -->
@@ -623,6 +626,97 @@
                 </tr>
               </tbody>
             </table>
+          </template>
+
+          <!-- 🔍 FTP 全量快照检索 content (位于 FTP 日志汇总右侧) -->
+          <template v-if="activeLogSubTab === 'search' && (authStore.isAdmin || authStore.isEng)">
+            <div class="log-filter-row" style="margin-bottom:12px;">
+              <select v-model="snapshotFilterOsat" @change="snapshotPage = 1; loadSnapshotSearch()" class="filter-select-sm">
+                <option value="">全部 OSAT</option>
+                <option v-for="o in osatList" :key="o.id" :value="o.id">{{ o.name }}</option>
+              </select>
+              <select v-model="snapshotFilterStatus" @change="snapshotPage = 1; loadSnapshotSearch()" class="filter-select-sm">
+                <option value="">全部状态</option>
+                <option value="success">✅ 成功入库/处理</option>
+                <option value="failed">❌ 失败/异常</option>
+                <option value="pending">⏳ 排队/待处理</option>
+                <option value="scanned">🔍 快照未下载</option>
+              </select>
+              <input 
+                v-model="snapshotSearchQuery" 
+                @input="onSnapshotSearchInput" 
+                placeholder="🔍 实时输入 LOT 号 (如 KD06437_W14)、文件名或 FTP 路径..." 
+                class="filter-input-sm" 
+                style="width:350px;padding:5px 10px;border-radius:6px;border:1px solid #cbd5e1;outline:none;font-size:13px;" 
+              />
+              <button class="btn-sm" @click="resetSnapshotSearch">🔄 重置</button>
+            </div>
+
+            <div class="log-table-wrapper" style="margin-top: 12px;">
+              <div v-if="snapshotLoading" class="loading-state" style="padding:24px;text-align:center;color:#64748b;">⏳ 正在检索全量 FTP 扫描快照...</div>
+              <div v-else-if="!snapshotItems.length" class="empty-tip" style="padding:40px 24px;text-align:center;color:#64748b;background:#fff;border-radius:8px;margin-top:12px;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+                <div style="font-size:32px;margin-bottom:8px;">🔍</div>
+                <div style="font-size:14px;font-weight:500;color:#334155;">请输入 LOT 号 (例: A0E0365)、文件名或选择筛选条件进行检索</div>
+                <div style="font-size:12px;color:#94a3b8;margin-top:4px;">系统将全量检索数据库中已扫描保存的全部 FTP 快照与历史记录 (包括已移入 Del 或跳过的数据)</div>
+              </div>
+              <table v-else class="log-table" style="width:100%;table-layout:fixed;">
+                <colgroup>
+                  <col style="width:90px;" />
+                  <col style="min-width:360px;" />
+                  <col style="width:180px;" />
+                  <col style="width:80px;" />
+                  <col style="width:135px;" />
+                  <col style="width:105px;" />
+                  <col style="width:110px;" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th style="width:90px;white-space:nowrap;">OSAT</th>
+                    <th style="white-space:nowrap;resize:horizontal;overflow:auto;display:block;min-width:360px;cursor:col-resize;" title="可拖拽右下角或右侧边缘自由调整宽度">
+                      ↔ 文件名 (可拖拽拉宽)
+                    </th>
+                    <th style="width:180px;white-space:nowrap;">FTP 远程路径</th>
+                    <th style="width:80px;white-space:nowrap;text-align:center;">大小</th>
+                    <th style="width:135px;white-space:nowrap;text-align:center;">时间</th>
+                    <th style="width:105px;white-space:nowrap;text-align:center;">状态</th>
+                    <th style="width:110px;white-space:nowrap;text-align:center;">关联 Lot</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="item in snapshotItems" :key="item.id">
+                    <td style="white-space:nowrap;"><span class="osat-tag">{{ item.osat_name || 'OSAT-' + item.osat_id }}</span></td>
+                    <td style="font-family:monospace;font-weight:600;color:#1e293b;word-break:break-all;white-space:normal;overflow-wrap:anywhere;">
+                      {{ item.filename || item.remote_path.split('/').pop() }}
+                    </td>
+                    <td class="log-path" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" :title="item.remote_path">
+                      {{ item.remote_path }}
+                    </td>
+                    <td style="text-align:center;white-space:nowrap;">{{ item.file_size ? fmtBytes(item.file_size) : '—' }}</td>
+                    <td style="text-align:center;white-space:nowrap;font-size:12px;color:#64748b;">{{ fmtDate(item.uploaded_at) }}</td>
+                    <td style="text-align:center;white-space:nowrap;">
+                      <span v-if="item.status === 'success'" class="badge green">✅ 成功</span>
+                      <span v-else-if="item.status === 'failed'" class="badge red" :title="item.error_msg">❌ 失败</span>
+                      <span v-else-if="item.status === 'scanned'" class="badge blue">🔍 快照未下载</span>
+                      <span v-else class="badge gray">⏳ {{ item.status }}</span>
+                    </td>
+                    <td style="text-align:center;white-space:nowrap;">
+                      <RouterLink v-if="item.lot_id_created" :to="`/lot/${item.lot_id_created}`" class="btn-sm" style="text-decoration:none;padding:2px 8px;font-size:11px;" target="_blank">
+                        查看 Lot#{{ item.lot_id_created }}
+                      </RouterLink>
+                      <span v-else-if="item.status === 'success'" style="color:#94a3b8;font-size:12px;">已跳过/Del</span>
+                      <span v-else style="color:#94a3b8;font-size:12px;">—</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- 分页栏 -->
+            <div v-if="snapshotTotal > snapshotPageSize" class="log-pagination" style="margin-top: 16px;">
+              <button :disabled="snapshotPage === 1" @click="snapshotPage--; loadSnapshotSearch()" class="btn-sm">上一页</button>
+              <span>第 {{ snapshotPage }} 页 / 共 {{ Math.ceil(snapshotTotal / snapshotPageSize) }} 页 (共 {{ snapshotTotal }} 条)</span>
+              <button :disabled="snapshotPage * snapshotPageSize >= snapshotTotal" @click="snapshotPage++; loadSnapshotSearch()" class="btn-sm">下一页</button>
+            </div>
           </template>
         </div>
       </div>
@@ -1367,6 +1461,61 @@ const logsLoading    = ref(false)
 const logFilterOsat  = ref<number | ''>('')
 const logFilterStatus = ref('')
 const logPage        = ref(1)
+
+
+// ── 🔍 全量 FTP 快照检索页面 ──
+const snapshotItems        = ref<FtpLog[]>([])
+const snapshotLoading      = ref(false)
+const snapshotSearchQuery  = ref('')
+const snapshotFilterOsat   = ref<number | ''>('')
+const snapshotFilterStatus = ref('')
+const snapshotPage         = ref(1)
+const snapshotPageSize     = ref(20)
+const snapshotTotal        = ref(0)
+
+let snapshotSearchTimer: any = null
+
+function onSnapshotSearchInput() {
+  snapshotPage.value = 1
+  if (snapshotSearchTimer) clearTimeout(snapshotSearchTimer)
+  snapshotSearchTimer = setTimeout(() => {
+    loadSnapshotSearch()
+  }, 250)
+}
+
+async function loadSnapshotSearch() {
+  if (!snapshotSearchQuery.value.trim() && !snapshotFilterOsat.value && !snapshotFilterStatus.value) {
+    snapshotItems.value = []
+    snapshotTotal.value = 0
+    return
+  }
+  snapshotLoading.value = true
+  try {
+    const params: any = {
+      page: snapshotPage.value,
+      page_size: snapshotPageSize.value,
+      include_scanned: true,
+    }
+    if (snapshotFilterOsat.value) params.osat_id = snapshotFilterOsat.value
+    if (snapshotFilterStatus.value) params.status = snapshotFilterStatus.value
+    if (snapshotSearchQuery.value.trim()) params.search = snapshotSearchQuery.value.trim()
+    const data: any = await api.get('/settings/ftp-logs', { params })
+    snapshotItems.value = data.items || []
+    snapshotTotal.value = data.total || 0
+  } catch (e: any) {
+    console.error('Failed to load snapshot search:', e)
+  } finally {
+    snapshotLoading.value = false
+  }
+}
+
+function resetSnapshotSearch() {
+  snapshotSearchQuery.value = ''
+  snapshotFilterOsat.value = ''
+  snapshotFilterStatus.value = ''
+  snapshotPage.value = 1
+  loadSnapshotSearch()
+}
 const logPageSize    = ref(20)
 const logTotal       = ref(0)
 

@@ -424,7 +424,7 @@ def scan_ftp_files(osat, scan_type: str = 'both') -> List[str]:
 
 # Maximum failed retries allowed for a single file (files exceeding this limit will be skipped)
 _MAX_FAIL_RETRIES = 3
-PROCESSING_TIMEOUT_MINUTES = 40   # Records stuck in processing for more than this many minutes are marked as failed
+PROCESSING_TIMEOUT_MINUTES = 30   # Records stuck in processing for more than this many minutes are marked as failed
 _DOWNLOAD_WORKERS = 10            # Number of concurrent FTP download threads
 _PARSE_WORKERS = 5
 
@@ -1323,16 +1323,10 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
             db.commit()
 
         # Helper functions to check if file already exists/processed
-        def file_exists_in_extracted(fname: str) -> bool:
-            for f in os.listdir(EXTRACTED_DIR):
-                if f.endswith(f"_{fname}"):
-                    return True
-            return False
-
         def file_exists_in_db(fname: str) -> bool:
             existing_lot = db.query(Lot).filter(
                 Lot.filename == fname,
-                Lot.status.in_(['processed', 'pending', 'processing'])
+                Lot.status == 'processed'
             ).first()
             return existing_lot is not None
 
@@ -1372,9 +1366,18 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
                     for f in files:
                         full_f_path = os.path.join(root, f)
                         if is_processable_file(f):
-                            # Duplicate check: discard if file exists in extracted or DB
-                            if file_exists_in_extracted(f) or file_exists_in_db(f):
-                                print(f"[ftp_dl] Duplicate file '{f}' discarded during extraction")
+                            # Overwrite cleanup: remove any old extracted file with the same original name
+                            for old_f in os.listdir(EXTRACTED_DIR):
+                                if old_f.endswith(f"_{f}"):
+                                    try:
+                                        os.remove(os.path.join(EXTRACTED_DIR, old_f))
+                                        print(f"[ftp_dl] Overwrote old extracted file: {old_f}")
+                                    except Exception as e:
+                                        print(f"[ftp_dl] Overwrite cleanup failed for {old_f}: {e}")
+                            
+                            # Duplicate check: skip if already successfully processed in Lot DB
+                            if file_exists_in_db(f):
+                                print(f"[ftp_dl] Duplicate file '{f}' already processed, discarding")
                                 continue
                             
                             dest_path = os.path.join(EXTRACTED_DIR, f"{log_id}_{f}")
@@ -1414,8 +1417,17 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
         else:
             # Single file download
             if is_processable_file(filename):
-                if file_exists_in_extracted(filename) or file_exists_in_db(filename):
-                    print(f"[ftp_dl] Duplicate file '{filename}' discarded")
+                # Overwrite cleanup: remove any old extracted file with the same original name
+                for old_f in os.listdir(EXTRACTED_DIR):
+                    if old_f.endswith(f"_{filename}"):
+                        try:
+                            os.remove(os.path.join(EXTRACTED_DIR, old_f))
+                            print(f"[ftp_dl] Overwrote old extracted file: {old_f}")
+                        except Exception as e:
+                            print(f"[ftp_dl] Overwrite cleanup failed for {old_f}: {e}")
+
+                if file_exists_in_db(filename):
+                    print(f"[ftp_dl] Duplicate file '{filename}' already processed, discarding")
                     log.status = 'success'
                     log.uploaded_at = datetime.now(timezone.utc)
                     db.commit()
@@ -1518,7 +1530,41 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
               tmp_dir: str, csv_files_to_process: list, admin_user_id: int) -> dict:
     concurrency_controller.acquire()
     try:
-        return _do_parse_internal(log_id, osat_id, remote_path, tmp_dir, csv_files_to_process, admin_user_id)
+        import multiprocessing
+        p = multiprocessing.Process(
+            target=_do_parse_internal,
+            args=(log_id, osat_id, remote_path, tmp_dir, csv_files_to_process, admin_user_id)
+        )
+        p.start()
+        
+        # Wait for at most 30 minutes (1800 seconds)
+        p.join(timeout=1800)
+        
+        if p.is_alive():
+            print(f"[ftp_fetch] Timeout reached: killing parsing process for log_id={log_id}")
+            p.terminate()
+            p.join(timeout=5)
+            if p.is_alive():
+                p.kill()
+                p.join()
+            
+            # Mark record as failed in database
+            db = SessionLocal()
+            try:
+                log_rec = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+                if log_rec:
+                    log_rec.status = 'failed'
+                    log_rec.error_msg = 'Parsing timeout (not completed within 30 minutes, automatically marked as failed)'
+                    db.commit()
+                    print(f"[ftp_fetch] Marked log_id={log_id} as failed in DB due to timeout")
+            except Exception as db_exc:
+                print(f"[ftp_fetch] Database update error on timeout: {db_exc}")
+            finally:
+                db.close()
+            
+            return {"status": "timeout"}
+            
+        return {"status": "completed"}
     finally:
         concurrency_controller.release()
 

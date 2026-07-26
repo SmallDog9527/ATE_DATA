@@ -1,3 +1,4 @@
+from sqlalchemy import or_
 """
 settings.py  —  系统设置 API（仅管理员）
 包含：SMTP邮箱配置、OSAT/FTP管理、上传日志查询
@@ -236,16 +237,30 @@ def get_ftp_logs(
     _: User = Depends(require_admin_or_eng),
     osat_id: Optional[int] = None,
     status: Optional[str] = None,
+    search: Optional[str] = None,
+    include_scanned: bool = False,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
-    """查询 FTP 上传日志（支持按 OSAT / 状态筛选，分页）"""
-    # Exclude scanned files that are waiting to be downloaded
-    query = db.query(FtpUploadLog).filter(FtpUploadLog.status != 'scanned')
+    """查询 FTP 上传与快照扫描日志（支持按 LOT/文件名/路径模糊搜索，支持全部快照文件检索）"""
+    query = db.query(FtpUploadLog)
+    
+    # 若有搜索词或显式勾选包含快照文件，则搜索包含 'scanned' 的全部记录
+    if not search and not include_scanned:
+        query = query.filter(FtpUploadLog.status != 'scanned')
+        
     if osat_id:
         query = query.filter(FtpUploadLog.osat_id == osat_id)
     if status:
         query = query.filter(FtpUploadLog.status == status)
+    if search and search.strip():
+        search_kw = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                FtpUploadLog.remote_path.ilike(search_kw),
+                FtpUploadLog.filename.ilike(search_kw)
+            )
+        )
 
     total = query.count()
     logs = (

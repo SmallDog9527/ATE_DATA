@@ -369,7 +369,7 @@ def directory_growth_monitor_job():
     from app.core.redis_client import get_redis
 
     dirs = ["/tmp/FTP/download", "/tmp/FTP/extracted", "/app/uploads", "/app"]
-    limit_increase = 4 * 1024 * 1024 * 1024  # 4 GB
+    limit_increase = 10 * 1024 * 1024 * 1024  # 10 GB
     limit_absolute = 40 * 1024 * 1024 * 1024  # 40 GB absolute limit for temp folders
     resume_threshold = 3 * 1024 * 1024 * 1024  # 3 GB resume threshold
 
@@ -396,7 +396,7 @@ def directory_growth_monitor_job():
 
         if increase > limit_increase:
             triggered = True
-            trigger_reason = f"Directory {d} grew by {increase / (1024**2):.1f} MB (exceeded 4GB limit) in 1 minute."
+            trigger_reason = f"Directory {d} grew by {increase / (1024**2):.1f} MB (exceeded 10GB limit) in 1 minute."
             break
             
         # Absolute limit check for temp folders

@@ -16,8 +16,18 @@ interface User {
 
 export const useAuthStore = defineStore('auth', () => {
   // 从 localStorage 恢复状态（避免刷新丢失）
-  const _savedUser = localStorage.getItem('user')
-  const user       = ref<User | null>(_savedUser ? JSON.parse(_savedUser) : null)
+  let _savedUser: User | null = null
+  try {
+    const raw = localStorage.getItem('user')
+    if (raw && raw !== 'undefined' && raw !== 'null') {
+      _savedUser = JSON.parse(raw)
+    }
+  } catch (e) {
+    console.warn('Failed to parse user from localStorage:', e)
+    localStorage.removeItem('user')
+  }
+
+  const user         = ref<User | null>(_savedUser)
   const accessToken  = ref<string | null>(localStorage.getItem('access_token'))
   const refreshToken = ref<string | null>(localStorage.getItem('refresh_token'))
 
