@@ -2133,6 +2133,34 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
 # 保存 FTP 扫描快照数据
 # ──────────────────────────────────────────
 
+def _should_ignore_ftp_file(path: str) -> bool:
+    """
+    Determine if an FTP file should be marked as ignored and skipped from download.
+    Rules:
+    1. Files ending with FAILSUMMARY.csv (or FAILSUMMARY.csv.gz, case-insensitive).
+    2. Log archive files ending with *.log.gz or *.log.<archive_ext> (e.g., .log.zip, .log.7z, .log.tar.gz).
+    """
+    if not path:
+        return False
+    fname_lower = os.path.basename(path).lower()
+
+    # Rule 1: Ignore FAILSUMMARY.csv files
+    if 'failsummary.csv' in fname_lower:
+        return True
+
+    # Rule 2: Ignore log archive files (*.log.gz, *.log.zip, *.log.tar.gz, etc.)
+    archive_exts = ('.gz', '.zip', '.7z', '.rar', '.tar', '.bz2', '.xz', '.tgz')
+    if fname_lower.endswith('.log.gz'):
+        return True
+    if '.log.' in fname_lower:
+        after_log = fname_lower[fname_lower.rfind('.log.'):]
+        for ext in archive_exts:
+            if after_log.endswith(ext):
+                return True
+
+    return False
+
+
 def _save_scan_snapshot(db, osat_id: int, all_paths: list):
     """Save or update daily FTP scan statistics (24h success/fail & current backlog)."""
     from app.models.ftp_scan_snapshot import FtpScanSnapshot
@@ -2285,10 +2313,25 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                 return True
             return False
 
-        # Step 0: Reset stuck processing logs
+        # Step 0: Reset stuck processing logs and update ignored files
         reset_count = _reset_stuck_processing_logs(db)
         if reset_count:
             print(f"[ftp_fetch] Reset {reset_count} stuck processing logs to failed")
+
+        # Mark existing scanned/pending logs that match ignore rules as ignored
+        existing_unprocessed = db.query(FtpUploadLog).filter(
+            FtpUploadLog.osat_id == osat_id,
+            FtpUploadLog.status.in_(['scanned', 'pending'])
+        ).all()
+        ignored_count = 0
+        for log_item in existing_unprocessed:
+            if _should_ignore_ftp_file(log_item.remote_path or log_item.filename):
+                log_item.status = 'ignored'
+                log_item.error_msg = 'Ignored by scan rule (log archive / FAILSUMMARY.csv)'
+                ignored_count += 1
+        if ignored_count > 0:
+            db.commit()
+            print(f"[ftp_fetch] Updated {ignored_count} existing scanned/pending logs to ignored status")
 
         # Step 1: Determine if we need to scan FTP today
         shanghai_tz = ZoneInfo("Asia/Shanghai")
@@ -2325,6 +2368,8 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
 
             dl_futures = {}
             for path in paths:
+                if _should_ignore_ftp_file(path):
+                    continue
                 fname = os.path.basename(path)
                 existing = db.query(FtpUploadLog).filter(
                     FtpUploadLog.osat_id == osat_id,
@@ -2441,12 +2486,21 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
             new_logs = []
             for path in new_summary_paths:
                 fname = os.path.basename(path)
-                new_logs.append(FtpUploadLog(
-                    osat_id=osat_id,
-                    remote_path=path,
-                    filename=fname,
-                    status='scanned',
-                ))
+                if _should_ignore_ftp_file(path):
+                    new_logs.append(FtpUploadLog(
+                        osat_id=osat_id,
+                        remote_path=path,
+                        filename=fname,
+                        status='ignored',
+                        error_msg='Ignored by scan rule (log archive / FAILSUMMARY.csv)',
+                    ))
+                else:
+                    new_logs.append(FtpUploadLog(
+                        osat_id=osat_id,
+                        remote_path=path,
+                        filename=fname,
+                        status='scanned',
+                    ))
             if new_logs:
                 db.bulk_save_objects(new_logs)
                 db.commit()
@@ -2517,12 +2571,21 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
             new_logs = []
             for path in new_data_paths:
                 fname = os.path.basename(path)
-                new_logs.append(FtpUploadLog(
-                    osat_id=osat_id,
-                    remote_path=path,
-                    filename=fname,
-                    status='scanned',
-                ))
+                if _should_ignore_ftp_file(path):
+                    new_logs.append(FtpUploadLog(
+                        osat_id=osat_id,
+                        remote_path=path,
+                        filename=fname,
+                        status='ignored',
+                        error_msg='Ignored by scan rule (log archive / FAILSUMMARY.csv)',
+                    ))
+                else:
+                    new_logs.append(FtpUploadLog(
+                        osat_id=osat_id,
+                        remote_path=path,
+                        filename=fname,
+                        status='scanned',
+                    ))
             if new_logs:
                 db.bulk_save_objects(new_logs)
                 db.commit()

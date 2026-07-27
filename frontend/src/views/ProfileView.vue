@@ -641,6 +641,7 @@
                 <option value="failed">❌ 失败/异常</option>
                 <option value="pending">⏳ 排队/待处理</option>
                 <option value="scanned">🔍 快照未下载</option>
+                <option value="ignored">⚪ ignore</option>
               </select>
               <input 
                 v-model="snapshotSearchQuery" 
@@ -697,6 +698,7 @@
                       <span v-if="item.status === 'success'" class="badge green">✅ 成功</span>
                       <span v-else-if="item.status === 'failed'" class="badge red" :title="item.error_msg">❌ 失败</span>
                       <span v-else-if="item.status === 'scanned'" class="badge blue">🔍 快照未下载</span>
+                      <span v-else-if="item.status === 'ignored' || item.status === 'ignore'" class="badge gray">⚪ ignore</span>
                       <span v-else class="badge gray">⏳ {{ item.status }}</span>
                     </td>
                     <td style="text-align:center;white-space:nowrap;">
