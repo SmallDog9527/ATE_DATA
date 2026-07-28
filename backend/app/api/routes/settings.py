@@ -333,12 +333,13 @@ def retry_failed_ftp_log(
                     files.append(fpath)
                 
     if not files:
+        # Fallback to scanned status to re-download from remote FTP automatically
         log.status = 'scanned'
         log.error_msg = None
         db.commit()
         
         _executor.submit(run_osat_fetch, log.osat_id, False)
-        return {"message": "Files not found in cache. Reset to scanned and triggered re-download."}
+        return {"message": "Files not found in local cache. Reset status to scanned and triggered fresh remote download."}
         
     log.status = 'pending'
     log.error_msg = None

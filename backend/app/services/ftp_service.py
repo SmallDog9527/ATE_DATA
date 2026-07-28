@@ -1287,10 +1287,15 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
         ).first()
         if existing:
             print(f"[ftp_dl] Warning: {filename} already has a success record, marking current log as skipped")
-            cur_log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
-            if cur_log and cur_log.status in ('scanned', 'pending', 'processing', 'downing'):
-                cur_log.status = 'skipped'
-                cur_log.error_msg = 'Skipped: A success record already exists for this remote_path'
+            pending_logs = db.query(FtpUploadLog).filter(
+                FtpUploadLog.osat_id == osat_id,
+                FtpUploadLog.remote_path == remote_path,
+                FtpUploadLog.status.in_(['scanned', 'pending', 'processing', 'downing'])
+            ).all()
+            for pl in pending_logs:
+                pl.status = 'skipped'
+                pl.error_msg = 'Skipped: A success record already exists for this remote_path'
+            if pending_logs:
                 db.commit()
             return None
 
@@ -1528,11 +1533,13 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
             try:
                 log_rec = err_db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
                 if log_rec:
-                    if "exceeds 2GB limit" in err_msg:
+                    if "exceeds 2GB limit" in err_msg or "No such file or directory" in err_msg or "FileNotFoundError" in err_msg:
+                        # Auto fallback to scanned for missing cache files to re-download from FTP
                         log_rec.status = 'scanned'
+                        log_rec.error_msg = None
                     else:
                         log_rec.status = 'failed'
-                    log_rec.error_msg = err_msg
+                        log_rec.error_msg = err_msg
                     log_rec.uploaded_at = datetime.now(timezone.utc)
                     err_db.commit()
             except Exception:
@@ -2440,7 +2447,7 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                 existing = db.query(FtpUploadLog).filter(
                     FtpUploadLog.osat_id == osat_id,
                     FtpUploadLog.remote_path == path,
-                    FtpUploadLog.status.in_(['success', 'processing', 'pending', 'downing', 'scanned'])
+                    FtpUploadLog.status.in_(['scanned', 'pending', 'processing', 'downing'])
                 ).first()
                 if existing:
                     log_id = existing.id
