@@ -27,7 +27,11 @@ def create_default_admin():
         # Create default admin user
         admin_username = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
         admin_password = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")
-        admin_email = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@example.com")
+        # Fetch default admin email from system settings if available
+        from app.models.system_setting import SystemSetting
+        sys_cfg = db.query(SystemSetting).first()
+        default_email = (sys_cfg.smtp_from or sys_cfg.smtp_user) if (sys_cfg and (sys_cfg.smtp_from or sys_cfg.smtp_user)) else "53547326@qq.com"
+        admin_email = os.getenv("DEFAULT_ADMIN_EMAIL", default_email)
 
         admin = User(
             username=admin_username,

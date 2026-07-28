@@ -1976,7 +1976,7 @@ def get_bin_summary(
     if sites != 'all':
         site_filter = [int(s) for s in sites.split(',')]
     else:
-        site_filter = all_site_list
+        site_filter = all_site_list if all_site_list else [0]
 
     result = []
     for b in bins_all:

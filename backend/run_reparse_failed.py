@@ -45,7 +45,7 @@ def main():
     to_reset = db.query(FtpUploadLog).filter(FtpUploadLog.status == 'failed').all()
     reset_count = len(to_reset)
     for log in to_reset:
-        log.status = 'pending'
+        log.status = 'scanned'
         log.error_msg = None
 
     db.commit()

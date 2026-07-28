@@ -4,14 +4,16 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-LOT_RE = re.compile(r'(?<![A-Z0-9])([A-Z][A-Z0-9]{4,5}\d)(?![A-Z0-9])', re.IGNORECASE)
+# Support both letter-starting (e.g. KA07426) and digit-starting (e.g. 1A7T55) Lot IDs
+LOT_RE = re.compile(r'(?<![A-Z0-9])([A-Z0-9]{5,6}\d)(?![A-Z0-9])', re.IGNORECASE)
+WAFER_WITH_LETTER_RE = re.compile(r'^(0?[1-9]|1\d|2[0-5])[A-Z]\d*$', re.IGNORECASE)
 WAFER_RE = re.compile(r'^(?:0?[1-9]|1\d|2[0-5])$')
 WAFER_TAG_RE = re.compile(
     r'(?:^|[^A-Z0-9])(?:W|WF|WAFER)[-_ ]?(0?[1-9]|1\d|2[0-5])(?:[^A-Z0-9]|$)',
     re.IGNORECASE,
 )
 LOT_WAFER_SUFFIX_RE = re.compile(
-    r'(?:^|[^A-Z0-9])([A-Z][A-Z0-9]{4,5}\d)[-_](0?[1-9]|1\d|2[0-5])[A-Z]\d+(?:[^A-Z0-9]|$)',
+    r'(?:^|[^A-Z0-9])([A-Z0-9]{5,6}\d)[-_](0?[1-9]|1\d|2[0-5])(?:[A-Z]\d+)?(?:[^A-Z0-9]|$)',
     re.IGNORECASE,
 )
 
@@ -39,8 +41,14 @@ class IdentityResolution:
 def normalize_lot_id(value: Optional[str]) -> Optional[str]:
     if not value:
         return None
-    match = LOT_RE.search(str(value).strip().upper())
-    return match.group(1) if match else None
+    val_str = str(value).strip().upper()
+    match = LOT_RE.search(val_str)
+    if match:
+        matched_str = match.group(1)
+        # Ensure Lot ID contains both letters and digits
+        if any(c.isalpha() for c in matched_str) and any(c.isdigit() for c in matched_str):
+            return matched_str
+    return None
 
 
 def normalize_wafer_id(value: Optional[str]) -> Optional[str]:
@@ -58,12 +66,13 @@ def normalize_wafer_id(value: Optional[str]) -> Optional[str]:
     if WAFER_RE.fullmatch(text):
         return f"{int(text):02d}"
 
-    wafer_tokens = [
-        token for token in re.split(r'[^A-Z0-9]+', text)
-        if WAFER_RE.fullmatch(token)
-    ]
-    if len(wafer_tokens) == 1:
-        return f"{int(wafer_tokens[0]):02d}"
+    tokens = [tok for tok in re.split(r'[^A-Z0-9]+', text) if tok]
+    for token in tokens:
+        if WAFER_RE.fullmatch(token):
+            return f"{int(token):02d}"
+        wl_match = WAFER_WITH_LETTER_RE.fullmatch(token)
+        if wl_match:
+            return f"{int(wl_match.group(1)):02d}"
     return None
 
 

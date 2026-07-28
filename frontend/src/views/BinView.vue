@@ -375,7 +375,7 @@ const failBins = computed(() => {
 
 const sortedBins = computed(() => {
   if (!binData.value?.bins) return []
-  const bins = [...binData.value.bins]
+  let bins = binData.value.bins.filter(b => b.all_site_count > 0)
   
   if (binSortOrder.value === 'desc') {
     bins.sort((a, b) => b.all_site_count - a.all_site_count)
@@ -493,7 +493,7 @@ async function fetchBinData() {
   })
   binData.value = data
 
-  if (allSites.value.length === 0 && data.all_sites?.length > 0) {
+  if (lotInfo.value?.data_type === "Summary" || (data.all_sites && data.all_sites.length === 0)) { if (allSites.value.length === 0) { allSites.value = [0]; options.value.selected_sites = [0]; } } else if (allSites.value.length === 0 && data.all_sites?.length > 0) {
     allSites.value = data.all_sites
     options.value.selected_sites = [...data.all_sites]
   }

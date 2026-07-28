@@ -1,4 +1,19 @@
 import re
+
+def clean_wafer_id(raw):
+    """Format wafer_id into standard two-digit string without letter W/w (e.g. W10 -> '10', W1 -> '01')"""
+    if not raw:
+        return None
+    raw_str = str(raw).strip()
+    m = re.search(r'^[Ww]?(\d{1,2})$', raw_str)
+    if m:
+        return f"{int(m.group(1)):02d}"
+    m_sub = re.search(r'[Ww](\d{1,2})\b', raw_str)
+    if m_sub:
+        return f"{int(m_sub.group(1)):02d}"
+    return raw_str
+
+import re
 import os
 from datetime import datetime
 from typing import Optional
@@ -71,9 +86,6 @@ def parse_summary_txt(filepath: str) -> dict:
         result['yield_rate'] = float(perf_match.group(4)) / 100.0
 
     # 限制解析内容为从开头到出现Hdwr之前的内容
-    hdwr_pos_trunc = content.lower().find('hdwr')
-    if hdwr_pos_trunc != -1:
-        content = content[:hdwr_pos_trunc]
 
     # 1. 解析程序名 (Test Name)
     test_name_match = re.search(r'Test Name:\s*([^\r\n]*)', content, re.IGNORECASE)
@@ -86,7 +98,7 @@ def parse_summary_txt(filepath: str) -> dict:
 
     sublot_match = re.search(r'Report for SubLot:\s*([^\r\n]*)', content, re.IGNORECASE)
     if sublot_match:
-        result['wafer_id'] = sublot_match.group(1).strip()
+        result['wafer_id'] = clean_wafer_id(sublot_match.group(1).strip())
 
     handler_match = re.search(r'(?:Handler/Prober ID|Handler ID|Handler|Prober ID|Prober):\s*([^\r\n]*)', content, re.IGNORECASE)
     if handler_match:
@@ -113,8 +125,10 @@ def parse_summary_txt(filepath: str) -> dict:
         result['probecard'] = probecard_match.group(1).strip()
 
     # 3. 解析分Bin信息（Sfwr Bin 与 Hdwr Bin 之间的所有 bin 定义）
-    sfwr_pos = content.find('Sfwr   Bin')
-    hdwr_pos = content.find('Hdwr   Bin')
+    sfwr_match = re.search(r'Sfwr\s+Bin', content, re.IGNORECASE)
+    sfwr_pos = sfwr_match.start() if sfwr_match else -1
+    hdwr_match = re.search(r'Hdwr\s+Bin', content, re.IGNORECASE)
+    hdwr_pos = hdwr_match.start() if hdwr_match else -1
 
     if sfwr_pos != -1:
         if hdwr_pos != -1 and hdwr_pos > sfwr_pos:
@@ -132,21 +146,30 @@ def parse_summary_txt(filepath: str) -> dict:
                 continue
             
             # 使用固定宽度切片或正则解析
-            # 例如: "    1     P    Pass                         3615      60.66"
-            if len(line) >= 43:
-                bin_num_str = line[0:6].strip()
-                bin_type = line[6:13].strip()
-                bin_desc = line[13:43].strip()
-                bin_count_str = line[43:53].strip()
-
-                if bin_num_str.isdigit():
-                    bin_num = int(bin_num_str)
-                    bin_count = int(bin_count_str) if bin_count_str.isdigit() else 0
+            # Adaptive regex & split parsing for Bin rows
+            m = re.match(r'^\s*(\d+)\s+([A-Z]?)\s+(.+?)\s+(\d+)(?:\s+[\d\.]+)?\s*$', line)
+            if m and m.group(1).isdigit() and m.group(4).isdigit():
+                bin_num = int(m.group(1))
+                bin_type = m.group(2)
+                bin_desc = m.group(3).strip()
+                bin_count = int(m.group(4))
+                result['bins'][bin_num] = {
+                    'name': bin_desc,
+                    'type': bin_type,
+                    'count': bin_count
+                }
+            else:
+                parts = line.strip().split()
+                if len(parts) >= 2 and parts[0].isdigit() and parts[-1].isdigit():
+                    bin_num = int(parts[0])
+                    bin_count = int(parts[-1])
+                    bin_desc = " ".join(parts[1:-1])
                     result['bins'][bin_num] = {
                         'name': bin_desc,
-                        'type': bin_type,
+                        'type': 'P' if bin_num == 1 else 'F',
                         'count': bin_count
                     }
+
 
     return result
 

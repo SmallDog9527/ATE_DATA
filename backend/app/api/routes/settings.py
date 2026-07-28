@@ -74,6 +74,11 @@ def save_smtp_config(
     cfg.smtp_ssl = body.smtp_ssl
     cfg.updated_at = datetime.now(timezone.utc)
 
+    # Synchronize admin user default email with SMTP sender address
+    admin_user = db.query(User).filter(User.username == "admin").first()
+    if admin_user:
+        admin_user.email = cfg.smtp_from
+
     db.commit()
     return {"message": "SMTP 配置已保存"}
 
@@ -322,7 +327,10 @@ def retry_failed_ftp_log(
     if os.path.exists(EXTRACTED_DIR):
         for name in os.listdir(EXTRACTED_DIR):
             if name.startswith(prefix):
-                files.append(os.path.join(EXTRACTED_DIR, name))
+                fpath = os.path.join(EXTRACTED_DIR, name)
+                # Verify physical existence and non-zero size before using cache
+                if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
+                    files.append(fpath)
                 
     if not files:
         log.status = 'scanned'
@@ -959,6 +967,11 @@ def save_version_settings(
         db.add(cfg)
     cfg.version_update_content = body.content
     cfg.updated_at = datetime.now(timezone.utc)
+    # Synchronize admin user default email with SMTP sender address
+    admin_user = db.query(User).filter(User.username == "admin").first()
+    if admin_user:
+        admin_user.email = cfg.smtp_from
+
     db.commit()
     
     return {"message": "版本更新内容已成功保存至历史文件"}

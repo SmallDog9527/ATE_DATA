@@ -2084,6 +2084,11 @@ def download_lots(data: DownloadRequest, db: Session = Depends(get_db)):
     if len(lots) == 1:
         lot = lots[0]
         file_path = lot.storage_path
+        if file_path and not os.path.exists(file_path):
+            if file_path.startswith('/app/uploads/'):
+                alt_path = file_path.replace('/app/uploads/', '/data/ATE_DATA/uploads/')
+                if os.path.exists(alt_path):
+                    file_path = alt_path
         if file_path and os.path.exists(file_path):
             ext = os.path.splitext(file_path)[-1].lower()
             if ext == '.zip':

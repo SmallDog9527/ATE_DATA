@@ -11,9 +11,7 @@ from app.core.redis_client import get_redis
 # ──────────────────────────────────────────
 
 def _send_smtp(to_email: str, subject: str, html_body: str, text_body: str = None):
-    """发送一封邮件（使用 .env 静态配置）"""
-    print(f"[email] Email sending is globally disabled. Skip sending to {to_email}")
-    return
+    """Send email using static settings."""
     msg = EmailMessage(policy=SMTPUTF8)
     msg["Subject"] = subject
     msg["From"] = settings.SMTP_FROM

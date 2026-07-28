@@ -1,3 +1,18 @@
+import re
+
+def clean_wafer_id(raw):
+    """Format wafer_id into standard two-digit string without letter W/w (e.g. W10 -> '10', W1 -> '01')"""
+    if not raw:
+        return None
+    raw_str = str(raw).strip()
+    m = re.search(r'^[Ww]?(\d{1,2})$', raw_str)
+    if m:
+        return f"{int(m.group(1)):02d}"
+    m_sub = re.search(r'[Ww](\d{1,2})\b', raw_str)
+    if m_sub:
+        return f"{int(m_sub.group(1)):02d}"
+    return raw_str
+
 """
 ftp_service.py
 FTP 自动抓取服务：连接测试、目录扫描、CSV/ZIP/GZ 下载解析入库、去重日志。
@@ -829,7 +844,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                 if summary_data.get('lot_id'):
                     lot.lot_id = summary_data['lot_id']
                 if summary_data.get('wafer_id'):
-                    lot.wafer_id = summary_data['wafer_id']
+                    lot.wafer_id = clean_wafer_id(summary_data['wafer_id'])
                 if summary_data.get('handler'):
                     lot.handler = summary_data['handler']
                 if summary_data.get('die_count') is not None:
@@ -1095,10 +1110,15 @@ def _do_download_with_ftp(ftp, osat_id: int, remote_path: str, admin_user_id: in
         existing = db.query(FtpUploadLog).filter(
             FtpUploadLog.osat_id == osat_id,
             FtpUploadLog.remote_path == remote_path,
-            FtpUploadLog.status.in_(['success', 'processing'])
+            FtpUploadLog.status == 'success'
         ).first()
         if existing:
-            print(f"[ftp_dl] ? {filename} ????(status={existing.status})???")
+            print(f"[ftp_dl] Warning: {filename} already has a success record, marking current log as skipped")
+            cur_log = db.query(FtpUploadLog).filter(FtpUploadLog.osat_id == osat_id, FtpUploadLog.remote_path == remote_path, FtpUploadLog.status.in_(['scanned', 'pending', 'downing', 'processing'])).first()
+            if cur_log:
+                cur_log.status = 'skipped'
+                cur_log.error_msg = 'Skipped: A success record already exists for this remote_path'
+                db.commit()
             return None
 
         log = FtpUploadLog(
@@ -1266,7 +1286,12 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
             FtpUploadLog.status == 'success'
         ).first()
         if existing:
-            print(f"[ftp_dl] Warning: {filename} already has a success record, skipping")
+            print(f"[ftp_dl] Warning: {filename} already has a success record, marking current log as skipped")
+            cur_log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+            if cur_log and cur_log.status in ('scanned', 'pending', 'processing', 'downing'):
+                cur_log.status = 'skipped'
+                cur_log.error_msg = 'Skipped: A success record already exists for this remote_path'
+                db.commit()
             return None
 
         # Update status to downing
@@ -1334,7 +1359,7 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
             name_lower = fname.lower()
             if name_lower.endswith(('.csv', '.xls', '.xlsx')):
                 return True
-            if name_lower.endswith('.txt') and 'ets' in name_lower:
+            if name_lower.endswith('.txt') and ('ets' in name_lower or 'summary' in name_lower):
                 return True
             return False
 
@@ -1528,6 +1553,7 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
 
 def _do_parse(log_id: int, osat_id: int, remote_path: str,
               tmp_dir: str, csv_files_to_process: list, admin_user_id: int) -> dict:
+    from app.models.ftp_upload_log import FtpUploadLog
     concurrency_controller.acquire()
     try:
         import multiprocessing
@@ -1609,7 +1635,7 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
             name_lower = fname.lower()
             if name_lower.endswith(('.xls', '.xlsx')):
                 return True
-            if name_lower.endswith('.txt') and 'ets' in name_lower:
+            if name_lower.endswith('.txt') and ('ets' in name_lower or 'summary' in name_lower):
                 return True
             return False
 
@@ -1670,12 +1696,15 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
             ).all()
             for stuck_lot in stuck_lots:
                 print(f"[ftp_parse] Cleaning up stuck/failed lot record (id={stuck_lot.id}, status={stuck_lot.status}) for '{save_name}'")
+                stuck_id = stuck_lot.id
                 from app.models.bin_summary import BinSummary
                 from app.models.test_item import TestItem
-                db.query(BinSummary).filter(BinSummary.lot_id == stuck_lot.id).delete()
-                db.query(TestItem).filter(TestItem.lot_id == stuck_lot.id).delete()
+                db.query(BinSummary).filter(BinSummary.lot_id == stuck_id).delete(synchronize_session=False)
+                db.query(TestItem).filter(TestItem.lot_id == stuck_id).delete(synchronize_session=False)
                 db.delete(stuck_lot)
             db.commit()
+            # Clear stale ORM references from session after commit
+            db.expire_all()
 
             if os.path.exists(save_path):
                 print(f"[ftp_parse] File '{save_name}' already exists in local uploads, overwriting")
@@ -1740,8 +1769,11 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                 db.close()
                 continue
 
-            if save_name.lower().endswith('.txt') and 'ets' in save_name.lower():
+            if save_name.lower().endswith('.txt') and ('ets' in save_name.lower() or 'summary' in save_name.lower()):
                 try:
+                    if not os.path.exists(save_path) and os.path.exists(csv_filepath):
+                        import shutil
+                        shutil.copy2(csv_filepath, save_path)
                     lot = Lot(
                         filename=save_name,
                         storage_path=save_path,
@@ -1782,7 +1814,7 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                     if summary_data.get('lot_id'):
                         lot.lot_id = summary_data['lot_id']
                     if summary_data.get('wafer_id'):
-                        lot.wafer_id = summary_data['wafer_id']
+                        lot.wafer_id = clean_wafer_id(summary_data['wafer_id'])
                     if summary_data.get('handler'):
                         lot.handler = summary_data['handler']
                     if summary_data.get('die_count') is not None:
@@ -1797,6 +1829,26 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                     db.add(lot)
                     db.commit()
                     db.refresh(lot)
+
+                    # Save bin_summary records if available from summary_data
+                    if summary_data.get('bins'):
+                        from app.models.bin_summary import BinSummary
+                        db.query(BinSummary).filter(BinSummary.lot_id == lot.id).delete()
+                        total_die = summary_data.get('die_count') or 1
+                        for bin_num, bin_info in summary_data['bins'].items():
+                            cnt = bin_info.get('count', 0)
+                            pct = (cnt / total_die * 100.0) if total_die > 0 else 0.0
+                            bs = BinSummary(
+                                lot_id=lot.id,
+                                bin_number=bin_num,
+                                bin_name=bin_info.get('name', f'Bin{bin_num}'),
+                                site=0,
+                                count=cnt,
+                                percentage=pct,
+                                data_range='final'
+                            )
+                            db.add(bs)
+                        db.commit()
 
                     # FTP TXT Summary compression
                     zip_path = save_path + ".zip"
@@ -1878,8 +1930,9 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                 zip_path = save_path + '.zip'
                 try:
                     import zipfile
+                    src_file_to_zip = save_path if os.path.exists(save_path) else csv_filepath
                     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                        zf.write(save_path, os.path.basename(save_path))
+                        zf.write(src_file_to_zip, os.path.basename(save_path))
                     if os.path.exists(zip_path) and os.path.getsize(zip_path) > 0:
                         os.remove(save_path)
                         db = SessionLocal()
@@ -1961,6 +2014,19 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                 _parse_and_save(lot_id, save_path, db)
                 parsed_successfully.append(csv_filepath)
 
+                # Immediately mark log_rec status as success after DB commit
+                try:
+                    db_succ = SessionLocal()
+                    succ_log = db_succ.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+                    if succ_log:
+                        succ_log.status = 'success'
+                        succ_log.lot_id_created = lot_id
+                        succ_log.uploaded_at = datetime.now(timezone.utc)
+                        db_succ.commit()
+                    db_succ.close()
+                except Exception as log_ex:
+                    print(f"[ftp_parse] Non-critical warning marking success log status: {log_ex}")
+
                 # Compress successfully parsed CSV file to *.csv.zip
                 if os.path.exists(save_path) and save_path.lower().endswith('.csv'):
                     zip_path = save_path + '.zip'
@@ -1994,7 +2060,7 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                     db_ext.commit()
                     db_ext.close()
                 except Exception as db_ex:
-                    print(f"[ftp_parse] Failed to write csv success log: {db_ex}")
+                    print(f"[ftp_parse] Non-critical warning: Failed to write csv success log: {db_ex}")
 
             except Exception as ex:
                 # Log CSV parse failure in English
@@ -2309,7 +2375,7 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
             fname = os.path.basename(path).lower()
             if fname.endswith(('.xls', '.xlsx')):
                 return True
-            if fname.endswith('.txt') and 'ets' in fname:
+            if fname.endswith('.txt') and ('ets' in fname or 'summary' in fname):
                 return True
             return False
 
