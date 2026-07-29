@@ -278,7 +278,8 @@ def _make_ftp(osat):
     else:
         ftp = ftplib.FTP()
         ftp.connect(osat.ftp_host, osat.ftp_port, timeout=120)
-    ftp.encoding = 'latin-1'
+    # Use UTF-8 encoding for FTP filenames to support Chinese characters
+    ftp.encoding = 'utf-8'
     ftp.login(osat.ftp_user, password)
     if isinstance(ftp, ftplib.FTP_TLS) and encryption != "plain":
         try:

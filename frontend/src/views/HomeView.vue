@@ -477,18 +477,21 @@ const filteredLots = computed(() => {
   }
   if (activeHomeTab.value === 'ENG_DATA') {
     if (authStore.isAdmin || authStore.isEng) {
-      return lots.value.filter((l: any) => l.data_source === 'manual' && l.data_type !== 'MP_Yield')
+      return lots.value.filter((l: any) => l.data_source === 'manual' && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield')
     } else {
-      // 普通用户只显示本人的手动上传数据
-      return lots.value.filter((l: any) => l.data_source === 'manual' && l.user_id === authStore.user?.id && l.data_type !== 'MP_Yield')
+      return lots.value.filter((l: any) => l.data_source === 'manual' && l.user_id === authStore.user?.id && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield')
     }
   }
   if (activeHomeTab.value === 'CP_LOT') {
     return lots.value.filter((l: any) => l.data_type === 'CP_LOT')
   }
-  // OSAT_CP/OSAT_FT Tab 按 osat_type 过滤（而非 data_type）
-  // 这样来自 CP OSAT 的 QA 文件仍留在 OSAT_CP Tab，而不会因 data_type='QA' 而消失
-  return lots.value.filter((l: any) => l.data_source === 'ftp' && l.osat_type === activeHomeTab.value && l.data_type !== 'MP_Yield')
+  if (activeHomeTab.value === 'CP') {
+    return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'FT' && (l.osat_type === 'CP' || l.data_type === 'CP') && l.data_type !== 'MP_Yield')
+  }
+  if (activeHomeTab.value === 'FT') {
+    return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'CP' && (l.osat_type === 'FT' || l.data_type === 'FT') && l.data_type !== 'MP_Yield')
+  }
+  return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'MP_Yield')
 })
 
 const computedColumnDefs = computed(() => {
@@ -1696,11 +1699,7 @@ onMounted(() => {
 watch(activeHomeTab, () => {
   if (gridApi.value) {
     const model = gridApi.value.getFilterModel() || {}
-    if (activeHomeTab.value === 'CP') {
-      model.data_type = { type: 'equals', filter: 'CP' }
-    } else {
-      delete model.data_type
-    }
+    delete model.data_type
     gridApi.value.setFilterModel(model)
   }
   fetchLotsFromFirstPage()

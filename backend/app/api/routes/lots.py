@@ -1519,7 +1519,9 @@ def get_lots(
                 osat_type_map[name.split('_')[0]] = dtype
                 
         for item in items:
-            if item.osat_name and item.data_source == 'ftp':
+            if item.data_type == 'CP_LOS':
+                item.osat_type = 'CP_LOT'
+            elif item.osat_name and item.data_source == 'ftp':
                 item.osat_type = osat_type_map.get(item.osat_name)
             else:
                 item.osat_type = None
