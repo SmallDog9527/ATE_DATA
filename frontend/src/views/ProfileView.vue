@@ -611,14 +611,29 @@
                   <td style="font-weight: 500;">{{ row.date }}</td>
                   <td v-for="o in summaryOsats" :key="o.id">
                     <span v-if="row.stats[o.id]">
-                      <span style="color: #16a34a; font-weight: 600;">{{ row.stats[o.id].success }}</span>
-                      <span style="color: #64748b;">/</span>
-                      <span :style="{ color: row.stats[o.id].failed > 0 ? '#dc2626' : '#64748b', fontWeight: row.stats[o.id].failed > 0 ? '600' : 'normal' }">
-                        {{ row.stats[o.id].failed }}
-                      </span>
-                      <template v-if="row.stats[o.id].total !== undefined">
+                      <!-- Total Row (data_pass / summary_pass / fail) -->
+                      <template v-if="row.date === 'total'">
+                        <span style="color: #16a34a; font-weight: 600;" title="data_pass">{{ row.stats[o.id].data_pass ?? row.stats[o.id].success ?? 0 }}</span>
                         <span style="color: #64748b;">/</span>
-                        <span style="color: #0284c7; font-weight: 600;">{{ row.stats[o.id].total }}</span>
+                        <span style="color: #059669; font-weight: 600;" title="summary_pass">{{ row.stats[o.id].summary_pass ?? 0 }}</span>
+                        <span style="color: #64748b;">/</span>
+                        <span :style="{ color: row.stats[o.id].failed > 0 ? '#dc2626' : '#64748b', fontWeight: row.stats[o.id].failed > 0 ? '600' : 'normal' }" title="fail">
+                          {{ row.stats[o.id].failed }}
+                        </span>
+                      </template>
+                      <!-- Daily Update Row (data_pass / summary_pass / fail / total) -->
+                      <template v-else>
+                        <span style="color: #16a34a; font-weight: 600;" title="data_pass">{{ row.stats[o.id].data_pass ?? row.stats[o.id].success ?? 0 }}</span>
+                        <span style="color: #64748b;">/</span>
+                        <span style="color: #059669; font-weight: 600;" title="summary_pass">{{ row.stats[o.id].summary_pass ?? 0 }}</span>
+                        <span style="color: #64748b;">/</span>
+                        <span :style="{ color: row.stats[o.id].failed > 0 ? '#dc2626' : '#64748b', fontWeight: row.stats[o.id].failed > 0 ? '600' : 'normal' }" title="fail">
+                          {{ row.stats[o.id].failed }}
+                        </span>
+                        <template v-if="row.stats[o.id].total !== undefined">
+                          <span style="color: #64748b;">/</span>
+                          <span style="color: #0284c7; font-weight: 600;" title="total">{{ row.stats[o.id].total }}</span>
+                        </template>
                       </template>
                     </span>
                     <span v-else style="color: #cbd5e1;">—</span>

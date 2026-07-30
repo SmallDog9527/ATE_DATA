@@ -441,7 +441,7 @@ def scan_ftp_files(osat, scan_type: str = 'both') -> List[str]:
 # Maximum failed retries allowed for a single file (files exceeding this limit will be skipped)
 _MAX_FAIL_RETRIES = 3
 PROCESSING_TIMEOUT_MINUTES = 30   # Records stuck in processing for more than this many minutes are marked as failed
-_DOWNLOAD_WORKERS = 10            # Number of concurrent FTP download threads
+_DOWNLOAD_WORKERS = 30            # Number of concurrent FTP download threads
 _PARSE_WORKERS = 5
 
 def get_parse_workers_count() -> int:
@@ -453,12 +453,12 @@ def get_parse_workers_count() -> int:
         is_weekday = now.weekday() < 5
         is_work_hours = 9 <= now.hour < 19
         if is_weekday and is_work_hours:
-            return 8
+            return 16
         else:
-            return 12
+            return 24
     except Exception as e:
         print("[concurrency] Failed to calculate dynamic parse workers count: " + str(e))
-        return 8                # 并发解析线程数
+        return 16                # 并发解析线程数
 
 
 def get_new_files(db, osat_id: int, all_remote_paths: list) -> list:
@@ -548,7 +548,7 @@ def _reset_stuck_processing_logs(db) -> int:
     from sqlalchemy import func
 
     stuck = db.query(FtpUploadLog).filter(
-        FtpUploadLog.status.in_(['processing', 'downing']),
+        FtpUploadLog.status.in_(['processing', 'downing', 'pending']),
         FtpUploadLog.uploaded_at < func.now() - timedelta(minutes=PROCESSING_TIMEOUT_MINUTES)
     ).all()
 
@@ -663,8 +663,8 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
         try:
             ftp.sendcmd('TYPE I')
             file_size = ftp.size(remote_path) or 0
-            if file_size > 2 * 1024 * 1024 * 1024:
-                raise Exception(f"Remote file size {file_size} exceeds 2GB limit, download aborted")
+            if file_size > 50 * 1024 * 1024 * 1024:
+                raise Exception(f"Remote file size {file_size} exceeds 50GB limit, download aborted")
             with open(local_file, 'wb') as f:
                 ftp.retrbinary(f'RETR {remote_path}', f.write)
         finally:
@@ -1316,7 +1316,7 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
         os.makedirs(EXTRACTED_DIR, exist_ok=True)
         os.makedirs(DEL_DIR, exist_ok=True)
 
-        # Check download folder size limit (2GB)
+        # Check download folder size limit (Circuit breaker: 50GB pause, 5GB resume)
         total_size = 0
         for root, _, files in os.walk(DOWNLOAD_DIR):
             for f_name in files:
@@ -1325,8 +1325,28 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
                     total_size += os.path.getsize(fp)
                 except Exception:
                     pass
-        if total_size > 2 * 1024 * 1024 * 1024:
-            raise Exception("Download directory /tmp/FTP/download size exceeds 2GB limit, download suspended")
+        
+        limit_50gb = 50 * 1024 * 1024 * 1024
+        limit_5gb = 5 * 1024 * 1024 * 1024
+        is_paused = False
+
+        try:
+            from app.core.redis_client import get_redis
+            r = get_redis()
+            is_paused = r.get("watchdog:download_paused") == "true"
+            if is_paused:
+                if total_size < limit_5gb:
+                    r.delete("watchdog:download_paused")
+                    is_paused = False
+            else:
+                if total_size > limit_50gb:
+                    r.set("watchdog:download_paused", "true")
+                    is_paused = True
+        except Exception:
+            is_paused = total_size > limit_50gb
+
+        if is_paused:
+            raise Exception(f"Download directory /tmp/FTP/download size ({total_size / (1024**3):.1f}GB) exceeds 50GB limit, download suspended until size drops below 5GB")
 
         local_file = os.path.join(DOWNLOAD_DIR, f"{log_id}_{filename}")
         ftp = _make_ftp(osat)
@@ -1336,8 +1356,8 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
         try:
             ftp.sendcmd('TYPE I')
             file_size = ftp.size(remote_path) or 0
-            if file_size > 2 * 1024 * 1024 * 1024:
-                raise Exception(f"Remote file size {file_size} exceeds 2GB limit, download aborted")
+            if file_size > 50 * 1024 * 1024 * 1024:
+                raise Exception(f"Remote file size {file_size} exceeds 50GB limit, download aborted")
             with open(local_file, 'wb') as f:
                 ftp.retrbinary(f'RETR {remote_path}', f.write)
         finally:
@@ -1534,7 +1554,7 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
             try:
                 log_rec = err_db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
                 if log_rec:
-                    if "exceeds 2GB limit" in err_msg or "No such file or directory" in err_msg or "FileNotFoundError" in err_msg:
+                    if "exceeds 50GB limit" in err_msg or "No such file or directory" in err_msg or "FileNotFoundError" in err_msg:
                         # Auto fallback to scanned for missing cache files to re-download from FTP
                         log_rec.status = 'scanned'
                         log_rec.error_msg = None
@@ -2282,6 +2302,8 @@ def _save_scan_snapshot(db, osat_id: int, all_paths: list):
         
         if snapshot:
             snapshot.success_count = success_cnt
+            snapshot.data_success_count = data_succ_cnt
+            snapshot.summary_success_count = summary_succ_cnt
             snapshot.failed_count = failed_cnt
             snapshot.scanned_count = unprocessed_cnt
             snapshot.last_scan_time = now_sh
@@ -2290,6 +2312,8 @@ def _save_scan_snapshot(db, osat_id: int, all_paths: list):
                 osat_id=osat_id,
                 scan_date=today_date,
                 success_count=success_cnt,
+                data_success_count=data_succ_cnt,
+                summary_success_count=summary_succ_cnt,
                 failed_count=failed_cnt,
                 scanned_count=unprocessed_cnt,
                 last_scan_time=now_sh
@@ -2306,11 +2330,11 @@ def _save_scan_snapshot(db, osat_id: int, all_paths: list):
 
 def has_giant_file_in_tmp() -> bool:
     """
-    Check if any single file in /tmp/ exceeds 2GB (2 * 1024 * 1024 * 1024 bytes).
+    Check if any single file in /tmp/ exceeds 2GB (50 * 1024 * 1024 * 1024 bytes).
     Only called once per OSAT fetch run to minimize IO overhead.
     """
     import os
-    limit = 2 * 1024 * 1024 * 1024  # 2GB
+    limit = 50 * 1024 * 1024 * 1024  # 2GB
     target_dir = "/tmp"
     if not os.path.exists(target_dir):
         return False
@@ -2354,7 +2378,7 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
     db = SessionLocal()
     # Check disk safety (Giant file check under /tmp)
     if has_giant_file_in_tmp():
-        print(f"[ftp_fetch] OSAT id={osat_id} fetch aborted: Giant file (>2GB) exists under /tmp")
+        print(f"[ftp_fetch] OSAT id={osat_id} fetch aborted: Giant file (>50GB) exists under /tmp")
         with _osat_in_progress_lock:
             _osat_in_progress.discard(osat_id)
         db.close()
@@ -2465,11 +2489,11 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                     log_id = log.id
 
                 df = download_pool.submit(_do_download, log_id, osat_id, path, admin_user_id)
-                dl_futures[df] = (path, fname)
+                dl_futures[df] = (path, fname, log_id)
 
             parse_futures = {}
             for fut in as_completed(dl_futures):
-                path, fname = dl_futures[fut]
+                path, fname, log_id = dl_futures[fut]
                 try:
                     result = fut.result()
                     if result is None:
@@ -2484,18 +2508,38 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                         
                     pf = parse_pool.submit(_do_parse, log_id, osat_id, path,
                                            tmp_dir, csv_files, admin_user_id)
-                    parse_futures[pf] = fname
+                    parse_futures[pf] = (fname, log_id)
                     print(f"[ftp_fetch] File {fname} download completed, submitted for concurrent parsing")
                 except Exception as e:
                     print(f"[ftp_fetch] Concurrent download failed for {fname}: {e}")
+                    try:
+                        db_err = SessionLocal()
+                        log_rec = db_err.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+                        if log_rec and log_rec.status != 'success':
+                            log_rec.status = 'failed'
+                            log_rec.error_msg = f"[Download Failed] {str(e)[:250]}"
+                            db_err.commit()
+                        db_err.close()
+                    except Exception:
+                        pass
 
             for fut in as_completed(parse_futures):
-                fname = parse_futures[fut]
+                fname, log_id = parse_futures[fut]
                 try:
                     fut.result()
                     print(f"[ftp_fetch] File {fname} fully processed")
                 except Exception as e:
                     print(f"[ftp_fetch] Concurrent parse/save failed for {fname}: {e}")
+                    try:
+                        db_err = SessionLocal()
+                        log_rec = db_err.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+                        if log_rec and log_rec.status != 'success':
+                            log_rec.status = 'failed'
+                            log_rec.error_msg = f"[Parse Failed] {str(e)[:250]}"
+                            db_err.commit()
+                        db_err.close()
+                    except Exception:
+                        pass
 
         # Helper to query retryable failed logs
         def get_retryable_failed_paths():
@@ -2583,7 +2627,7 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
             print(f"[ftp_fetch] Summary FTP directory scan skipped (already scanned today)")
 
         # Summary loop: process until there are no scanned/pending/processing Summary files left
-        max_batch_size = 50
+        max_batch_size = 100
         summary_iter = 0
         max_summary_iters = 20
         while summary_iter < max_summary_iters:
@@ -2667,25 +2711,36 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
         else:
             print(f"[ftp_fetch] Data FTP directory scan skipped (already scanned today)")
 
-        # Fetch and process Data batch
-        scanned_data = [
-            row.remote_path
-            for row in db.query(FtpUploadLog.remote_path)
-            .filter(
-                FtpUploadLog.osat_id == osat_id,
-                FtpUploadLog.status.in_(['scanned', 'pending', 'processing'])
-            ).all()
-        ]
-        scanned_data = [p for p in scanned_data if not is_summary_file_path(p)]
-        retryable_failed_paths = get_retryable_failed_paths()
-        retryable_data = [p for p in retryable_failed_paths if not is_summary_file_path(p)]
-        data_to_process = scanned_data + retryable_data
-
-        if len(data_to_process) > max_batch_size:
-            data_to_process = data_to_process[:max_batch_size]
-
-        if data_to_process:
-            process_batch(data_to_process, "Data")
+        # Data loop: process until there are no scanned/pending/processing Data files left
+        max_data_iters = 50
+        data_iter = 0
+        total_data_processed = 0
+        while data_iter < max_data_iters:
+            data_iter += 1
+            scanned_data = [
+                row.remote_path
+                for row in db.query(FtpUploadLog.remote_path)
+                .filter(
+                    FtpUploadLog.osat_id == osat_id,
+                    FtpUploadLog.status.in_(['scanned', 'pending', 'processing'])
+                ).all()
+            ]
+            scanned_data = [p for p in scanned_data if not is_summary_file_path(p)]
+            retryable_failed_paths = get_retryable_failed_paths()
+            retryable_data = [p for p in retryable_failed_paths if not is_summary_file_path(p)]
+            data_to_process = list(set(scanned_data + retryable_data))
+            
+            if not data_to_process:
+                print(f"[ftp_fetch] Data files fully processed in {data_iter - 1} iterations.")
+                break
+                
+            batch = data_to_process[:max_batch_size]
+            print(f"[ftp_fetch] [Data Loop] Iteration {data_iter}: processing {len(batch)} of {len(data_to_process)} Data files...")
+            process_batch(batch, f"Data (Iter {data_iter})")
+            db.commit()
+            total_data_processed += len(batch)
+        else:
+            print(f"[ftp_fetch] Data loop reached max iterations ({max_data_iters})")
 
         try:
             download_pool.shutdown(wait=False)

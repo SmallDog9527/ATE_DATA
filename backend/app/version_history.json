@@ -1,5 +1,10 @@
 [
   {
+    "version": "V01_20260730",
+    "content": "1. FTP 日志日汇总数据流升级：优化 daily-summary 统计逻辑，引入 FtpUploadLog 兜底联合聚合，确保在 OSAT 未生成快照时仍能根据上传日志准确展示当天各 OSAT 数据及 Summary 入库状况；\n2. 时区比较修复：解决 timestamp 时区比较导致的 TypeError 报错，统一标准化转换为 Asia/Shanghai 本地时间；\n3. 12 线程并发滑动流水线：部署 continuous_pipeline_worker 并发解析池，维持 12 线程无缝补位不间断解析，提升吞吐率；\n4. 全量 OSAT 抓取与监控开启：启用 Chipmore, HTKS_KS, HTKS_JS, LBS, UCD_CP 等全量代工厂节点的自动抓取与 24 小时监控时间窗口，加速积压日志消化；\n5. 配置备份导出：完成系统 SMTP 邮件、FTP 节点配置及注册用户信息的结构化导出与离线归档（/data/ATE_DATA/config）。",
+    "updated_at": "2026-07-30 13:53:41"
+  },
+  {
     "version": "V01_20260728",
     "content": "1. 动态邮件服务恢复：取消 SMTP 邮件全局禁用逻辑，增加管理员默认邮件自动同步机制\n2. 修复量产良率产品信息：清空缓存，保持大盘与明细完全一致；\n3. 修复UCD数据解析器：优化 identity 解析模块，支持数字开头 Lot ID（如 1A7T55）及槽位后缀 Wafer ID（如 15F3 归一化为 15）的自加识别；\n4. FTP 下载逻辑修复：修复download 下载逻辑，自加将存在 success 标归的重复排队项标记为 skipped\n5. 修复T2K/ETS的Summary解析逻辑",
     "updated_at": "2026-07-28 08:25:30"

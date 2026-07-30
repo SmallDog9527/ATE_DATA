@@ -12,6 +12,8 @@ class FtpScanSnapshot(Base):
     osat_id = Column(Integer, ForeignKey("osat_configs.id", ondelete="CASCADE"), nullable=False, index=True)
 
     success_count = Column(Integer, default=0, nullable=False)
+    data_success_count = Column(Integer, default=0, nullable=False)
+    summary_success_count = Column(Integer, default=0, nullable=False)
     failed_count = Column(Integer, default=0, nullable=False)
     scanned_count = Column(Integer, default=0, nullable=False)
 

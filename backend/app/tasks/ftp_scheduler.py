@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # 线程池：最多同时抓取 4 个 OSAT（避免资源耗尽）
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ftp_worker")
+_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="ftp_worker")
 _scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
 
@@ -573,7 +573,7 @@ def start_scheduler():
         _scheduler.add_job(
             ftp_check_job,
             trigger='interval',
-            minutes=5,
+            minutes=1,
             id='ftp_check',
             next_run_time=datetime.now(shanghai_tz),
             replace_existing=True,

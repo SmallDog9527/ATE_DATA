@@ -214,8 +214,7 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
         )
         
         db.add(lot)
-        db.commit()
-        db.refresh(lot)
+        db.flush()
         
         # Save BinSummary records (1 to 130)
         for sbin_idx in range(1, 131):

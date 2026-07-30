@@ -43,6 +43,8 @@ def on_startup():
             conn.execute(text("ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS version_update_content VARCHAR"))
             conn.execute(text("ALTER TABLE pgs_uploads ADD COLUMN IF NOT EXISTS datasheet_filename VARCHAR"))
             conn.execute(text("ALTER TABLE pgs_uploads ADD COLUMN IF NOT EXISTS datasheet_path VARCHAR"))
+            conn.execute(text("ALTER TABLE pgs_uploads ADD COLUMN IF NOT EXISTS sbl_input TEXT"))
+            conn.execute(text("ALTER TABLE pgs_uploads ADD COLUMN IF NOT EXISTS remark VARCHAR"))
             conn.execute(text("ALTER TABLE datasheet_parameters ADD COLUMN IF NOT EXISTS remark VARCHAR"))
             # Update existing ksht/KSHT records to HTKS
             conn.execute(text("UPDATE lots SET osat_name = 'HTKS' WHERE osat_name IN ('ksht', 'KSHT')"))
@@ -50,6 +52,8 @@ def on_startup():
             conn.execute(text("UPDATE lots SET osat_name = 'Chipmore' WHERE osat_name = 'chipmore'"))
             conn.execute(text("UPDATE osat_configs SET name = 'Chipmore' WHERE name = 'chipmore'"))
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_alerts BOOLEAN DEFAULT FALSE"))
+            conn.execute(text("ALTER TABLE ftp_scan_snapshots ADD COLUMN IF NOT EXISTS data_success_count INTEGER DEFAULT 0"))
+            conn.execute(text("ALTER TABLE ftp_scan_snapshots ADD COLUMN IF NOT EXISTS summary_success_count INTEGER DEFAULT 0"))
             # Force mark any stuck processing logs as failed on service startup
             conn.execute(text("UPDATE ftp_upload_logs SET status = 'failed', error_msg = 'Service restarted unexpectedly, marked as failed' WHERE status IN ('processing', 'downing')"))
             conn.execute(text("UPDATE lots SET status = 'failed' WHERE status IN ('processing', 'pending')"))

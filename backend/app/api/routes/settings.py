@@ -634,23 +634,55 @@ def get_ftp_logs_daily_summary(
         for o in db.query(OsatConfig).order_by(OsatConfig.id).all()
     ]
     
+    def is_summary_file(fname: str) -> bool:
+        if not fname:
+            return False
+        nl = fname.lower()
+        if nl.endswith(('.xls', '.xlsx')):
+            return True
+        if nl.endswith('.txt') and ('ets' in nl or 'summary' in nl):
+            return True
+        return False
+
     # 1. Calculate overall historical totals from ftp_upload_logs
     total_stats = {}
     db_totals = db.query(
         FtpUploadLog.osat_id,
         FtpUploadLog.status,
+        FtpUploadLog.filename,
+        FtpUploadLog.remote_path,
         func.count(FtpUploadLog.id)
     ).filter(
         FtpUploadLog.uploaded_at.isnot(None)
-    ).group_by(FtpUploadLog.osat_id, FtpUploadLog.status).all()
+    ).group_by(
+        FtpUploadLog.osat_id,
+        FtpUploadLog.status,
+        FtpUploadLog.filename,
+        FtpUploadLog.remote_path
+    ).all()
     
-    for osat_id, status, count in db_totals:
+    for osat_id, status, filename, remote_path, count in db_totals:
         if osat_id not in total_stats:
-            total_stats[osat_id] = {"success": 0, "failed": 0}
+            total_stats[osat_id] = {"data_pass": 0, "summary_pass": 0, "failed": 0, "success": 0}
         if status == "success":
             total_stats[osat_id]["success"] += count
+            fname = filename or (remote_path.split('/')[-1] if remote_path else "")
+            if is_summary_file(fname):
+                total_stats[osat_id]["summary_pass"] += count
+            else:
+                total_stats[osat_id]["data_pass"] += count
         elif status == "failed":
             total_stats[osat_id]["failed"] += count
+
+    # Helper to convert datetime to Shanghai naive datetime for safe comparison
+    def to_shanghai_naive(dt):
+        if not dt:
+            return None
+        from datetime import timezone, timedelta
+        tz_sh = timezone(timedelta(hours=8))
+        if dt.tzinfo is not None:
+            return dt.astimezone(tz_sh).replace(tzinfo=None)
+        return dt + timedelta(hours=8)
 
     # 2. Get snapshots from FtpScanSnapshot
     snapshots = db.query(FtpScanSnapshot).order_by(
@@ -661,9 +693,7 @@ def get_ftp_logs_daily_summary(
     # Group snapshots by scan_date
     date_groups = {}
     for snap in snapshots:
-        from datetime import timezone, timedelta
-        tz_sh = timezone(timedelta(hours=8))
-        local_time = snap.last_scan_time.astimezone(tz_sh)
+        local_time = to_shanghai_naive(snap.last_scan_time)
         date_key = snap.scan_date
         
         if date_key not in date_groups:
@@ -672,14 +702,74 @@ def get_ftp_logs_daily_summary(
                 "stats": {}
             }
         else:
-            if local_time > date_groups[date_key]["latest_time"]:
+            if local_time and (date_groups[date_key]["latest_time"] is None or local_time > date_groups[date_key]["latest_time"]):
                 date_groups[date_key]["latest_time"] = local_time
                 
+        d_pass = getattr(snap, "data_success_count", 0) or 0
+        s_pass = getattr(snap, "summary_success_count", 0) or 0
+        if d_pass == 0 and s_pass == 0 and snap.success_count > 0:
+            from datetime import timezone, timedelta
+            snap_utc = snap.last_scan_time.astimezone(timezone.utc).replace(tzinfo=None) if snap.last_scan_time.tzinfo else snap.last_scan_time
+            time_24h_ago = snap_utc - timedelta(hours=24)
+            succ_logs = db.query(FtpUploadLog.filename, FtpUploadLog.remote_path).filter(
+                FtpUploadLog.osat_id == snap.osat_id,
+                FtpUploadLog.status == "success",
+                FtpUploadLog.uploaded_at >= time_24h_ago
+            ).all()
+            d_pass = sum(1 for l in succ_logs if not is_summary_file(l[0] or (l[1].split('/')[-1] if l[1] else "")))
+            s_pass = len(succ_logs) - d_pass
+
         date_groups[date_key]["stats"][snap.osat_id] = {
+            "data_pass": d_pass,
+            "summary_pass": s_pass,
             "success": snap.success_count,
             "failed": snap.failed_count,
             "total": snap.scanned_count
         }
+
+    # 3. Supplement missing OSAT statistics from FtpUploadLog if absent in FtpScanSnapshot
+    all_upload_logs = db.query(FtpUploadLog).filter(FtpUploadLog.uploaded_at.isnot(None)).all()
+    for log in all_upload_logs:
+        local_dt = to_shanghai_naive(log.uploaded_at)
+        if not local_dt:
+            continue
+        log_date = local_dt.date()
+        osat_id = log.osat_id
+
+        if log_date not in date_groups:
+            date_groups[log_date] = {
+                "latest_time": local_dt,
+                "stats": {}
+            }
+        elif date_groups[log_date]["latest_time"] is None or local_dt > date_groups[log_date]["latest_time"]:
+            date_groups[log_date]["latest_time"] = local_dt
+
+        if osat_id not in date_groups[log_date]["stats"]:
+            osat_logs = [
+                l for l in all_upload_logs 
+                if l.osat_id == osat_id and (to_shanghai_naive(l.uploaded_at).date() == log_date)
+            ]
+            d_count = 0
+            s_count = 0
+            f_count = 0
+            succ_count = 0
+            for ol in osat_logs:
+                if ol.status == "success":
+                    succ_count += 1
+                    fname = ol.filename or (ol.remote_path.split('/')[-1] if ol.remote_path else "")
+                    if is_summary_file(fname):
+                        s_count += 1
+                    else:
+                        d_count += 1
+                elif ol.status == "failed":
+                    f_count += 1
+            date_groups[log_date]["stats"][osat_id] = {
+                "data_pass": d_count,
+                "summary_pass": s_count,
+                "success": succ_count,
+                "failed": f_count,
+                "total": len(osat_logs)
+            }
 
     rows = []
     if total_stats:
