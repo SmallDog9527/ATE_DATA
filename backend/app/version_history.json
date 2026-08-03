@@ -1,5 +1,10 @@
 [
   {
+    "version": "V01_20260803",
+    "content": "1. FTP 失效日志手动跳过功能：前端 ProfileView 新增 Skip 按钮，支持将失效记录标记为 manual skip 并从失效列表中隐藏与筛选；\n2. 全量失效数据一键重试：支持一键将所有 failed 状态任务重置为 scanned 重新触发下载解析；\n3. FTP 并发与连接优化：调优 FTP 下载与调度并发限制（12 线程），优化连接数上限防止链接超限报错。",
+    "updated_at": "2026-08-03 15:17:00"
+  },
+  {
     "version": "V01_20260730",
     "content": "1. FTP 日志日汇总数据流升级：优化 daily-summary 统计逻辑，引入 FtpUploadLog 兜底联合聚合，确保在 OSAT 未生成快照时仍能根据上传日志准确展示当天各 OSAT 数据及 Summary 入库状况；\n2. 时区比较修复：解决 timestamp 时区比较导致的 TypeError 报错，统一标准化转换为 Asia/Shanghai 本地时间；\n3. 12 线程并发滑动流水线：部署 continuous_pipeline_worker 并发解析池，维持 12 线程无缝补位不间断解析，提升吞吐率；\n4. 全量 OSAT 抓取与监控开启：启用 Chipmore, HTKS_KS, HTKS_JS, LBS, UCD_CP 等全量代工厂节点的自动抓取与 24 小时监控时间窗口，加速积压日志消化；\n5. 配置备份导出：完成系统 SMTP 邮件、FTP 节点配置及注册用户信息的结构化导出与离线归档（/data/ATE_DATA/config）。",
     "updated_at": "2026-07-30 13:53:41"

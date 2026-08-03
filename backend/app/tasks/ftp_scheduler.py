@@ -8,7 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # 线程池：最多同时抓取 4 个 OSAT（避免资源耗尽）
-_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="ftp_worker")
+# Thread pool: up to 12 concurrent worker threads for FTP fetch and local file processing
+_executor = ThreadPoolExecutor(max_workers=12, thread_name_prefix="ftp_worker")
 _scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
 

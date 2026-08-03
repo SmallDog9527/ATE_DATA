@@ -159,7 +159,7 @@
           </div>
 
           <!-- 历史版本更新记录 -->
-          <div v-if="versionInfo.history && versionInfo.history.length > 0" class="version-history-section" style="margin-top: 20px; border-top: 1px dashed #cbd5e1; padding-top: 16px;">
+          <div v-if="authStore.isAdmin && versionInfo.history && versionInfo.history.length > 0" class="version-history-section" style="margin-top: 20px; border-top: 1px dashed #cbd5e1; padding-top: 16px;">
             <div class="history-title" style="font-weight: 600; margin-bottom: 12px; font-size: 14px; color: #1e293b; display: flex; align-items: center;">
               <span>📜 历史版本更新记录</span>
             </div>
@@ -400,6 +400,7 @@
                 <option value="">全部状态</option>
                 <option value="success">✅ 成功</option>
                 <option value="failed">❌ 失效</option>
+                <option value="manual skip">⏭️ manual skip</option>
                 <option value="downing">⏳ downing</option>
                 <option value="pending">⏳ Pending</option>
                 <option value="processing">⏳ Processing</option>
@@ -407,6 +408,9 @@
               <button class="btn-sm" @click="loadFtpLogs">🔄 刷新</button>
               <button class="btn-sm" @click="handleProcessExistingLocal" :disabled="processingExistingLocal" style="margin-left: auto; background-color: #3b82f6; border-color: #2563eb; color: white;">
                 ⚙️ {{ processingExistingLocal ? '处理中...' : '处理现有本地文件' }}
+              </button>
+              <button class="btn-sm" @click="handleRetryAllFailed" :disabled="retryingAllFailed" style="margin-left: 8px; background-color: #f59e0b; border-color: #d97706; color: white;">
+                🔁 {{ retryingAllFailed ? '重试中...' : '重试所有失效数据' }}
               </button>
               <button class="btn-sm btn-warn" @click="loadStuckFiles" style="margin-left: 8px;">
                 ⚠ 查看卡住文件 <span v-if="stuckFiles.length > 0" class="stuck-badge">{{ stuckFiles.length }}</span>
@@ -471,7 +475,7 @@
               <colgroup>
                 <col style="width:120px" />
                 <col />
-                <col style="width:130px" />
+                <col style="width:190px" />
                 <col style="width:100px" />
                 <col style="width:150px" />
                 <col />
@@ -492,10 +496,12 @@
                   <td class="log-path" :title="log.remote_path">{{ log.filename || log.remote_path }}</td>
                   <td>
                     <span v-if="log.status === 'success'" class="badge green">✅ 成功</span>
-                    <div v-else-if="log.status === 'failed'" style="display: inline-flex; align-items: center; gap: 6px;">
+                    <div v-else-if="log.status === 'failed'" style="display: inline-flex; align-items: center; gap: 6px; flex-wrap: nowrap; white-space: nowrap;">
                       <span class="badge red">❌ 失效</span>
                       <button @click="retryFtpLog(log.id)" class="btn-sm btn-retry" style="padding: 2px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; border: 1px solid #dcdfe6; background: #fff;">重试</button>
+                      <button @click="skipFtpLog(log.id)" class="btn-sm btn-skip" style="padding: 2px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; border: 1px solid #e6a23c; background: #fff; color: #e6a23c;">Skip</button>
                     </div>
+                    <span v-else-if="log.status === 'manual skip'" class="badge orange">⏭️ manual skip</span>
                     <span v-else-if="log.status === 'downing'" class="badge blue">⏳ downing</span>
                     <span v-else-if="log.status === 'pending'" class="badge gray">⏳ Pending</span>
                     <span v-else-if="log.status === 'processing'" class="badge purple">⏳ Processing</span>
@@ -654,6 +660,7 @@
                 <option value="">全部状态</option>
                 <option value="success">✅ 成功入库/处理</option>
                 <option value="failed">❌ 失败/异常</option>
+                <option value="manual skip">⏭️ manual skip</option>
                 <option value="pending">⏳ 排队/待处理</option>
                 <option value="scanned">🔍 快照未下载</option>
                 <option value="ignored">⚪ ignore</option>
@@ -712,6 +719,7 @@
                     <td style="text-align:center;white-space:nowrap;">
                       <span v-if="item.status === 'success'" class="badge green">✅ 成功</span>
                       <span v-else-if="item.status === 'failed'" class="badge red" :title="item.error_msg">❌ 失败</span>
+                      <span v-else-if="item.status === 'manual skip'" class="badge orange">⏭️ manual skip</span>
                       <span v-else-if="item.status === 'scanned'" class="badge blue">🔍 快照未下载</span>
                       <span v-else-if="item.status === 'ignored' || item.status === 'ignore'" class="badge gray">⚪ ignore</span>
                       <span v-else class="badge gray">⏳ {{ item.status }}</span>
@@ -1562,6 +1570,17 @@ async function retryFtpLog(logId: number) {
   }
 }
 
+async function skipFtpLog(logId: number) {
+  if (!confirm('确认跳过此失效文件？跳过后的记录将更新为 manual skip 且不再显示在失效列表中。')) return
+  try {
+    const res: any = await api.post(`/settings/ftp-logs/${logId}/skip`)
+    alert(res.message || '已成功标记为 manual skip')
+    await loadFtpLogs()
+  } catch (err: any) {
+    alert(err.response?.data?.detail || '跳过操作失败')
+  }
+}
+
 // ── Manual Upload Logs ──
 interface ManualLog {
   upload_type: string
@@ -1769,6 +1788,22 @@ async function loadDailySummary() {
   }
 }
 
+const retryingAllFailed = ref(false)
+async function handleRetryAllFailed() {
+  if (confirm('确认重试所有失效数据？点击后会将所有失效数据的状态更新为 scanned 并重新下载解析。')) {
+    retryingAllFailed.value = true
+    try {
+      const res: any = await api.post('/settings/ftp-logs/retry-all-failed')
+      alert(res.message || '重试所有失效数据请求已提交！')
+      await loadFtpLogs()
+    } catch (e: any) {
+      alert('提交失败：' + (e.response?.data?.detail || e.message || '未知错误'))
+    } finally {
+      retryingAllFailed.value = false
+    }
+  }
+}
+
 const processingExistingLocal = ref(false)
 async function handleProcessExistingLocal() {
   if (confirm("确定要立即扫描并处理目前本地 /download 和 /extracted 目录下的所有文件吗？\n（无论 OSAT 定时配置是否开启，都会立即启动后台解析和自动入库校验）")) {
@@ -1828,6 +1863,7 @@ onMounted(async () => {
 .badge.red   { background: #fef2f2; color: #dc2626; }
 .badge.gray  { background: #f3f4f6; color: #6b7280; }
 .badge.purple { background: #f5f3ff; color: #7c3aed; }
+.badge.orange { background: #fff7ed; color: #ea580c; }
 
 /* Tabs */
 .tabs { display: flex; gap: 4px; margin-bottom: 20px; }

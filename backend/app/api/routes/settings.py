@@ -349,6 +349,58 @@ def retry_failed_ftp_log(
     _executor.submit(_do_parse, log.id, log.osat_id, log.remote_path, None, files, admin_user_id)
     return {"message": "Re-parsing task submitted in background"}
 
+@router.post("/ftp-logs/{log_id}/skip")
+def skip_failed_ftp_log(
+    log_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_eng),
+):
+    """
+    Manually skip a failed FTP upload log.
+    Sets status to 'manual skip' so it will not be displayed in failed logs.
+    """
+    from app.models.ftp_upload_log import FtpUploadLog
+    
+    log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Log not found")
+        
+    log.status = 'manual skip'
+    log.error_msg = 'Manually skipped by user'
+    db.commit()
+    return {"message": "Log status updated to manual skip"}
+
+
+@router.post("/ftp-logs/retry-all-failed")
+def retry_all_failed_ftp_logs(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_eng),
+):
+    """
+    Reset all failed FTP upload logs to 'scanned' status and trigger re-download and re-parsing.
+    """
+    from app.models.ftp_upload_log import FtpUploadLog
+    from app.services.ftp_service import run_osat_fetch
+    from app.tasks.ftp_scheduler import _executor
+
+    failed_logs = db.query(FtpUploadLog).filter(FtpUploadLog.status == 'failed').all()
+    if not failed_logs:
+        return {"message": "No failed logs found to retry", "count": 0}
+
+    affected_osat_ids = set()
+    for log in failed_logs:
+        log.status = 'scanned'
+        log.error_msg = None
+        affected_osat_ids.add(log.osat_id)
+
+    db.commit()
+
+    for osat_id in affected_osat_ids:
+        _executor.submit(run_osat_fetch, osat_id, False)
+
+    return {"message": f"Successfully reset {len(failed_logs)} failed logs to scanned and triggered re-download", "count": len(failed_logs)}
+
+
 
 @router.post("/ftp-logs/process-existing")
 def process_existing_local_files(
@@ -768,7 +820,7 @@ def get_ftp_logs_daily_summary(
                 "summary_pass": s_count,
                 "success": succ_count,
                 "failed": f_count,
-                "total": len(osat_logs)
+                "total": db.query(FtpUploadLog).filter(FtpUploadLog.osat_id == osat_id, FtpUploadLog.status.in_(["scanned", "pending"])).count() or (d_count + s_count + f_count)
             }
 
     rows = []
@@ -951,7 +1003,7 @@ def get_project_version() -> str:
 @router.get("/version")
 def get_version_settings(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     """获取当前系统版本号与版本更新历史记录"""
     import json
@@ -995,10 +1047,14 @@ def get_version_settings(
             current_content = item.get("content", "")
             break
 
+    # Non-admin users (ENG and USER) only receive current version info without historical logs
+    if getattr(current_user, "role", None) != "admin":
+        history = []
+
     return {
         "version": current_version,
-        "content": current_content,  # 当前版本的更新说明
-        "history": history           # 历次版本更新记录
+        "content": current_content,  # Current version update log
+        "history": history           # Historical update records (empty for non-admin)
     }
 
 
