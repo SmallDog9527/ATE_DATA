@@ -441,7 +441,7 @@ def scan_ftp_files(osat, scan_type: str = 'both') -> List[str]:
 # Maximum failed retries allowed for a single file (files exceeding this limit will be skipped)
 _MAX_FAIL_RETRIES = 3
 PROCESSING_TIMEOUT_MINUTES = 30   # Records stuck in processing for more than this many minutes are marked as failed
-_DOWNLOAD_WORKERS = 30            # Number of concurrent FTP download threads
+_DOWNLOAD_WORKERS = 8            # Number of concurrent FTP download threads
 _PARSE_WORKERS = 5
 
 def get_parse_workers_count() -> int:
@@ -2263,16 +2263,28 @@ def _save_scan_snapshot(db, osat_id: int, all_paths: list):
     import os
     
     try:
-        # Get UTC time 24 hours ago
+        # Helper to classify Summary paths inside snapshot
+        def is_summary_file_path(path: str) -> bool:
+            fname = os.path.basename(path).lower()
+            if fname.endswith(('.xls', '.xlsx')):
+                return True
+            if fname.endswith('.txt') and ('ets' in fname or 'summary' in fname):
+                return True
+            return False
+        # Get UTC_time 24 hours ago
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         time_24h_ago_utc = now_utc - timedelta(hours=24)
         
         # 1. Query success/failed counts in the last 24 hours
-        success_cnt = db.query(FtpUploadLog).filter(
+        succ_logs_24h = db.query(FtpUploadLog.filename, FtpUploadLog.remote_path).filter(
             FtpUploadLog.osat_id == osat_id,
             FtpUploadLog.status == "success",
             FtpUploadLog.uploaded_at >= time_24h_ago_utc
-        ).count()
+        ).all()
+
+        success_cnt = len(succ_logs_24h)
+        summary_succ_cnt = sum(1 for l in succ_logs_24h if is_summary_file_path(l[0] or (l[1].split('/')[-1] if l[1] else "")))
+        data_succ_cnt = success_cnt - summary_succ_cnt
         
         failed_cnt = db.query(FtpUploadLog).filter(
             FtpUploadLog.osat_id == osat_id,
@@ -2288,7 +2300,7 @@ def _save_scan_snapshot(db, osat_id: int, all_paths: list):
         success_filenames = {l[0] for l in success_logs if l[0]}
         
         # 3. Count files currently on FTP that do not exist in success_filenames
-        unprocessed_cnt = sum(1 for p in all_paths if os.path.basename(p) not in success_filenames)
+        unprocessed_cnt = sum(1 for p in all_paths if os.path.basename(p) not in success_filenames and not _should_ignore_ftp_file(p))
         
         # 4. Save/update to daily snapshot (Asia/Shanghai timezone)
         tz_sh = timezone(timedelta(hours=8))
@@ -2305,7 +2317,8 @@ def _save_scan_snapshot(db, osat_id: int, all_paths: list):
             snapshot.data_success_count = data_succ_cnt
             snapshot.summary_success_count = summary_succ_cnt
             snapshot.failed_count = failed_cnt
-            snapshot.scanned_count = unprocessed_cnt
+            if unprocessed_cnt > 0 or snapshot.scanned_count == 0:
+                snapshot.scanned_count = unprocessed_cnt
             snapshot.last_scan_time = now_sh
         else:
             snapshot = FtpScanSnapshot(
@@ -2599,6 +2612,16 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                 .filter(FtpUploadLog.osat_id == osat_id)
                 .all()
             )
+            existing_success_filenames = set(
+                row.filename
+                for row in db.query(FtpUploadLog.filename)
+                .filter(
+                    FtpUploadLog.osat_id == osat_id,
+                    FtpUploadLog.status == 'success',
+                    FtpUploadLog.filename.isnot(None)
+                )
+                .all()
+            )
             new_summary_paths = [p for p in all_summary_paths if p not in existing_paths]
             
             new_logs = []
@@ -2611,6 +2634,14 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                         filename=fname,
                         status='ignored',
                         error_msg='Ignored by scan rule (log archive / FAILSUMMARY.csv)',
+                    ))
+                elif fname in existing_success_filenames:
+                    new_logs.append(FtpUploadLog(
+                        osat_id=osat_id,
+                        remote_path=path,
+                        filename=fname,
+                        status='ignored',
+                        error_msg='Ignored by deduplication rule (filename already successfully processed in history)',
                     ))
                 else:
                     new_logs.append(FtpUploadLog(
@@ -2684,6 +2715,16 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                 .filter(FtpUploadLog.osat_id == osat_id)
                 .all()
             )
+            existing_success_filenames = set(
+                row.filename
+                for row in db.query(FtpUploadLog.filename)
+                .filter(
+                    FtpUploadLog.osat_id == osat_id,
+                    FtpUploadLog.status == 'success',
+                    FtpUploadLog.filename.isnot(None)
+                )
+                .all()
+            )
             new_data_paths = [p for p in all_data_paths if p not in existing_paths]
             
             new_logs = []
@@ -2696,6 +2737,14 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                         filename=fname,
                         status='ignored',
                         error_msg='Ignored by scan rule (log archive / FAILSUMMARY.csv)',
+                    ))
+                elif fname in existing_success_filenames:
+                    new_logs.append(FtpUploadLog(
+                        osat_id=osat_id,
+                        remote_path=path,
+                        filename=fname,
+                        status='ignored',
+                        error_msg='Ignored by deduplication rule (filename already successfully processed in history)',
                     ))
                 else:
                     new_logs.append(FtpUploadLog(
