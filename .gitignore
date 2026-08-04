@@ -37,3 +37,5 @@ tmp/
 backend/tmp/
 frontend/type_check_log.txt
 frontend/src/New Text Document.txt
+# Data export files
+backend/export_results/

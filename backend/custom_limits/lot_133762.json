@@ -1,0 +1,17 @@
+[
+  {
+    "item_name": "P2P_LEAK_VBUS",
+    "ll_new": 0.22,
+    "ul_new": null
+  },
+  {
+    "item_name": "IQ_VBAT1_pre",
+    "ll_new": 1,
+    "ul_new": 2.85
+  },
+  {
+    "item_name": "QDHQCH_ipmid_pre",
+    "ll_new": 170,
+    "ul_new": 300
+  }
+]

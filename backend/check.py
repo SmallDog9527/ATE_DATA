@@ -1,0 +1,1 @@
+from app.core.database import SessionLocal; from app.models.ftp_upload_log import FtpUploadLog; db = SessionLocal(); print("FAILED:", db.query(FtpUploadLog).filter(FtpUploadLog.status == "failed").count()); print("MANUAL_SKIP:", db.query(FtpUploadLog).filter(FtpUploadLog.status == "manual skip").count())
