@@ -796,9 +796,10 @@ def get_ftp_logs_daily_summary(
         elif date_groups[log_date]["latest_time"] is None or local_dt > date_groups[log_date]["latest_time"]:
             date_groups[log_date]["latest_time"] = local_dt
 
-        if osat_id not in date_groups[log_date]["stats"]:
+        cur_stat = date_groups[log_date]["stats"].get(osat_id)
+        if not cur_stat or (cur_stat.get("data_pass", 0) == 0 and cur_stat.get("summary_pass", 0) == 0 and cur_stat.get("success", 0) == 0):
             osat_logs = [
-                l for l in all_upload_logs 
+                l for l in all_upload_logs
                 if l.osat_id == osat_id and (to_shanghai_naive(l.uploaded_at).date() == log_date)
             ]
             d_count = 0
@@ -815,13 +816,15 @@ def get_ftp_logs_daily_summary(
                         d_count += 1
                 elif ol.status == "failed":
                     f_count += 1
-            date_groups[log_date]["stats"][osat_id] = {
-                "data_pass": d_count,
-                "summary_pass": s_count,
-                "success": succ_count,
-                "failed": f_count,
-                "total": db.query(FtpUploadLog).filter(FtpUploadLog.osat_id == osat_id, FtpUploadLog.status.in_(["scanned", "pending"])).count() or (d_count + s_count + f_count)
-            }
+            if succ_count > 0 or f_count > 0 or not cur_stat:
+                prev_total = cur_stat.get("total", 0) if cur_stat else 0
+                date_groups[log_date]["stats"][osat_id] = {
+                    "data_pass": d_count,
+                    "summary_pass": s_count,
+                    "success": succ_count,
+                    "failed": f_count,
+                    "total": max(prev_total, succ_count + f_count)
+                }
 
     rows = []
     if total_stats:

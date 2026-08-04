@@ -479,7 +479,7 @@ def get_new_files(db, osat_id: int, all_remote_paths: list) -> list:
         for row in db.query(FtpUploadLog.remote_path)
         .filter(
             FtpUploadLog.osat_id == osat_id,
-            FtpUploadLog.status.in_(['success', 'processing', 'pending', 'downing'])
+            FtpUploadLog.status.in_(['success', 'processing', 'pending', 'downing', 'skipped', 'manual skip', 'ignored'])
         )
         .all()
     )
@@ -2299,8 +2299,27 @@ def _save_scan_snapshot(db, osat_id: int, all_paths: list):
         ).all()
         success_filenames = {l[0] for l in success_logs if l[0]}
         
-        # 3. Count files currently on FTP that do not exist in success_filenames
-        unprocessed_cnt = sum(1 for p in all_paths if os.path.basename(p) not in success_filenames and not _should_ignore_ftp_file(p))
+        # 2. Query all historical paths and successful filenames for this OSAT
+        existing_paths = set(
+            r[0] for r in db.query(FtpUploadLog.remote_path).filter(FtpUploadLog.osat_id == osat_id).all()
+        )
+
+        def _is_path_processed(path: str) -> bool:
+            if path in existing_paths:
+                return True
+            fname = os.path.basename(path)
+            if fname in success_filenames:
+                return True
+            fname_lower = fname.lower()
+            for ext in ('.gz', '.zip', '.rar', '.7z', '.tgz', '.tar'):
+                if fname_lower.endswith(ext):
+                    base_fname = fname[:-len(ext)]
+                    if base_fname in success_filenames:
+                        return True
+            return False
+
+        # 3. Count files currently on FTP that are not yet processed
+        unprocessed_cnt = sum(1 for p in all_paths if not _is_path_processed(p) and not _should_ignore_ftp_file(p))
         
         # 4. Save/update to daily snapshot (Asia/Shanghai timezone)
         tz_sh = timezone(timedelta(hours=8))
@@ -2317,8 +2336,7 @@ def _save_scan_snapshot(db, osat_id: int, all_paths: list):
             snapshot.data_success_count = data_succ_cnt
             snapshot.summary_success_count = summary_succ_cnt
             snapshot.failed_count = failed_cnt
-            if unprocessed_cnt > 0 or snapshot.scanned_count == 0:
-                snapshot.scanned_count = unprocessed_cnt
+            snapshot.scanned_count = unprocessed_cnt
             snapshot.last_scan_time = now_sh
         else:
             snapshot = FtpScanSnapshot(

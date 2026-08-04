@@ -401,6 +401,7 @@
                 <option value="success">✅ 成功</option>
                 <option value="failed">❌ 失效</option>
                 <option value="manual skip">⏭️ manual skip</option>
+                <option value="skipped">⏭️ Skipped</option>
                 <option value="downing">⏳ downing</option>
                 <option value="pending">⏳ Pending</option>
                 <option value="processing">⏳ Processing</option>
@@ -502,10 +503,11 @@
                       <button @click="skipFtpLog(log.id)" class="btn-sm btn-skip" style="padding: 2px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; border: 1px solid #e6a23c; background: #fff; color: #e6a23c;">Skip</button>
                     </div>
                     <span v-else-if="log.status === 'manual skip'" class="badge orange">⏭️ manual skip</span>
+                    <span v-else-if="log.status === 'skipped'" class="badge orange">⏭️ Skipped</span>
                     <span v-else-if="log.status === 'downing'" class="badge blue">⏳ downing</span>
                     <span v-else-if="log.status === 'pending'" class="badge gray">⏳ Pending</span>
                     <span v-else-if="log.status === 'processing'" class="badge purple">⏳ Processing</span>
-                    <span v-else class="badge blue">⏳ 处理中</span>
+                    <span v-else class="badge blue">⏳ {{ log.status }}</span>
                   </td>
                   <td>{{ log.file_size ? fmtBytes(log.file_size) : '—' }}</td>
                   <td>{{ fmtDate(log.uploaded_at) }}</td>

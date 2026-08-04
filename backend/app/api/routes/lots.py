@@ -1494,7 +1494,10 @@ def get_lots(
                 osat_names_for_type.append(name)
                 if '_' in name:
                     osat_names_for_type.append(name.split('_')[0])
-            query = query.filter(Lot.osat_name.in_(osat_names_for_type))
+            query = query.filter(
+            Lot.osat_name.in_(osat_names_for_type),
+            Lot.data_type != 'MP_Yield'
+        )
         if test_date_from:
             query = query.filter(Lot.test_date >= datetime.strptime(test_date_from, "%Y-%m-%d"))
         if test_date_to:
@@ -2448,7 +2451,7 @@ def get_distinct_osat_names(
         results = db.query(Lot.osat_name).filter(Lot.osat_name.isnot(None)).distinct().all()
         names = [r[0] for r in results if r[0].strip()]
         names = sorted(list(set([n.strip() for n in names])))
-        defaults = ["Chipmore", "LBS", "HTKS", "HTJS", "UCD"]
+        defaults = ["Chipmore", "LBS", "HTKS", "UCD"]
         for d in defaults:
             if d not in names:
                 names.append(d)

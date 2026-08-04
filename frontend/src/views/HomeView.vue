@@ -1221,7 +1221,7 @@ async function fetchOsatNames() {
     allOsatNames.value = res || []
   } catch (e) {
     console.error('Failed to fetch osat names:', e)
-    allOsatNames.value = ["Chipmore", "LBS", "HTKS", "HTJS", "UCD"]
+    allOsatNames.value = ["Chipmore", "LBS", "HTKS", "UCD"]
   }
 }
 
