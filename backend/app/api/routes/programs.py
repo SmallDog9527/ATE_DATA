@@ -1042,10 +1042,22 @@ class ExtraUpdate(BaseModel):
 # Routes
 # ---------------------------------------------------------------------------
 
-@router.get("/list")
-def get_program_list(db: Session = Depends(get_db)):
-    """一级列表：每个产品名下，按 tester 取最新程序版本"""
-    # 查出所有非删除状态且不只包含 MP_Yield 的 product_name
+PROGRAM_LIST_REDIS_KEY = "program_changes:list_snapshot"
+PROGRAM_LIST_CACHE_TTL = 84600  # 23.5 hours in seconds
+
+
+def invalidate_program_list_cache() -> None:
+    """Invalidate program changes list cache in Redis."""
+    try:
+        from app.core.redis_client import get_redis
+        r = get_redis()
+        r.delete(PROGRAM_LIST_REDIS_KEY)
+    except Exception as e:
+        print(f"[program_changes] Failed to invalidate cache: {e}")
+
+
+def _build_program_list_data(db: Session) -> list:
+    """Build full program list data from DB."""
     all_active_products = (
         db.query(Lot.product_name)
         .filter(
@@ -1074,7 +1086,6 @@ def get_program_list(db: Session = Depends(get_db)):
         .all()
     )
 
-    # 按 (product_name, test_machine) 聚合最新（跳过 _QA / _RT 程序）
     seen = {}
     seen_osat = {}
     for lot in all_lots:
@@ -1087,18 +1098,14 @@ def get_program_list(db: Session = Depends(get_db)):
         if lot.osat_name and key not in seen_osat:
             seen_osat[key] = lot.osat_name
 
-    # 按产品名进一步聚合
     product_map: dict = {}
     for (product_name, tester), lot in seen.items():
         if product_name not in product_map:
             product_map[product_name] = []
-        extra = _get_extra(db, lot.id)
-        dt = extra.data_type_override if extra and extra.data_type_override else lot.data_type
-        dt = _normalize_cp_ft(dt, lot)
+
         pgs_rows = _build_pgs_list(db, product_name)
         latest_pgm = pgs_rows[0] if pgs_rows else {}
 
-        # 平均 Wafer 测试时间（秒），CP 自动计算，FT 用户填写
         if dt == "CP":
             uph_s = _calc_avg_wafer_time(db, product_name, tester)
         else:
@@ -1122,7 +1129,6 @@ def get_program_list(db: Session = Depends(get_db)):
             "data_source": "ftp" if lot.data_source == "ftp" else "manual",
         })
 
-    # 补全所有在数据列表中存在但没有匹配程序的 product_name
     for prod_name in all_product_names:
         if prod_name not in product_map:
             product_map[prod_name] = []
@@ -1142,6 +1148,34 @@ def get_program_list(db: Session = Depends(get_db)):
         idx += 1
 
     return result
+
+
+def refresh_program_list_snapshot(db: Session) -> list:
+    """Calculate and update program list snapshot in Redis with 23.5 hours TTL."""
+    data = _build_program_list_data(db)
+    try:
+        from app.core.redis_client import get_redis
+        r = get_redis()
+        r.setex(PROGRAM_LIST_REDIS_KEY, PROGRAM_LIST_CACHE_TTL, json.dumps(data, ensure_ascii=False))
+        print(f"[program_changes] Saved list snapshot to Redis with TTL {PROGRAM_LIST_CACHE_TTL}s.")
+    except Exception as e:
+        print(f"[program_changes] Failed to set Redis snapshot cache: {e}")
+    return data
+
+
+@router.get("/list")
+def get_program_list(db: Session = Depends(get_db)):
+    """Get main program changes list, reading from Redis snapshot (TTL 23.5 hours) if available."""
+    try:
+        from app.core.redis_client import get_redis
+        r = get_redis()
+        cached = r.get(PROGRAM_LIST_REDIS_KEY)
+        if cached:
+            return json.loads(cached)
+    except Exception as e:
+        print(f"[program_changes] Redis read error: {e}")
+
+    return refresh_program_list_snapshot(db)
 
 
 @router.get("/product/{product_name}")
@@ -1556,6 +1590,7 @@ async def upload_pgs(
                     pass
 
 
+    invalidate_program_list_cache()
     return {
         "id": record.id,
         "filename": record.filename,
@@ -1622,6 +1657,7 @@ def delete_pgs_upload(
     CPP_RESPONSE_CACHE.pop(upload_id, None)
     rec.parse_status = "deleted"
     db.commit()
+    invalidate_program_list_cache()
     return {"success": True}
 
 
@@ -1750,7 +1786,15 @@ def _build_data_program_list(
             continue
         tester = lot.test_machine or ""
         program = lot.program or ""
-        if _is_qa_text(lot.filename) or _is_qa_text(program):
+        # Filter out QA lots strictly
+        extra = _get_extra(db, lot.id)
+        raw_dt = extra.data_type_override if extra and extra.data_type_override else lot.data_type
+        if _is_qa_text(lot.filename) or _is_qa_text(program) or _is_qa_text(raw_dt) or _is_qa_text(lot.data_type):
+            continue
+
+        # Filter to only allow CP and FT data types
+        dt = _normalize_cp_ft(raw_dt, lot)
+        if dt not in ("CP", "FT") or _is_qa_text(dt):
             continue
         signature = (tester, program, _data_version_signature(params, []))
         existing = unique_by_signature.get(signature)
@@ -1765,9 +1809,7 @@ def _build_data_program_list(
             if existing_is_osat == current_is_osat and existing_time >= lot_time:
                 continue
 
-        extra = _get_extra(db, lot.id)
-        dt = extra.data_type_override if extra and extra.data_type_override else lot.data_type
-        dt = _normalize_cp_ft(dt, lot)
+
         stats_key = (program, tester)
         if stats_key not in stats_cache:
             stats_cache[stats_key] = _calc_program_wafer_stats(db, product_name, program, tester, cutoff)
@@ -1863,6 +1905,7 @@ def refresh_data_program_list(
     """Recalculate the Data tab rows and persist them as the product snapshot."""
     rows = _build_data_program_list(db, product_name, days, months)
     _save_program_data_snapshot(db, product_name, rows, days, months)
+    invalidate_program_list_cache()
     return rows
 
 
@@ -2013,6 +2056,7 @@ def update_pgs_remark(
         raise HTTPException(status_code=404, detail="?????")
     rec.remark = payload.remark.strip() if payload.remark else ""
     db.commit()
+    invalidate_program_list_cache()
     return {"status": "success", "message": "Remark updated successfully"}
 
 
@@ -2074,6 +2118,7 @@ def add_product_placeholder(
     db.add(ph)
     db.commit()
     db.refresh(ph)
+    invalidate_program_list_cache()
     return {"id": ph.id, "product_name": ph.product_name, "created": True}
 
 
@@ -2117,6 +2162,7 @@ def update_lot_extra(
         )
         db.add(extra)
     db.commit()
+    invalidate_program_list_cache()
     return {"status": "ok"}
 
 
@@ -2138,188 +2184,23 @@ def get_field_suggestions(field: str, db: Session = Depends(get_db)):
 
 
 def update_all_program_changes_snapshot(db: Session, force_product_name: Optional[str] = None) -> None:
-    """每周定时增量更新所有产品程序变更快照的执行任务，支持指定单个产品以供调试"""
+    """Run program changes snapshot update for all products or specified product."""
     from app.models.lot import Lot
     from sqlalchemy import func
-    from datetime import datetime, timezone, timedelta
-    
+
     if force_product_name:
         product_names = [force_product_name]
     else:
-        # 查找所有非删除的、存在有效产品名的产品
         product_names = [
             r[0] for r in db.query(func.distinct(Lot.product_name))
             .filter(Lot.status != "deleted")
             .all() if r[0]
         ]
-    
+
     for pname in product_names:
         try:
-            # 1. 载入已有快照行
-            rows = _load_program_data_snapshot(db, pname)
-            
-            # 2. 确定数据库中该产品的最新 Lot ID
-            latest_lot = (
-                db.query(Lot.id)
-                .filter(
-                    Lot.product_name == pname,
-                    Lot.program.isnot(None),
-                    Lot.status == "processed",
-                    ~Lot.filename.ilike("%QA%"),
-                )
-                .order_by(Lot.id.desc())
-                .first()
-            )
-            latest_lot_id = latest_lot[0] if latest_lot else 0
-            
-            if not rows:
-                # 2a. 若之前无快照，执行全量计算并保存 (10年跨度)
-                new_rows = _build_data_program_list(db, pname, days=3650, months=120.0)
-                _save_program_data_snapshot(db, pname, new_rows, days=3650, months=120.0)
-                print(f"[scheduler] 产品 {pname} 全量初始化快照成功，共 {len(new_rows)} 条")
-                continue
-                
-            # 找到已有快照中的最大 Lot ID
-            max_existing_id = max(r.get("lot_id") or 0 for r in rows)
-            
-            # 2b. 按需加载：如果没有更晚更新的数据，直接跳过
-            if latest_lot_id <= max_existing_id:
-                print(f"[scheduler] 产品 {pname} 无新数据，跳过增量更新 (latest: {latest_lot_id}, max_existing: {max_existing_id})")
-                continue
-                
-            # 3. 只追加更新：查询最新的且未加入快照的 Lot
-            new_lots = (
-                db.query(Lot)
-                .filter(
-                    Lot.product_name == pname,
-                    Lot.id > max_existing_id,
-                    Lot.program.isnot(None),
-                    Lot.status == "processed",
-                    ~Lot.filename.ilike("%QA%"),
-                )
-                .order_by(Lot.test_machine, Lot.test_date, Lot.upload_date)
-                .all()
-            )
-            if not new_lots:
-                continue
-                
-            # 4. 基线参数拉取：找出旧快照中每个机台（tester）的最新的那一行
-            tester_last_lot_id = {}
-            tester_last_row = {}
-            for r in rows:
-                t = r.get("tester") or ""
-                if t not in tester_last_lot_id:
-                    tester_last_lot_id[t] = r.get("lot_id")
-                    tester_last_row[t] = r
-                    
-            tester_last_params = {}
-            for t, lid in tester_last_lot_id.items():
-                if lid:
-                    tester_last_params[t] = _get_lot_data_params(db, lid)
-            
-            # 5. 新增 Lot 内部去重与参数链式比对
-            avg_td = _calc_avg_touch_down(db, pname)
-            stats_cache = {}
-            
-            new_rows_to_append = []
-            has_updates = False
-            for lot in new_lots:
-                params = _get_lot_data_params(db, lot.id)
-                if not params:
-                    continue
-                t = lot.test_machine or ""
-                
-                # 比对 signature：与当前该机台最新的参数比较
-                last_p = tester_last_params.get(t, [])
-                if _data_version_signature(params, []) == _data_version_signature(last_p, []):
-                    # 参数无变化，版本未更替，我们用最新 lot 的信息更新这一旧行！
-                    target_row = tester_last_row.get(t)
-                    if target_row:
-                        target_row["id"] = lot.id
-                        target_row["lot_id"] = lot.id
-                        target_row["filename"] = lot.filename
-                        target_row["upload_date"] = _fmt_dt(lot.upload_date)
-                        target_row["test_date"] = _fmt_dt(lot.test_date)
-                        has_updates = True
-                    
-                    tester_last_params[t] = params
-                    continue
-                
-                # 计算变更
-                changes = _build_data_param_changes_summary(last_p, params)
-                
-                # 计算 wafer 统计 (10年范围)
-                cutoff = datetime.now() - timedelta(days=3650)
-                stats_key = (lot.program, t)
-                if stats_key not in stats_cache:
-                    stats_cache[stats_key] = _calc_program_wafer_stats(db, pname, lot.program, t, cutoff)
-                wafer_stats = stats_cache[stats_key]
-                
-                extra = _get_extra(db, lot.id)
-                dt = extra.data_type_override if extra and extra.data_type_override else lot.data_type
-                dt = _normalize_cp_ft(dt, lot)
-                
-                new_row = {
-                    "id": lot.id,
-                    "lot_id": lot.id,
-                    "earliest_lot_id": lot.id,
-                    "filename": lot.filename,
-                    "product_name": pname,
-                    "program_version": lot.program,
-                    "program": lot.program,
-                    "raw_program": lot.program,
-                    "pgs_version": None,
-                    "parse_status": "ok",
-                    "parse_error": None,
-                    "upload_date": _fmt_dt(lot.upload_date),
-                    "test_date": _fmt_dt(lot.test_date),
-                    "data_source": "Data",
-                    "source_type": "ftp" if _lot_is_osat(lot) else "manual",
-                    "item_count": len(params),
-                    "ft_count": len(params),
-                    "qa_count": 0,
-                    "uph_s": extra.ft_touch_down_s if extra else None,
-                    "data_type": dt,
-                    "engineer": extra.engineer if extra else None,
-                    "osat": lot.osat_name,
-                    "package": extra.package if extra else None,
-                    "hardware_info": extra.hardware_info if extra else None,
-                    "remark": extra.remark if extra else None,
-                    "avg_touch_down_s": avg_td,
-                    "avg_wafer_time_h": wafer_stats.get("avg_wafer_time_h"),
-                    "tester": t,
-                    "changes": changes,
-                }
-                new_rows_to_append.append(new_row)
-                has_updates = True
-                # 更新当前机台参数基线，实现链式比对
-                tester_last_params[t] = params
-                # 更新 tester_last_row 引用，以便后面可能的新 lot 继续合并
-                tester_last_row[t] = new_row
-            
-            if has_updates:
-                # 6. 合并新老数据，重新排序并标注 index
-                merged = rows + new_rows_to_append
-                
-                # 检查机台数量决定排序模式
-                testers = {r.get("tester") for r in merged if r.get("tester")}
-                merged.sort(key=lambda r: (
-                    r.get("tester") or "" if len(testers) >= 2 else "",
-                    r.get("test_date") or r.get("upload_date") or "",
-                ))
-                # 反转时间使最晚数据在前
-                merged.sort(key=lambda r: r.get("test_date") or r.get("upload_date") or "", reverse=True)
-                if len(testers) >= 2:
-                    merged.sort(key=lambda r: r.get("tester") or "")
-                
-                for idx, r in enumerate(merged, 1):
-                    r["index"] = idx
-                
-                # 保存最新的增量合并快照
-                _save_program_data_snapshot(db, pname, merged, days=3650, months=120.0)
-                print(f"[scheduler] 产品 {pname} 增量更新成功，追加 {len(new_rows_to_append)} 条，合并最新 Lot 时间。")
-            else:
-                print(f"[scheduler] 产品 {pname} 无新增的独特程序变更")
-                
+            new_rows = _build_data_program_list(db, pname, days=3650, months=120.0)
+            _save_program_data_snapshot(db, pname, new_rows, days=3650, months=120.0)
+            print(f"[scheduler] Refreshed program changes snapshot for product {pname}: {len(new_rows)} rows")
         except Exception as e:
-            print(f"[scheduler] 增量更新产品 {pname} 异常: {e}")
+            print(f"[scheduler] Exception updating snapshot for product {pname}: {e}")

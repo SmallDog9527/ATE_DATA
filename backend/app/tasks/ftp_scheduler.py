@@ -530,13 +530,31 @@ def directory_growth_monitor_job():
                 print(f"[watchdog] Error trying to auto-resume OSATs: {resume_ex}")
 
 
+
+def daily_program_changes_snapshot_job():
+    """Run daily program changes main list and product data snapshot refresh at 08:30."""
+    from app.core.database import SessionLocal
+    from app.api.routes.programs import refresh_program_list_snapshot, update_all_program_changes_snapshot
+
+    print("[scheduler] Starting daily program changes snapshot job (08:30)...")
+    db = SessionLocal()
+    try:
+        refresh_program_list_snapshot(db)
+        print("[scheduler] Main program changes list snapshot refreshed successfully.")
+        update_all_program_changes_snapshot(db)
+        print("[scheduler] All product data page snapshots updated successfully.")
+    except Exception as e:
+        print(f"[scheduler] daily_program_changes_snapshot_job exception: {e}")
+    finally:
+        db.close()
+
 def daily_ftp_scan_snapshot_job():
     """Run daily scan snapshot at 08:00 for all enabled OSATs."""
     from app.core.database import SessionLocal
     from app.models.osat_config import OsatConfig
     from app.services.ftp_service import run_osat_fetch
     
-    print("[scheduler] ⏰ Starting daily FTP scan snapshot job (08:00)...")
+    print("[scheduler] ⏰ Starting daily FTP scan snapshot job (00:00 & 12:00)...")
     db = SessionLocal()
     try:
         configs = db.query(OsatConfig).filter(OsatConfig.enabled == True).all()
@@ -603,7 +621,7 @@ def start_scheduler():
         _scheduler.add_job(
             daily_ftp_scan_snapshot_job,
             trigger='cron',
-            hour=8,
+            hour='0,12',
             minute=0,
             id='daily_ftp_scan_snapshot',
             replace_existing=True,

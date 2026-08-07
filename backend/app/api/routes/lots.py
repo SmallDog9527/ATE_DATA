@@ -2097,14 +2097,16 @@ def download_lots(data: DownloadRequest, db: Session = Depends(get_db)):
         if file_path and os.path.exists(file_path):
             ext = os.path.splitext(file_path)[-1].lower()
             if ext == '.zip':
-                # 确保下载的文件名以 .zip 结尾
+                # Ensure download filename ends with .zip
                 download_name = os.path.basename(file_path)
                 if not download_name.lower().endswith('.zip'):
                     download_name = os.path.splitext(download_name)[0] + '.zip'
+                from urllib.parse import quote
+                encoded_name = quote(download_name)
                 return FileResponse(
                     file_path,
                     media_type="application/zip",
-                    headers={"Content-Disposition": f'attachment; filename="{download_name}"'}
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}"}
                 )
 
     # 准备ZIP文件（内存流）

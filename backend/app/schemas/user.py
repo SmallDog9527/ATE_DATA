@@ -96,6 +96,7 @@ class UserResponse(BaseModel):
     email_verified: bool
     created_at: datetime
     last_login_at: Optional[datetime] = None
+    last_login_ip: Optional[str] = None
     storage_used_bytes: Optional[int] = 0
     receive_alerts: bool = False
 
@@ -138,6 +139,7 @@ class UserListItem(BaseModel):
     email_verified: bool
     created_at: datetime
     last_login_at: Optional[datetime] = None
+    last_login_ip: Optional[str] = None
     storage_used_bytes: Optional[int] = 0
     receive_alerts: bool = False
     lot_count: int = 0

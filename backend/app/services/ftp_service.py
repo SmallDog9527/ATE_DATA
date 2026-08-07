@@ -1839,6 +1839,8 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                         ).first()
                         if mapping:
                             lot.product_name = mapping.product_name
+                        elif not lot.product_name and '_' in lot.program:
+                            lot.product_name = prefix.strip()
                     if summary_data.get('lot_id'):
                         lot.lot_id = summary_data['lot_id']
                     if summary_data.get('wafer_id'):
@@ -2472,7 +2474,16 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
             FtpScanSnapshot.scan_date == today_date
         ).first()
 
-        need_scan = save_snapshot or (existing_snapshot is None)
+        # Force re-scan if save_snapshot requested, if snapshot is missing, or if snapshot has 0 scanned/success/failed count
+        snapshot_empty = False
+        if existing_snapshot:
+            scanned_cnt = getattr(existing_snapshot, 'scanned_count', 0) or 0
+            succ_cnt = getattr(existing_snapshot, 'success_count', 0) or 0
+            fail_cnt = getattr(existing_snapshot, 'failed_count', 0) or 0
+            if scanned_cnt == 0 and succ_cnt == 0 and fail_cnt == 0:
+                snapshot_empty = True
+
+        need_scan = save_snapshot or (existing_snapshot is None) or snapshot_empty
 
         # Prepare executors for concurrency
         download_workers = _DOWNLOAD_WORKERS

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Request
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
@@ -73,7 +73,7 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
 # 3. 登录
 # ──────────────────────────────────────────
 @router.post("/login", response_model=Token)
-def login(user_in: UserLogin, db: Session = Depends(get_db)):
+def login(user_in: UserLogin, request: Request, db: Session = Depends(get_db)):
     if is_login_locked(user_in.username):
         raise HTTPException(
             status_code=429,
@@ -92,8 +92,14 @@ def login(user_in: UserLogin, db: Session = Depends(get_db)):
 
     clear_login_fail(user_in.username)
 
-    # 更新最后登录时间
+    # Extract client IP address
+    client_ip = request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP") or (request.client.host if request.client else None)
+    if client_ip and "," in client_ip:
+        client_ip = client_ip.split(",")[0].strip()
+
+    # Update last login time and IP address
     user.last_login_at = datetime.now(timezone.utc)
+    user.last_login_ip = client_ip
     db.commit()
 
     access_token  = create_access_token({"sub": str(user.id)})

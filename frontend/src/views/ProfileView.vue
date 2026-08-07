@@ -766,9 +766,11 @@
               <tr>
                 <th>用户名</th>
                 <th>邮箱</th>
+                <th>接收告警</th>
                 <th>状态</th>
                 <th>角色</th>
                 <th>注册时间</th>
+                <th>最后登录时间及IP</th>
                 <th>上传数量</th>
                 <th>操作</th>
               </tr>
@@ -796,6 +798,13 @@
                   <span v-else class="badge gray">User</span>
                 </td>
                 <td>{{ fmtDate(u.created_at) }}</td>
+                <td>
+                  <template v-if="u.last_login_at">
+                    {{ fmtDate(u.last_login_at) }}
+                    <span v-if="u.last_login_ip" class="ip-text">({{ u.last_login_ip }})</span>
+                  </template>
+                  <template v-else>-</template>
+                </td>
                 <td>{{ u.lot_count }}</td>
                 <td class="action-cell">
                   <button class="btn-sm" @click="toggleActive(u)" :disabled="u.id === authStore.user?.id">
@@ -1707,7 +1716,7 @@ interface UserItem {
   id: number; username: string; email: string
   role: string; is_active: boolean; receive_alerts?: boolean
   email_verified: boolean; created_at: string
-  last_login_at?: string; storage_used_bytes?: number; lot_count: number
+  last_login_at?: string; last_login_ip?: string; storage_used_bytes?: number; lot_count: number
 }
 const userList      = ref<UserItem[]>([])
 const adminLoading  = ref(false)
@@ -2081,4 +2090,5 @@ onMounted(async () => {
   padding: 6px 0;
   border-top: 1px solid #f3f4f6;
 }
+.ip-text { font-size: 0.85em; color: #64748b; margin-left: 3px; }
 </style>

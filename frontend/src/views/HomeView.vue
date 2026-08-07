@@ -486,10 +486,10 @@ const filteredLots = computed(() => {
     return lots.value.filter((l: any) => l.data_type === 'CP_LOT')
   }
   if (activeHomeTab.value === 'CP') {
-    return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'FT' && (l.osat_type === 'CP' || l.data_type === 'CP') && l.data_type !== 'MP_Yield')
+    return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield')
   }
   if (activeHomeTab.value === 'FT') {
-    return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'CP' && (l.osat_type === 'FT' || l.data_type === 'FT') && l.data_type !== 'MP_Yield')
+    return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield')
   }
   return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'MP_Yield')
 })
@@ -972,7 +972,7 @@ const columnDefs: ColDef[] = [
     floatingFilterComponent: SelectFloatingFilter,
     floatingFilterComponentParams: {
       // 固定列表：不受当前 Tab 过滤影响，始终显示所有可能的 Data Type
-      options: () => ['CP', 'FT', 'QA', 'Summary', 'CP_LOT'],
+      options: () => ['CP', 'FT', 'QA', 'Summary', 'CP_LOT', 'MP_Yield'],
       placeholder: 'Data Type',
     },
   },
@@ -1264,9 +1264,20 @@ async function saveProductName() {
 function onGridReady(params: any) {
   gridApi.value = params.api
   // 初始化表格时，如果默认状态有值，应用到表格列筛选器
+  const model = gridApi.value.getFilterModel() || {}
+  let changed = false
   if (filters.value.status) {
-    const model = gridApi.value.getFilterModel() || {}
     model.status = { type: 'equals', filter: filters.value.status }
+    changed = true
+  }
+  if (activeHomeTab.value === 'FT') {
+    model.data_type = { type: 'equals', filter: 'FT' }
+    changed = true
+  } else if (activeHomeTab.value === 'CP') {
+    model.data_type = { type: 'equals', filter: 'CP' }
+    changed = true
+  }
+  if (changed) {
     gridApi.value.setFilterModel(model)
   }
 }
@@ -1696,10 +1707,16 @@ onMounted(() => {
   fetchLots()
   fetchOsatNames()
 })
-watch(activeHomeTab, () => {
+watch(activeHomeTab, (newTab) => {
   if (gridApi.value) {
     const model = gridApi.value.getFilterModel() || {}
-    delete model.data_type
+    if (newTab === 'FT') {
+      model.data_type = { type: 'equals', filter: 'FT' }
+    } else if (newTab === 'CP') {
+      model.data_type = { type: 'equals', filter: 'CP' }
+    } else {
+      delete model.data_type
+    }
     gridApi.value.setFilterModel(model)
   }
   fetchLotsFromFirstPage()

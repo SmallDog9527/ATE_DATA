@@ -13,7 +13,8 @@ class User(Base):
     role = Column(String, default="user")             # admin, eng, user
     email_verified = Column(Boolean, default=False)   # 邮箱已验证
     created_at = Column(DateTime, server_default=func.now())
-    last_login_at = Column(DateTime)                  # 最后登录时间
+    last_login_at = Column(DateTime)                  # Last login time
+    last_login_ip = Column(String)                    # Last login IP address
 
     # 存储配置
     storage_type = Column(String, default="local")

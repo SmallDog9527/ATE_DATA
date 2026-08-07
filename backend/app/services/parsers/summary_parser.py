@@ -274,6 +274,8 @@ def apply_summary_to_csv(db: Session, csv_lot_id: int, summary_data: dict):
         ).first()
         if mapping:
             csv_lot.product_name = mapping.product_name
+        elif not csv_lot.product_name and '_' in summary_data['program']:
+            csv_lot.product_name = prefix.strip()
 
     # 1.5 补充 Tester / Probe Card 信息到 mp_tester 和 probecard
     if summary_data.get('tester') and not csv_lot.mp_tester:

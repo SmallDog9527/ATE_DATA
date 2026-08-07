@@ -172,6 +172,7 @@ def update_osat(
         osat.ftp_pass_enc = encrypt_password(body.ftp_password)
     osat.ftp_remote_dir = body.ftp_remote_dir.strip() or "/"
     osat.ftp_summary_dir = body.ftp_summary_dir.strip() or "/"
+    was_enabled = osat.enabled
     osat.schedule_start = body.schedule_start
     osat.schedule_end = body.schedule_end
     osat.enabled = body.enabled
@@ -180,6 +181,16 @@ def update_osat(
 
     db.commit()
     db.refresh(osat)
+
+    # Automatically trigger immediate FTP scan and fetch task when re-enabling an OSAT
+    if body.enabled and not was_enabled:
+        try:
+            from app.tasks.ftp_scheduler import trigger_osat_now
+            trigger_osat_now(osat_id)
+            print(f"[osat_config] Auto-triggered immediate fetch for re-enabled OSAT id={osat_id}")
+        except Exception as e:
+            print(f"[osat_config] Failed to auto-trigger fetch for re-enabled OSAT id={osat_id}: {e}")
+
     return osat
 
 

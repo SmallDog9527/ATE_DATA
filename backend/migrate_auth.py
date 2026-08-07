@@ -26,6 +26,12 @@ if 'users' in existing_tables:
         else:
             print('[SKIP] last_login_at already exists')
 
+        if 'last_login_ip' not in cols:
+            conn.execute(sa.text('ALTER TABLE users ADD COLUMN last_login_ip VARCHAR(45)'))
+            print('[OK] Added column: last_login_ip')
+        else:
+            print('[SKIP] last_login_ip already exists')
+
         if 'receive_alerts' not in cols:
             conn.execute(sa.text('ALTER TABLE users ADD COLUMN receive_alerts BOOLEAN NOT NULL DEFAULT FALSE'))
             print('[OK] Added column: receive_alerts')

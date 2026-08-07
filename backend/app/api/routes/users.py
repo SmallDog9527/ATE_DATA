@@ -60,6 +60,7 @@ def list_users(
             email_verified=u.email_verified,
             created_at=u.created_at,
             last_login_at=u.last_login_at,
+            last_login_ip=getattr(u, "last_login_ip", None),
             storage_used_bytes=u.storage_used_bytes or 0,
             receive_alerts=getattr(u, "receive_alerts", False),
             lot_count=lot_count,
