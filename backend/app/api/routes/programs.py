@@ -1106,6 +1106,11 @@ def _build_program_list_data(db: Session) -> list:
         pgs_rows = _build_pgs_list(db, product_name)
         latest_pgm = pgs_rows[0] if pgs_rows else {}
 
+        # Fetch extra info and normalize data type
+        extra = _get_extra(db, lot.id)
+        dt = extra.data_type_override if extra and extra.data_type_override else lot.data_type
+        dt = _normalize_cp_ft(dt, lot)
+
         if dt == "CP":
             uph_s = _calc_avg_wafer_time(db, product_name, tester)
         else:

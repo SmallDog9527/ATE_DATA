@@ -1495,7 +1495,7 @@ interface FtpLog {
 const ftpLogs        = ref<FtpLog[]>([])
 const logsLoading    = ref(false)
 const logFilterOsat  = ref<number | ''>('')
-const logFilterStatus = ref('')
+const logFilterStatus = ref('success')
 const logPage        = ref(1)
 
 
