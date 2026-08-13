@@ -3250,11 +3250,62 @@ def get_multi_lot_wafer_bin_maps(
     return {"maps": result}
 
 @router.get("/idle_check/config")
-def get_idle_check_config(program_name: str, db: Session = Depends(get_db)):
+def get_idle_check_config(
+    program_name: str,
+    lot_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Get Idle Check configuration for a program along with all available test parameters.
+    """
     config = db.query(IdleCheckConfig).filter(IdleCheckConfig.program_name == program_name).first()
-    if not config:
-        return {"program_name": program_name, "params": [], "threshold": 2}
-    return config
+    selected_params = config.params if config else []
+    threshold = config.threshold if config else 2
+
+    # Retrieve all available parameters for this program or lot
+    all_params = []
+    lot = None
+    if lot_id:
+        lot = db.query(Lot).filter(Lot.id == lot_id).first()
+    if not lot:
+        lot = (
+            db.query(Lot)
+            .filter(Lot.program == program_name, Lot.parquet_path.isnot(None), Lot.status != 'deleted')
+            .order_by(Lot.id.desc())
+            .first()
+        )
+
+    if lot and lot.parquet_path and os.path.exists(lot.parquet_path):
+        try:
+            df = pd.read_parquet(lot.parquet_path)
+            meta_cols = {
+                'SERIES', 'SITE_NUM', 'SOFT_BIN', 'HARD_BIN', 'T_TIME', 'TEST_NUM',
+                'Cor_X', 'Cor_Y', 'X_COORD', 'Y_COORD', 'Product_name', 'Product_sub_name',
+                'Version_Flag', 'Pgs_Flag', 'Tempera_Flag', 'Efuse_Flag', 'AMR_Flag',
+                'Board_ID', 'DUT', 'BIN_NO', 'DUT_NO', 'DUT_ID', 'fingerprint', 'is_alarm',
+                'chip_id', 'CHIP_NO', 'calc_chip_id'
+            }
+            all_params = [c for c in df.columns if c not in meta_cols]
+        except Exception as e:
+            print(f"[get_idle_check_config] Error reading parquet: {e}")
+
+    if not all_params and lot:
+        items = db.query(TestItem.item_name).filter(TestItem.lot_id == lot.id, TestItem.site == 0).all()
+        all_params = [it[0] for it in items]
+
+    if not all_params:
+        all_params = selected_params
+    else:
+        for p in selected_params:
+            if p not in all_params:
+                all_params.append(p)
+
+    return {
+        "program_name": program_name,
+        "params": selected_params,
+        "threshold": threshold,
+        "all_params": all_params
+    }
 
 @router.post("/idle_check/config")
 def set_idle_check_config(config_in: IdleCheckConfigCreate, db: Session = Depends(get_db)):
@@ -3595,6 +3646,19 @@ def export_idle_check(
     else:
         raise HTTPException(status_code=500, detail=task.get("error", "导出失败"))
 
+@router.get("/lot/{lot_id}/site_corr")
+def get_site_corr_analysis(
+    lot_id: int,
+    params: Optional[str] = Query(None),
+    weights: Optional[str] = Query(None),
+    exclude_chips: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """Site correlation analysis aligned by common sample numbers across sites."""
+    from app.services.site_corr import build_site_corr_response
+    return build_site_corr_response(lot_id, params, weights, exclude_chips, db)
+
+
 @router.post("/lot/{lot_id}/idle_check/corr")
 def perform_corr_processing(
     lot_id: int,
@@ -3604,84 +3668,107 @@ def perform_corr_processing(
     db: Session = Depends(get_db)
 ):
     """
-    Correlation处理：
-    1. 计算指纹值
-    2. 找出跨 Site 匹配的共同指纹
-    3. 对齐数据，重新标记 TEST_NUM
-    4. 删掉无法匹配的数据
-    5. 保存为新 LOT (_corr 结尾)
+    Correlation processing:
+    1. Check for Site Correlation step-shift pattern (Sites 1..16 and Sites 17..32)
+    2. Fallback to fingerprint value matching across sites
+    3. Align data and re-index TEST_NUM / CHIP_NO
+    4. Save as new aligned LOT with suffix '_corr'
     """
     lot = db.query(Lot).filter(Lot.id == lot_id).first()
     if not lot or not lot.parquet_path:
-        raise HTTPException(status_code=404, detail="数据不存在")
-
-    # 获取程序的配置
-    config = db.query(IdleCheckConfig).filter(IdleCheckConfig.program_name == lot.program).first()
-    if not config or not config.params:
-        raise HTTPException(status_code=400, detail="未配置指纹参数")
+        raise HTTPException(status_code=404, detail="Lot data not found")
 
     df = pd.read_parquet(lot.parquet_path)
-    
-    # 数据过滤
-    if data_filter == 'pass_only' and 'SOFT_BIN' in df.columns:
-        df = df[df['SOFT_BIN'].isin([1, 2])].copy()
-    
-    selected_params = [p for p in config.params if p in df.columns]
-    if not selected_params:
-         raise HTTPException(status_code=400, detail="选中的参数在数据中不存在")
-
-    # 解析权重
-    use_weights = []
-    if weights:
-        try: use_weights = [int(w) for w in weights.split(',')]
-        except: use_weights = []
-    if not use_weights or len(use_weights) < len(selected_params):
-        use_weights = [i + 1 for i in range(len(selected_params))]
-
-    # 计算指纹值
-    param_data = df[selected_params].astype(float)
-    fingerprints = []
-    for i, p in enumerate(selected_params):
-        fingerprints.append(param_data[p] * use_weights[i])
-    df['fingerprint'] = pd.concat(fingerprints, axis=1).sum(axis=1)
-
-    # Corr 处理逻辑
     if 'SITE_NUM' not in df.columns:
-        raise HTTPException(status_code=400, detail="数据缺少 Site 信息，无法进行 Site 间对比")
-    
-    sites = sorted(df['SITE_NUM'].unique().tolist())
-    if len(sites) < 2:
-        raise HTTPException(status_code=400, detail="Site 数量不足，无法进行 Site 间对比")
+        raise HTTPException(status_code=400, detail="Missing SITE_NUM column in lot data")
 
-    # 找出所有 Site 都有的指纹值 (精确匹配)
-    site_dfs = {site: df[df['SITE_NUM'] == site] for site in sites}
-    site_fps = {site: set(site_dfs[site]['fingerprint'].dropna().unique()) for site in sites}
-    
-    common_fps = set.intersection(*site_fps.values())
-    if not common_fps:
-        raise HTTPException(status_code=400, detail="未找到跨 Site 匹配的共同指纹数据")
+    df['SITE_NUM'] = df['SITE_NUM'].astype(int)
+    if 'SERIES' in df.columns:
+        df['SERIES'] = df['SERIES'].astype(int)
 
-    # 按第一个 Site 的原始出现顺序排列共同指纹
-    ref_site = sites[0]
-    ordered_fps = []
-    seen = set()
-    for fp in site_dfs[ref_site]['fingerprint']:
-        if fp in common_fps and fp not in seen:
-            ordered_fps.append(fp)
-            seen.add(fp)
+    # Data filter
+    if data_filter == 'pass_only' and 'SOFT_BIN' in df.columns:
+        df = df[df['SOFT_BIN'].isin([1, 2, '1', '2'])].copy()
 
-    # 对齐并重新编号
+    # Try step-shift alignment first if SERIES is present
     aligned_rows = []
-    for i, fp in enumerate(ordered_fps):
-        test_num = i + 1
-        for site in sites:
-            match = site_dfs[site][site_dfs[site]['fingerprint'] == fp].head(1).copy()
-            match['TEST_NUM'] = test_num
-            aligned_rows.append(match)
+    if 'SERIES' in df.columns:
+        sites = sorted(df['SITE_NUM'].unique().tolist())
 
-    new_df = pd.concat(aligned_rows, ignore_index=True)
-    
-    # 创建新 LOT
+        # Group 1: Sites 1..16
+        df1 = df[(df['SITE_NUM'] >= 1) & (df['SITE_NUM'] <= 16)].copy()
+        if len(df1) > 0:
+            df1['calc_chip_id'] = df1['SERIES'] + (16 - df1['SITE_NUM'])
+            counts1 = df1.groupby('calc_chip_id')['SITE_NUM'].nunique()
+            full_chips1 = sorted(counts1[counts1 == 16].index.tolist())
+            for chip_idx, cid in enumerate(full_chips1):
+                chip_rows = df1[df1['calc_chip_id'] == cid].sort_values('SITE_NUM').copy()
+                chip_rows['CHIP_NO'] = chip_idx + 1
+                chip_rows['TEST_NUM'] = chip_idx + 1
+                aligned_rows.append(chip_rows)
+
+        # Group 2: Sites 17..32
+        df2 = df[(df['SITE_NUM'] >= 17) & (df['SITE_NUM'] <= 32)].copy()
+        if len(df2) > 0:
+            df2['calc_chip_id'] = df2['SERIES'] + (32 - df2['SITE_NUM'])
+            counts2 = df2.groupby('calc_chip_id')['SITE_NUM'].nunique()
+            full_chips2 = sorted(counts2[counts2 == 16].index.tolist())
+            for chip_idx, cid in enumerate(full_chips2):
+                chip_rows = df2[df2['calc_chip_id'] == cid].sort_values('SITE_NUM').copy()
+                chip_rows['CHIP_NO'] = chip_idx + 1
+                chip_rows['TEST_NUM'] = chip_idx + 1
+                aligned_rows.append(chip_rows)
+
+    if aligned_rows:
+        new_df = pd.concat(aligned_rows, ignore_index=True)
+    else:
+        # Fallback to Fingerprint matching
+        config = db.query(IdleCheckConfig).filter(IdleCheckConfig.program_name == lot.program).first()
+        if not config or not config.params:
+            raise HTTPException(status_code=400, detail="Fingerprint parameters not configured for this program")
+
+        selected_params = [p for p in config.params if p in df.columns]
+        if not selected_params:
+            raise HTTPException(status_code=400, detail="Selected parameters missing in dataset")
+
+        use_weights = []
+        if weights:
+            try: use_weights = [int(w) for w in weights.split(',')]
+            except: use_weights = []
+        if not use_weights or len(use_weights) < len(selected_params):
+            use_weights = [i + 1 for i in range(len(selected_params))]
+
+        param_data = df[selected_params].astype(float)
+        fingerprints = [param_data[p] * use_weights[i] for i, p in enumerate(selected_params)]
+        df['fingerprint'] = pd.concat(fingerprints, axis=1).sum(axis=1)
+
+        sites = sorted(df['SITE_NUM'].unique().tolist())
+        site_dfs = {site: df[df['SITE_NUM'] == site] for site in sites}
+        site_fps = {site: set(site_dfs[site]['fingerprint'].dropna().unique()) for site in sites}
+
+        common_fps = set.intersection(*site_fps.values())
+        if not common_fps:
+            raise HTTPException(status_code=400, detail="No matching common fingerprints found across sites")
+
+        ref_site = sites[0]
+        ordered_fps = []
+        seen = set()
+        for fp in site_dfs[ref_site]['fingerprint']:
+            if fp in common_fps and fp not in seen:
+                ordered_fps.append(fp)
+                seen.add(fp)
+
+        fp_rows = []
+        for i, fp in enumerate(ordered_fps):
+            test_num = i + 1
+            for site in sites:
+                match = site_dfs[site][site_dfs[site]['fingerprint'] == fp].head(1).copy()
+                match['TEST_NUM'] = test_num
+                fp_rows.append(match)
+
+        new_df = pd.concat(fp_rows, ignore_index=True)
+
+    # Create new Lot
     new_filename = f"{lot.filename}_corr"
     new_lot = Lot(
         filename=new_filename,
@@ -3702,7 +3789,7 @@ def perform_corr_processing(
     db.commit()
     db.refresh(new_lot)
 
-    # 保存 Parquet
+    # Save parquet file
     parquet_dir = os.path.join(UPLOAD_DIR, 'parquet')
     os.makedirs(parquet_dir, exist_ok=True)
     parquet_path = os.path.join(parquet_dir, f"lot_{new_lot.id}.parquet")
@@ -3710,7 +3797,7 @@ def perform_corr_processing(
     new_lot.parquet_path = parquet_path
     db.commit()
 
-    # 计算统计
+    # Save summary statistics
     ref_items = db.query(TestItem).filter(TestItem.lot_id == lot.id, TestItem.site == 0).all()
     param_names = [it.item_name for it in ref_items]
     param_ll = {it.item_name: it.lower_limit for it in ref_items}
@@ -3731,11 +3818,11 @@ def perform_corr_processing(
         param_units=param_units,
         bin_definitions=bin_definitions,
     )
-    
+
     save_stats_to_db(new_lot, parsed, db, [1, 2])
-    
+
     new_lot.status = 'processed'
     new_lot.finish_date = datetime.now(timezone.utc)
     db.commit()
-    
+
     return {"id": new_lot.id, "filename": new_lot.filename}

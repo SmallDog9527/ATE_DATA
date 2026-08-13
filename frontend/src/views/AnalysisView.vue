@@ -187,7 +187,7 @@ const options = ref({
   sigma: 3,
   chars_row: 3,
   delta_site: 3,
-  mean_limit: 'hide',
+  mean_limit: 'show',
 })
 
 const exporting = ref(false)
@@ -303,8 +303,28 @@ const columnDefs = computed(() => {
       baseDefs.push({
         headerName: `Mean_S${siteNum}`,
         field: key,
-        width: 100,
-        valueFormatter: (p: any) => p.value?.toFixed(4) ?? '-'
+        width: 110,
+        valueFormatter: (p: any) => p.value?.toFixed(4) ?? '-',
+        cellStyle: (params: any) => {
+          const val = params.value;
+          if (val === null || val === undefined || typeof val !== 'number' || isNaN(val)) {
+            return {};
+          }
+          const validValues = sortedSiteKeys
+            .map(k => params.data?.[k])
+            .filter(v => v !== null && v !== undefined && typeof v === 'number' && !isNaN(v));
+          if (validValues.length < 2) return {};
+          const maxVal = Math.max(...validValues);
+          const minVal = Math.min(...validValues);
+          if (maxVal === minVal) return {};
+          if (Math.abs(val - maxVal) < 1e-9) {
+            return { color: 'red', fontWeight: 'bold' };
+          }
+          if (Math.abs(val - minVal) < 1e-9) {
+            return { color: 'green', fontWeight: 'bold' };
+          }
+          return {};
+        }
       });
     });
 
@@ -337,7 +357,8 @@ const columnDefs = computed(() => {
         valueGetter: (params: any) => {
           const delta = params.getValue('mean_delta');
           const allSiteMean = params.data.mean;
-          if (delta === null || !allSiteMean) return null;
+          if (delta === null || allSiteMean === null || allSiteMean === undefined) return null;
+          if (Math.abs(allSiteMean) < 0.05) return 0;
           return delta / allSiteMean;
         },
         valueFormatter: (p: any) => p.value !== null ? (p.value * 100).toFixed(2) + '%' : '-'

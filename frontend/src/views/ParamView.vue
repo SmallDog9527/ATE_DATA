@@ -120,7 +120,16 @@
               </thead>
               <tbody>
                 <tr v-for="s in displayedSites(currentTab)" :key="s.site">
-                  <td>{{ s.site === 0 ? 'ALL' : `Site${s.site}` }}</td>
+                  <td>
+                    <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; user-select: none;">
+                      <input
+                        type="checkbox"
+                        :checked="isSiteSelected(currentTab, s.site)"
+                        @change="toggleSiteSelection(currentTab.id, s.site)"
+                      />
+                      <span>{{ s.site === 0 ? 'ALL' : `Site${s.site}` }}</span>
+                    </label>
+                  </td>
                   <td>{{ s.stats.exec_qty - s.stats.fail_count }}</td>
                   <td>{{ s.stats.fail_count }}</td>
                   <td>{{ s.stats.exec_qty }}</td>
@@ -237,7 +246,16 @@
                 </thead>
                 <tbody>
                   <tr v-for="s in displayedSites(vsTab)" :key="s.site">
-                    <td>{{ s.site === 0 ? 'ALL' : `Site${s.site}` }}</td>
+                    <td>
+                      <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; user-select: none;">
+                        <input
+                          type="checkbox"
+                          :checked="isSiteSelected(vsTab, s.site)"
+                          @change="toggleSiteSelection(VS_TAB_ID, s.site)"
+                        />
+                        <span>{{ s.site === 0 ? 'ALL' : `Site${s.site}` }}</span>
+                      </label>
+                    </td>
                     <td>{{ s.stats.exec_qty - s.stats.fail_count }}</td>
                     <td>{{ s.stats.fail_count }}</td>
                     <td>{{ s.stats.exec_qty }}</td>
@@ -461,20 +479,61 @@ function toggleVsSite(siteNum: number) {
   if (canvas) renderWaferMap(VS_TAB_ID, canvas)
 }
 
+function isSiteSelected(tab: Tab | null | undefined, siteNum: number): boolean {
+  if (!tab?.data?.sites) return true
+  if (!tab.options?.selected_sites) return true
+  return tab.options.selected_sites.includes(siteNum)
+}
+
+function toggleSiteSelection(tabId: string, siteNum: number) {
+  const tab = getTabById(tabId)
+  if (!tab?.data?.sites) return
+  if (!tab.options.selected_sites) {
+    tab.options.selected_sites = tab.data.sites.map((s: any) => s.site)
+  }
+
+  const allSiteNums: number[] = tab.data.sites.map((s: any) => s.site)
+  const indivSiteNums: number[] = tab.data.sites.filter((s: any) => s.site > 0).map((s: any) => s.site)
+
+  if (siteNum === 0) {
+    if (tab.options.selected_sites.includes(0)) {
+      tab.options.selected_sites = []
+    } else {
+      tab.options.selected_sites = [...allSiteNums]
+    }
+  } else {
+    const idx = tab.options.selected_sites.indexOf(siteNum)
+    if (idx >= 0) {
+      tab.options.selected_sites.splice(idx, 1)
+      const zeroIdx = tab.options.selected_sites.indexOf(0)
+      if (zeroIdx >= 0) tab.options.selected_sites.splice(zeroIdx, 1)
+    } else {
+      tab.options.selected_sites.push(siteNum)
+      const allIndivChecked = indivSiteNums.every((s: number) => tab.options.selected_sites.includes(s))
+      if (allIndivChecked && !tab.options.selected_sites.includes(0)) {
+        tab.options.selected_sites.push(0)
+      }
+    }
+  }
+
+  nextTick(() => {
+    if (tabId === VS_TAB_ID) {
+      renderVsCharts()
+    } else {
+      renderCharts(tabId)
+    }
+  })
+}
+
 function displayedSites(tab: Tab | null | undefined) {
   if (!tab?.data?.sites) return []
-  if (tab.options.site_display_mode === 'all') {
-    return tab.data.sites.filter((s: any) => s.site === 0)
-  }
   return tab.data.sites
 }
 
 function chartSites(tab: Tab | null | undefined) {
   if (!tab?.data?.sites) return []
-  if (tab.options.site_display_mode === 'all') {
-    return tab.data.sites.filter((s: any) => s.site === 0)
-  }
-  return tab.data.sites.filter((s: any) => s.site > 0)
+  const selected = tab.options?.selected_sites ?? tab.data.sites.map((s: any) => s.site)
+  return tab.data.sites.filter((s: any) => s.site > 0 && selected.includes(s.site))
 }
 
 function siteLabel(site: number) {
@@ -537,6 +596,9 @@ async function loadVsData() {
   if (!vsTab.value) return
   const data = await fetchParamData(vsTab.value.param_name, vsTab.value.options)
   vsTab.value.data = data
+  if (data && data.sites && (!vsTab.value.options.selected_sites || vsTab.value.options.selected_sites.length === 0)) {
+    vsTab.value.options.selected_sites = data.sites.map((s: any) => s.site)
+  }
   await nextTick()
   renderVsCharts()
 }
@@ -821,6 +883,10 @@ async function loadTabData(tabId: string) {
   if (!tab) return
   const data = await fetchParamData(tab.param_name, tab.options)
   tab.data = data
+
+  if (data && data.sites && (!tab.options.selected_sites || tab.options.selected_sites.length === 0)) {
+    tab.options.selected_sites = data.sites.map((s: any) => s.site)
+  }
 
   if (tab.options.filter_type === 'custom' &&
       tab.options.custom_min == null && tab.options.custom_max == null) {
@@ -1160,7 +1226,6 @@ function renderHistogram(tabId: string) {
             return ''
           },
         },
-        axisTick: { alignWithLabel: true },
       },
       yAxis: {
         type: 'value',
@@ -1445,11 +1510,11 @@ function renderWaferMap(tabId: string, canvas: HTMLCanvasElement) {
   const tab = getTabById(tabId)
   if (!tab?.data) return
 
-  // 只收集未被隐藏的site数据（VS tab 使用独立的 vsHiddenSites）
+  const selected = tab.options?.selected_sites ?? tab.data.sites.map((s: any) => s.site)
   const hiddenSet = tabId === VS_TAB_ID ? vsHiddenSites.value : hiddenSites.value
   const siteDataMap: Map<number, any[]> = new Map()
   tab.data.sites.forEach((s: any) => {
-    if (s.site > 0 && s.wafer_map && !hiddenSet.has(s.site)) {
+    if (s.site > 0 && s.wafer_map && selected.includes(s.site) && !hiddenSet.has(s.site)) {
       siteDataMap.set(s.site, s.wafer_map)
     }
   })

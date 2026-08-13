@@ -202,7 +202,7 @@ const options = ref({
   single_lot_name: 'all_lot',
   mode: 'lot',
   delta_site: 3,
-  mean_limit: 'hide',
+  mean_limit: 'show',
 })
 
 const exporting = ref(false)
@@ -455,7 +455,8 @@ const columnDefs = computed(() => {
         width: 100,
         valueGetter: (p: any) => {
           const values = getLotMeans(p.data)
-          if (values.length < 2 || !p.data.mean) return null
+          if (values.length < 2 || p.data.mean === null || p.data.mean === undefined) return null
+          if (Math.abs(p.data.mean) < 0.05) return 0
           return (Math.max(...values) - Math.min(...values)) / p.data.mean
         },
         valueFormatter: (p: any) => p.value !== null && p.value !== undefined ? (p.value * 100).toFixed(2) + '%' : '-',
