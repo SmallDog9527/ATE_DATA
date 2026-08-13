@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
@@ -74,15 +75,18 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
 # ──────────────────────────────────────────
 @router.post("/login", response_model=Token)
 def login(user_in: UserLogin, request: Request, db: Session = Depends(get_db)):
-    if is_login_locked(user_in.username):
+    # Normalize username for case-insensitive login matching
+    username = user_in.username.strip().lower()
+
+    if is_login_locked(username):
         raise HTTPException(
             status_code=429,
             detail="登录失败次数过多，请15分钟后再试"
         )
 
-    user = db.query(User).filter(User.username == user_in.username).first()
+    user = db.query(User).filter(func.lower(User.username) == username).first()
     if not user or not verify_password(user_in.password, user.hashed_password):
-        count = record_login_fail(user_in.username)
+        count = record_login_fail(username)
         remaining = max(0, 5 - count)
         detail = f"用户名或密码错误" + (f"，还可尝试 {remaining} 次" if remaining > 0 else "，账号已被临时锁定")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
@@ -90,7 +94,7 @@ def login(user_in: UserLogin, request: Request, db: Session = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=400, detail="账号已被禁用，请联系管理员")
 
-    clear_login_fail(user_in.username)
+    clear_login_fail(username)
 
     # Extract client IP address
     client_ip = request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP") or (request.client.host if request.client else None)

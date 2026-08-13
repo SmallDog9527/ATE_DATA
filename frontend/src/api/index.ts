@@ -25,7 +25,9 @@ api.interceptors.response.use(
   },
   async (error) => {
     const originalRequest = error.config
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // 登录接口自身的 401 表示"用户名或密码错误"，直接透出后端提示，不走 token 刷新逻辑
+    const isAuthLogin = originalRequest.url?.includes('/auth/login')
+    if (error.response?.status === 401 && !isAuthLogin && !originalRequest._retry) {
       originalRequest._retry = true
       const refreshToken = localStorage.getItem('refresh_token')
       if (!refreshToken) {

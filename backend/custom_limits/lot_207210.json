@@ -1,0 +1,12 @@
+[
+  {
+    "item_name": "OS_LSCL_GND",
+    "ll_new": -0.8,
+    "ul_new": null
+  },
+  {
+    "item_name": "OS_VDDIO_GND_POST",
+    "ll_new": -0.8,
+    "ul_new": null
+  }
+]

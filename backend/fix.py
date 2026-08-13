@@ -1,0 +1,63 @@
+import re
+
+filepath = "/app/app/api/routes/programs.py"
+with open(filepath, "r", encoding="utf-8") as f:
+    text = f.read()
+
+# Fix QA and CP/FT filter in _build_data_program_list
+target_qa = """        if _is_qa_text(lot.filename) or _is_qa_text(program):
+            continue"""
+
+replace_qa = """        extra = _get_extra(db, lot.id)
+        raw_dt = extra.data_type_override if extra and extra.data_type_override else lot.data_type
+        if _is_qa_text(lot.filename) or _is_qa_text(program) or _is_qa_text(raw_dt) or _is_qa_text(lot.data_type):
+            continue
+
+        dt = _normalize_cp_ft(raw_dt, lot)
+        if dt not in ("CP", "FT") or _is_qa_text(dt):
+            continue"""
+
+if target_qa in text:
+    text = text.replace(target_qa, replace_qa)
+    print("Replaced QA and CP/FT filter successfully.")
+else:
+    print("target_qa not found in text.")
+
+# Remove duplicate dt block further down if present
+dup_block = """        extra = _get_extra(db, lot.id)
+        dt = extra.data_type_override if extra and extra.data_type_override else lot.data_type
+        dt = _normalize_cp_ft(dt, lot)"""
+text = text.replace(dup_block, "")
+
+# Replace update_all_program_changes_snapshot
+idx = text.find("def update_all_program_changes_snapshot(")
+if idx != -1:
+    new_snap = """def update_all_program_changes_snapshot(db: Session, force_product_name: Optional[str] = None) -> None:
+    \"\"\"Run program changes snapshot update for all products or specified product.\"\"\"
+    from app.models.lot import Lot
+    from sqlalchemy import func
+
+    if force_product_name:
+        product_names = [force_product_name]
+    else:
+        product_names = [
+            r[0] for r in db.query(func.distinct(Lot.product_name))
+            .filter(Lot.status != "deleted")
+            .all() if r[0]
+        ]
+
+    for pname in product_names:
+        try:
+            new_rows = _build_data_program_list(db, pname, days=3650, months=120.0)
+            _save_program_data_snapshot(db, pname, new_rows, days=3650, months=120.0)
+            print(f"[scheduler] Refreshed program changes snapshot for product {pname}: {len(new_rows)} rows")
+        except Exception as e:
+            print(f"[scheduler] Exception updating snapshot for product {pname}: {e}")
+"""
+    text = text[:idx] + new_snap
+    print("Replaced update_all_program_changes_snapshot successfully.")
+
+with open(filepath, "w", encoding="utf-8") as f:
+    f.write(text)
+
+print("Saved programs.py successfully.")
