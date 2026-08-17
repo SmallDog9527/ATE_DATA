@@ -14,6 +14,10 @@
           <span class="value">{{ lotInfo.program }}</span>
         </div>
         <div class="info-item">
+          <span class="label">LOT</span>
+          <span class="value">{{ lotInfo.lot_id }}_{{ lotInfo.wafer_id }}</span>
+        </div>
+        <div class="info-item">
           <span class="label">测试机</span>
           <span class="value">{{ lotInfo.test_machine }}</span>
         </div>
@@ -128,6 +132,13 @@
             <label><input type="radio" v-model="options.mean_limit" value="hide" /> Hide</label>
           </div>
         </div>
+        <div class="option-group">
+          <label>Site_mode</label>
+          <div class="radio-group row">
+            <label><input type="radio" v-model="options.site_mode" value="site" /> SITE</label>
+            <label><input type="radio" v-model="options.site_mode" value="lot" /> LOT</label>
+          </div>
+        </div>
     </div>
 
       <!-- 右侧内容区 -->
@@ -188,6 +199,7 @@ const options = ref({
   chars_row: 3,
   delta_site: 3,
   mean_limit: 'show',
+  site_mode: 'site',
 })
 
 const exporting = ref(false)
@@ -683,6 +695,7 @@ async function handleExport() {
         data_range: options.value.data_range,
         chars_row: options.value.chars_row,
         delta_site: options.value.delta_site,
+        site_mode: options.value.site_mode,
         selected_items: selectedItems
       }
     })

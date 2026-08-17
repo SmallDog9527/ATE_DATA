@@ -801,8 +801,8 @@ def run_export_task(
             header_format = workbook.add_format({'bold': True, 'font_color': 'blue'})
             hist_sheet.write(0, 2, "Data:", header_format)
             hist_sheet.write(0, 3, lot.filename, header_format)
-            hist_sheet.write(1, 2, "Wafer:", header_format)
-            hist_sheet.write(1, 3, lot.wafer_id, header_format)
+            hist_sheet.write(1, 2, "LOT:", header_format)
+            hist_sheet.write(1, 3, f"{lot.lot_id}_{lot.wafer_id}" if lot.lot_id else (lot.wafer_id or ""), header_format)
             
             from app.services.stats import apply_filter, calc_param_stats, calc_hist_edges, calc_hist_x_range
             
@@ -1292,8 +1292,8 @@ def export_test_items(
         header_format = workbook.add_format({'bold': True, 'font_color': 'blue'})
         hist_sheet.write(0, 2, "Data:", header_format) # C1
         hist_sheet.write(0, 3, lot.filename, header_format) # D1
-        hist_sheet.write(1, 2, "Wafer:", header_format) # C2
-        hist_sheet.write(1, 3, lot.wafer_id, header_format) # D2
+        hist_sheet.write(1, 2, "LOT:", header_format) # C2
+        hist_sheet.write(1, 3, f"{lot.lot_id}_{lot.wafer_id}" if lot.lot_id else (lot.wafer_id or ""), header_format) # D2
         
         from app.services.stats import apply_filter, calc_param_stats, calc_hist_edges, calc_hist_x_range
         

@@ -42,5 +42,5 @@ echo "[4/4] Starting FastAPI server..."
 if [ "$APP_ENV" = "development" ]; then
     exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 else
-    exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 fi

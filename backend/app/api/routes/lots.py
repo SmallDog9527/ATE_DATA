@@ -71,7 +71,38 @@ def _extract_rar_archive(archive_path: str, extract_dir: str) -> None:
         )
 
 
+def _extract_nested_archives(extract_dir: str, max_depth: int = 10) -> None:
+    """Recursively extract nested ZIP/RAR archives inside extract_dir."""
+    import uuid
+
+    for _ in range(max_depth):
+        archives = []
+        for root, _, files in os.walk(extract_dir):
+            for f in files:
+                if f.lower().endswith(('.zip', '.rar')):
+                    archives.append(os.path.join(root, f))
+        if not archives:
+            return
+
+        for archive_path in archives:
+            target_dir = os.path.join(
+                os.path.dirname(archive_path),
+                f"__extracted_{uuid.uuid4().hex}",
+            )
+            os.makedirs(target_dir, exist_ok=True)
+            try:
+                if archive_path.lower().endswith('.zip'):
+                    with zipfile.ZipFile(archive_path, 'r') as z:
+                        z.extractall(target_dir)
+                else:
+                    _extract_rar_archive(archive_path, target_dir)
+                os.remove(archive_path)
+            except Exception as e:
+                print(f"[extract] Failed to extract nested archive {archive_path}: {e}")
+
+
 def _collect_archive_data_files(extract_dir: str) -> list[str]:
+    _extract_nested_archives(extract_dir)
     data_files = []
     for root, _, files in os.walk(extract_dir):
         for f in files:
@@ -279,48 +310,12 @@ async def _process_upload(file: UploadFile, db: Session, background_tasks: Backg
             original_content=None
         )
     if is_zip:
-        import uuid
-        extract_dir = os.path.join("/tmp", f"upload_extract_{uuid.uuid4().hex}")
-        os.makedirs(extract_dir, exist_ok=True)
-        with zipfile.ZipFile(save_path, 'r') as z:
-            z.extractall(extract_dir)
-        # 找所有csv/stdf/txt文件（包括子目录）
-        csv_files = []
-        for root, _, files in os.walk(extract_dir):
-            for f in files:
-                flower = f.lower()
-                if flower.endswith('.csv') or flower.endswith('.txt') or flower.endswith('.xls') or flower.endswith('.xlsx'):
-                    csv_files.append(os.path.join(root, f))
-                elif _is_stdf(f):
-                    # ZIP 内的 STDF 文件先转换为 CSV
-                    from app.services.parsers.stdf_converter import convert_stdf_to_csv
-                    stdf_inner = os.path.join(root, f)
-                    csv_inner  = os.path.join(root, _stdf_base_name(f) + '.csv')
-                    info = convert_stdf_to_csv(stdf_inner, csv_inner)
-                    if not info.get('error'):
-                        csv_files.append(csv_inner)
-                        os.remove(stdf_inner)
-                elif flower.endswith('.gz') and not _is_stdf(f):
-                    # ZIP 内的 GZ 文件解压
-                    gz_inner = os.path.join(root, f)
-                    decompressed_inner_name = f[:-3]
-                    if not decompressed_inner_name.lower().endswith('.csv'):
-                        decompressed_inner_name += '.csv'
-                    csv_inner = os.path.join(root, decompressed_inner_name)
-                    
-                    import gzip
-                    try:
-                        with gzip.open(gz_inner, 'rb') as f_in:
-                            with open(csv_inner, 'wb') as f_out:
-                                shutil.copyfileobj(f_in, f_out)
-                        csv_files.append(csv_inner)
-                        os.remove(gz_inner)
-                    except Exception as e:
-                        print(f"[upload] ZIP 内 GZ 解压失败 {gz_inner}: {e}")
-        if not csv_files:
-            raise HTTPException(status_code=400, detail="ZIP中未找到CSV、STDF、TXT或XLS/XLSX文件")
-        # 确保 txt/xls 文件排在 csv 文件后面
-        csv_paths = sorted(csv_files, key=lambda p: (1 if p.lower().endswith(('.txt', '.xls', '.xlsx')) else 0, p))
+        csv_paths, extract_dir = _extract_data_archive(save_path, filename)
+        return await _process_csv_paths(
+            csv_paths, filename, save_path,
+            extract_dir, db, background_tasks, user_id,
+            original_content=None
+        )
 
     return await _process_csv_paths(
         csv_paths, filename, save_path if is_zip else None,
@@ -371,7 +366,6 @@ async def _process_csv_paths(
                 
                 # XLS/XLSX Summary compression
                 zip_path = csv_path + ".zip"
-                import zipfile
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                     zf.write(csv_path, csv_name)
                 
@@ -407,7 +401,6 @@ async def _process_csv_paths(
 
             # TXT Summary compression
             zip_path = csv_path + ".zip"
-            import zipfile
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                 zf.write(csv_path, csv_name)
             
@@ -438,6 +431,17 @@ async def _process_csv_paths(
                 lot.test_date = summary_data['beginning_time']
             if summary_data.get('ending_time'):
                 lot.ending_time = summary_data['ending_time']
+            if summary_data.get('program'):
+                lot.program = summary_data['program']
+                prefix = summary_data['program'].split('_')[0]
+                from app.models.product_mapping import ProductMapping
+                mapping = db.query(ProductMapping).filter(
+                    ProductMapping.program_prefix == prefix
+                ).first()
+                if mapping:
+                    lot.product_name = mapping.product_name
+                elif '_' in summary_data['program']:
+                    lot.product_name = prefix.strip()
 
             db.add(lot)
             db.commit()
@@ -664,6 +668,8 @@ def _parse_and_save(lot_id: int, csv_path: str, db: Session):
                 ).first()
                 if mapping:
                     lot.product_name = mapping.product_name
+                elif not lot.product_name and '_' in lot.program:
+                    lot.product_name = lot.program.split('_')[0].strip()
 
         from app.services.stats import save_stats_to_db, run_lot_auto_check
         save_stats_to_db(lot, result, db, PASS_BINS)
@@ -707,7 +713,6 @@ def _parse_and_save(lot_id: int, csv_path: str, db: Session):
             if lot.storage_path.lower().endswith('.csv'):
                 zip_path = lot.storage_path + '.zip'
                 try:
-                    import zipfile
                     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                         zf.write(lot.storage_path, os.path.basename(lot.storage_path))
                     if os.path.exists(zip_path) and os.path.getsize(zip_path) > 0:
@@ -2094,20 +2099,33 @@ def download_lots(data: DownloadRequest, db: Session = Depends(get_db)):
                 alt_path = file_path.replace('/app/uploads/', '/data/ATE_DATA/uploads/')
                 if os.path.exists(alt_path):
                     file_path = alt_path
-        if file_path and os.path.exists(file_path):
-            ext = os.path.splitext(file_path)[-1].lower()
-            if ext == '.zip':
-                # Ensure download filename ends with .zip
-                download_name = os.path.basename(file_path)
-                if not download_name.lower().endswith('.zip'):
-                    download_name = os.path.splitext(download_name)[0] + '.zip'
-                from urllib.parse import quote
-                encoded_name = quote(download_name)
-                return FileResponse(
-                    file_path,
-                    media_type="application/zip",
-                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}"}
-                )
+        if not file_path or not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="选中的记录文件不存在或已丢失")
+
+        download_name = lot.filename or os.path.basename(file_path)
+        if not download_name.lower().endswith('.zip'):
+            download_name = download_name + '.zip'
+
+        from urllib.parse import quote
+        encoded_name = quote(download_name)
+        disposition = f"attachment; filename=\"{download_name}\"; filename*=UTF-8''{encoded_name}"
+
+        if file_path.lower().endswith('.zip'):
+            return FileResponse(
+                file_path,
+                media_type="application/zip",
+                headers={"Content-Disposition": disposition}
+            )
+
+        single_buffer = io.BytesIO()
+        with zipfile.ZipFile(single_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(file_path, os.path.basename(file_path))
+        single_buffer.seek(0)
+        return StreamingResponse(
+            single_buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": disposition}
+        )
 
     # 准备ZIP文件（内存流）
     zip_buffer = io.BytesIO()
@@ -2139,8 +2157,9 @@ def download_lots(data: DownloadRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="所有选中记录的文件均不存在或已丢失")
 
     zip_buffer.seek(0)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    zip_filename = f"ATE_OriginalData_{timestamp}.zip"
+    from zoneinfo import ZoneInfo
+    timestamp = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%m%d%H%M%S")
+    zip_filename = f"ATE_DATA_{timestamp}.zip"
 
     return StreamingResponse(
         zip_buffer,
