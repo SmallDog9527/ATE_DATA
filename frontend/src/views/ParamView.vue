@@ -308,6 +308,34 @@
             </div>
             <!-- VS Scatter -->
             <div v-if="currentTab.options.show_scatter && vsTab.data" class="chart-container" style="flex-direction:column;align-items:center">
+              <div class="scatter-axis-mode-box">
+                <span class="label">Y轴:</span>
+                <button
+                  :class="['axis-mode-btn', { active: vsTab?.options.scatter_y_mode === 'auto' }]"
+                  @click="setVsScatterYMode('auto')"
+                  title="按当前数据最大值/最小值自动缩放"
+                >Auto (Max/Min)</button>
+                <button
+                  :class="['axis-mode-btn', { active: vsTab?.options.scatter_y_mode === 'limit' }]"
+                  @click="setVsScatterYMode('limit')"
+                  title="显示 Low/High Limit 并按 Limit 调整 Y 轴"
+                >Limit</button>
+                <button
+                  :class="['axis-mode-btn', { active: vsTab?.options.scatter_y_mode === 'sigma' }]"
+                  @click="setVsScatterYMode('sigma')"
+                  title="按均值 ± N 倍标准差调整 Y 轴"
+                >N σ</button>
+                <input
+                  v-model.number="vsScatterSigmaNInput"
+                  type="number"
+                  min="1"
+                  max="20"
+                  step="0.5"
+                  class="sigma-input"
+                  :disabled="vsTab?.options.scatter_y_mode !== 'sigma'"
+                  @change="applyVsScatterSigmaN"
+                />
+              </div>
               <div :ref="el => setChartRef(VS_TAB_ID, 'scatter', el)" style="width:800px;height:260px"></div>
               <div class="chart-legend">
                 <span
@@ -434,6 +462,21 @@ function applyScatterSigmaN() {
   renderScatter(currentTab.value.id)
 }
 
+// VS 侧 Scatter Y轴：独立控制
+const vsScatterSigmaNInput = ref<number>(6)
+
+function setVsScatterYMode(mode: 'auto' | 'limit' | 'sigma') {
+  if (!vsTab.value) return
+  vsTab.value.options.scatter_y_mode = mode
+  renderScatter(VS_TAB_ID)
+}
+
+function applyVsScatterSigmaN() {
+  if (!vsTab.value) return
+  vsTab.value.options.scatter_sigma_n = vsScatterSigmaNInput.value
+  renderScatter(VS_TAB_ID)
+}
+
 watch(currentTab, (newTab) => {
   if (newTab) {
     sigmaInputValue.value = newTab.options.sigma
@@ -453,6 +496,7 @@ watch(vsTab, (newTab) => {
     vsCustomMaxInput.value = newTab.options.custom_max
     vsCustomLLInput.value = newTab.options.custom_ll
     vsCustomULInput.value = newTab.options.custom_ul
+    vsScatterSigmaNInput.value = newTab.options.scatter_sigma_n ?? 6
     vsParamName.value = newTab.param_name
   }
 }, { immediate: true })
