@@ -21,6 +21,10 @@ from fastapi import BackgroundTasks
 import uuid
 import time
 import math
+import threading
+
+# matplotlib 非线程安全, 多任务并发导出时串行化绘图
+_plot_lock = threading.Lock()
 from datetime import datetime, timedelta, timezone
 from app.core.config import settings
 from app.api.deps import get_current_user
@@ -531,6 +535,7 @@ def start_export_test_items(
     chars_row: int = Query(3),
     delta_site: float = Query(3.0),
     selected_items: str = Query(""),
+    site_mode: str = Query("site"),
     db: Session = Depends(get_db),
 ):
     """启动异步导出任务"""
@@ -545,7 +550,7 @@ def start_export_test_items(
     
     background_tasks.add_task(
         run_export_task,
-        task_id, lot_id, filter_type, sigma, data_range, chars_row, delta_site, selected_items, db
+        task_id, lot_id, filter_type, sigma, data_range, chars_row, delta_site, selected_items, site_mode, db
     )
     
     return {"task_id": task_id}
@@ -578,14 +583,16 @@ def download_export_result(task_id: str):
     filename = task.get("filename", "Report.xlsx")
     encoded_filename = quote(filename)
 
-    # 方式1：磁盘文件（单LOT任务）
+    # 方式1：磁盘文件（单LOT任务）— 可能是 zip 或 xlsx
     result_path = task.get("result_path")
     if result_path:
         if not os.path.exists(result_path):
             raise HTTPException(status_code=404, detail="导出文件不存在")
+        _is_zip = filename.lower().endswith(".zip")
+        _media = "application/zip" if _is_zip else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         return FileResponse(
             result_path,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            media_type=_media,
             filename=filename,
         )
 
@@ -614,6 +621,7 @@ def run_export_task(
     chars_row: int,
     delta_site: float,
     selected_items: str,
+    site_mode: str,
     db: Session
 ):
     """后台执行导出任务"""
@@ -625,6 +633,8 @@ def run_export_task(
         import pandas as pd
         import io
         import numpy as np
+        import zipfile
+        import re as _re
 
         export_tasks[task_id]["progress"] = 5
         
@@ -632,6 +642,14 @@ def run_export_task(
         if not lot:
             export_tasks[task_id].update({"status": "failed", "error": "LOT不存在"})
             return
+
+        # 规范导出文件名: {filename去后缀}_hist{MMDDHHMMSS}.zip
+        # 最上方名称 = lot.filename, 去掉常见压缩/数据后缀(.csv.zip/.xlsx/.csv/.zip等)
+        _base_name = lot.filename or f"LOT_{lot_id}"
+        _base_name = _re.sub(r'\.(?:csv\.zip|xlsx|xls|csv|zip|txt|std|dat)(?:\.gz)?$', '', _base_name, flags=_re.IGNORECASE)
+        _hist_suffix = time.strftime("%m%d%H%M%S", time.localtime())
+        _zip_filename = f"{_base_name}_hist{_hist_suffix}.zip"
+        _xlsx_inside = f"{_base_name}.xlsx"
 
         # 1. 获取数据
         lot_info = get_lot_info(lot_id, db)
@@ -659,6 +677,7 @@ def run_export_task(
                 df_all = df_all.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='first')
 
         output_path = os.path.join(EXPORT_RESULT_DIR, f"{task_id}.xlsx")
+        final_zip_path = os.path.join(EXPORT_RESULT_DIR, f"{task_id}.zip")
         with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
             workbook = writer.book
             
@@ -815,7 +834,12 @@ def run_export_task(
                     ax_obj.text(0.5, current_y, line_text, transform=ax_obj.transAxes, 
                                 color='#000000', fontweight='bold', fontsize=8, ha='center')
 
-            fig, ax = plt.subplots(figsize=(5.47, 4.5)) 
+            _plot_lock.acquire()
+            try:
+                fig, ax = plt.subplots(figsize=(5.47, 4.5)) 
+            except Exception:
+                _plot_lock.release()
+                raise
             SITE_COLORS = ['#ff6b6b', '#4dabf7', '#69db7c', '#ffd43b', '#e599f7', '#74c0fc', '#a9e34b', '#ffa94d']
             
             total_items = len(items_summary)
@@ -836,19 +860,28 @@ def run_export_task(
                 if len(filtered_all) == 0: continue
                 edges, exceeds_limit, ll_bin_idx, ul_bin_idx = calc_hist_edges(filtered_all, ll, ul)
                 
+                # LOT 标签 (用于 site_mode=lot 时的图例)
+                lot_label = f"{lot.lot_id}_{lot.wafer_id}" if lot.lot_id else (lot.wafer_id or "ALL")
+                
                 sites_data = []
-                if 'SITE_NUM' in df_all.columns:
-                    site_groups = df_all.dropna(subset=[p_name]).groupby('SITE_NUM')
-                    for site_num, site_df in site_groups:
-                        if site_num == 0: continue
-                        site_vals = site_df[p_name].values.astype(float)
-                        site_filtered = apply_filter(site_vals, filter_type, ll, ul, sigma)
-                        if len(site_filtered) > 0:
-                            counts, _ = np.histogram(site_filtered, bins=edges)
-                            sites_data.append({'site': int(site_num), 'counts': counts})
-                if not sites_data:
+                if site_mode == 'lot':
+                    # LOT 模式: 不分 Site, 显示所有值合并分布, 图例显示 LOT 内容
                     counts, _ = np.histogram(filtered_all, bins=edges)
-                    sites_data.append({'site': 0, 'counts': counts})
+                    sites_data.append({'site': 0, 'counts': counts, 'label': lot_label})
+                else:
+                    # SITE 模式: 按各 Site 分组, 图例显示 S1, S2...
+                    if 'SITE_NUM' in df_all.columns:
+                        site_groups = df_all.dropna(subset=[p_name]).groupby('SITE_NUM')
+                        for site_num, site_df in site_groups:
+                            if site_num == 0: continue
+                            site_vals = site_df[p_name].values.astype(float)
+                            site_filtered = apply_filter(site_vals, filter_type, ll, ul, sigma)
+                            if len(site_filtered) > 0:
+                                counts, _ = np.histogram(site_filtered, bins=edges)
+                                sites_data.append({'site': int(site_num), 'counts': counts, 'label': f"S{int(site_num)}"})
+                    if not sites_data:
+                        counts, _ = np.histogram(filtered_all, bins=edges)
+                        sites_data.append({'site': 0, 'counts': counts, 'label': lot_label})
 
                 ax.clear()
                 ax.set_axisbelow(True)
@@ -879,7 +912,7 @@ def run_export_task(
                             else:
                                 final_normal.append(0); final_outlier.append(0)
                         bar_w = 0.9
-                        ax.bar(range(len(final_normal)), final_normal, width=bar_w, alpha=0.7, color=color, label=f"Site{s['site']}", zorder=3)
+                        ax.bar(range(len(final_normal)), final_normal, width=bar_w, alpha=0.7, color=color, label=s['label'], zorder=3)
                         if any(v > 0 for v in final_outlier):
                             ax.bar(range(len(final_outlier)), final_outlier, width=bar_w, alpha=0.8, color=color, zorder=4)
                     if ll_bin_idx is not None:
@@ -913,7 +946,7 @@ def run_export_task(
                             else:
                                 final_normal.append(0); final_outlier.append(0)
                         bar_w = max(bin_w * 0.9, (x_max - x_min) * 0.015)
-                        ax.bar(bin_centers, final_normal, width=bar_w, alpha=0.7, color=color, label=f"Site{s['site']}", zorder=3)
+                        ax.bar(bin_centers, final_normal, width=bar_w, alpha=0.7, color=color, label=s['label'], zorder=3)
                         if any(v > 0 for v in final_outlier):
                             ax.bar(bin_centers, final_outlier, width=bar_w, alpha=0.8, color=color, zorder=4)
                     ax.set_xlim(x_min, x_max)
@@ -970,6 +1003,7 @@ def run_export_task(
                 hist_sheet.insert_image(r_idx, c_idx, f'h_{i}.png', {'image_data': img_data, 'x_scale': 1.0, 'y_scale': 1.0})
 
             plt.close(fig)
+            _plot_lock.release()
             export_tasks[task_id]["progress"] = 80
 
             # ─── Sheet 3: Bin Info & Map ───
@@ -1084,7 +1118,12 @@ def run_export_task(
                             BIN_COLORS[b_num] = FAIL_COLORS[fail_count % len(FAIL_COLORS)]
                 n_bins = len(BIN_COLORS)
                 # 放大 Map 图表尺寸
-                fig, ax = plt.subplots(figsize=(10 + max(0, n_bins*0.05), 8 + max(0, n_bins*0.1)))
+                _plot_lock.acquire()
+                try:
+                    fig, ax = plt.subplots(figsize=(10 + max(0, n_bins*0.05), 8 + max(0, n_bins*0.1)))
+                except Exception:
+                    _plot_lock.release()
+                    raise
                 xs, ys, bins = df_map['x'].values, df_map['y'].values, df_map['bin'].values
                 rects = [patches.Rectangle((x - 0.5, y - 0.5), 1, 1) for x, y in zip(xs, ys)]
                 colors = [BIN_COLORS.get(int(b), '#000000') for b in bins]
@@ -1118,15 +1157,26 @@ def run_export_task(
                 img_data = io.BytesIO()
                 plt.savefig(img_data, format='png', dpi=100, bbox_inches='tight')
                 plt.close(fig)
+                _plot_lock.release()
                 img_data.seek(0)
                 bin_sheet.insert_image(row, 0, 'wafer_map.png', {'image_data': img_data, 'x_scale': 1.1, 'y_scale': 1.1})
 
             export_tasks[task_id]["progress"] = 95
 
+        # 将 xlsx 打包为 zip (解压后即 Excel), 使用规范文件名
+        with zipfile.ZipFile(final_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.write(output_path, arcname=_xlsx_inside)
+        # 清理临时 xlsx
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+
         export_tasks[task_id].update({
             "status": "completed",
             "progress": 100,
-            "result_path": output_path
+            "result_path": final_zip_path,
+            "filename": _zip_filename
         })
     except Exception as e:
         import traceback
@@ -2317,11 +2367,74 @@ def get_param_data(
     NUM_BINS = len(global_edges) - 1  # 实际 bin 数量（非均匀时仍为50）
     global_edges_list = [round(float(e), 6) for e in global_edges.tolist()]
 
+    # ── 计算ALL(site=0)聚合的 histogram / scatter / wafer_map ──
+    # histogram：用全局 edges 分箱
+    if len(filtered_all) > 0:
+        all_hist, _ = np.histogram(filtered_all, bins=global_edges)
+        all_histogram = {"counts": all_hist.tolist(), "edges": global_edges_list}
+    else:
+        all_histogram = {"counts": [0] * NUM_BINS, "edges": global_edges_list}
+
+    # scatter：用过滤后的全部数据（带坐标），idx 用全局序号
+    all_scatter = []
+    all_wafer_map = []
+    if 'X_COORD' in df.columns and 'Y_COORD' in df.columns:
+        coord_df = df[[param_name, 'SITE_NUM', 'X_COORD', 'Y_COORD']].dropna(subset=[param_name])
+        # 坐标去重已在上面完成，这里直接用
+        for i, (idx, row) in enumerate(coord_df.iterrows()):
+            all_scatter.append({"idx": int(i), "val": float(row[param_name])})
+            all_wafer_map.append({"x": int(row['X_COORD']), "y": int(row['Y_COORD']), "val": float(row[param_name]), "site": int(row['SITE_NUM'])})
+        # 散点图最值下采样
+        target_points = 2000
+        if len(all_scatter) > target_points:
+            num_buckets = target_points // 2
+            bucket_size = max(1, len(all_scatter) // num_buckets)
+            downsampled = []
+            for i in range(0, len(all_scatter), bucket_size):
+                chunk = all_scatter[i:i+bucket_size]
+                if not chunk:
+                    continue
+                min_point = min(chunk, key=lambda p: p["val"])
+                max_point = max(chunk, key=lambda p: p["val"])
+                if min_point["idx"] < max_point["idx"]:
+                    downsampled.append(min_point)
+                    downsampled.append(max_point)
+                elif min_point["idx"] > max_point["idx"]:
+                    downsampled.append(max_point)
+                    downsampled.append(min_point)
+                else:
+                    downsampled.append(min_point)
+            all_scatter = downsampled
+    else:
+        # 无坐标：仅 scatter，无 wafer_map
+        valid_all_series = df[param_name].dropna()
+        all_scatter = [{"idx": int(i), "val": float(v)} for i, v in enumerate(valid_all_series.values)]
+        target_points = 2000
+        if len(all_scatter) > target_points:
+            num_buckets = target_points // 2
+            bucket_size = max(1, len(all_scatter) // num_buckets)
+            downsampled = []
+            for i in range(0, len(all_scatter), bucket_size):
+                chunk = all_scatter[i:i+bucket_size]
+                if not chunk:
+                    continue
+                min_point = min(chunk, key=lambda p: p["val"])
+                max_point = max(chunk, key=lambda p: p["val"])
+                if min_point["idx"] < max_point["idx"]:
+                    downsampled.append(min_point)
+                    downsampled.append(max_point)
+                elif min_point["idx"] > max_point["idx"]:
+                    downsampled.append(max_point)
+                    downsampled.append(min_point)
+                else:
+                    downsampled.append(min_point)
+            all_scatter = downsampled
+
     result_data.append({
         "site": 0,
-        "histogram": {"counts": [], "edges": global_edges_list},
-        "scatter": [],
-        "wafer_map": [],
+        "histogram": all_histogram,
+        "scatter": all_scatter,
+        "wafer_map": all_wafer_map,
         "stats": all_stats,
     })
 
@@ -2819,7 +2932,12 @@ def run_multi_export_task(
                     ax_obj.text(0.5, current_y, line_text, transform=ax_obj.transAxes, 
                                 color='#000000', fontweight='bold', fontsize=8, ha='center')
 
-            fig, ax = plt.subplots(figsize=(5.47, 4.5)) 
+            _plot_lock.acquire()
+            try:
+                fig, ax = plt.subplots(figsize=(5.47, 4.5)) 
+            except Exception:
+                _plot_lock.release()
+                raise
             LOT_COLORS = ['#4dabf7', '#ff6b6b', '#69db7c', '#ffd43b', '#e599f7', '#ffa94d', '#74c0fc', '#a9e34b']
             
             total_items = len(items_summary)
@@ -2963,6 +3081,7 @@ def run_multi_export_task(
                 hist_sheet.insert_image(r_idx, c_idx, f'h_{i}.png', {'image_data': img_data, 'x_scale': 1.0, 'y_scale': 1.0})
 
             plt.close(fig)
+            _plot_lock.release()
             export_tasks[task_id]["progress"] = 80
 
             # ─── Sheet 3: Bin Info ───

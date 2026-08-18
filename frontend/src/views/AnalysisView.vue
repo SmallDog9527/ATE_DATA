@@ -708,7 +708,7 @@ async function handleExport() {
     const pollInterval = setInterval(async () => {
       try {
         const statusRes: any = await api.get(`/analysis/export_items/status/${taskId}`)
-        const { status, progress, error } = statusRes
+        const { status, progress, error, filename: resFilename } = statusRes
         
         if (status === 'completed') {
           clearInterval(pollInterval)
@@ -724,7 +724,8 @@ async function handleExport() {
           const url = window.URL.createObjectURL(blobData)
           const link = document.createElement('a')
           link.href = url
-          link.setAttribute('download', `LOT_${lotId.value}_Report_${options.value.filter_type}.xlsx`)
+          // 使用后端返回的规范文件名 (含 .zip), 回退到默认名
+          link.setAttribute('download', resFilename || `LOT_${lotId.value}_Report_${options.value.filter_type}.zip`)
           document.body.appendChild(link)
           link.click()
           document.body.removeChild(link)
