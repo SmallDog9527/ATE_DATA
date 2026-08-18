@@ -21,6 +21,10 @@ from fastapi import BackgroundTasks
 import uuid
 import time
 import math
+import threading
+
+# matplotlib 非线程安全, 多任务并发导出时串行化绘图
+_plot_lock = threading.Lock()
 from datetime import datetime, timedelta, timezone
 from app.core.config import settings
 from app.api.deps import get_current_user
@@ -531,6 +535,7 @@ def start_export_test_items(
     chars_row: int = Query(3),
     delta_site: float = Query(3.0),
     selected_items: str = Query(""),
+    site_mode: str = Query("site"),
     db: Session = Depends(get_db),
 ):
     """启动异步导出任务"""
@@ -545,7 +550,7 @@ def start_export_test_items(
     
     background_tasks.add_task(
         run_export_task,
-        task_id, lot_id, filter_type, sigma, data_range, chars_row, delta_site, selected_items, db
+        task_id, lot_id, filter_type, sigma, data_range, chars_row, delta_site, selected_items, site_mode, db
     )
     
     return {"task_id": task_id}
@@ -578,14 +583,16 @@ def download_export_result(task_id: str):
     filename = task.get("filename", "Report.xlsx")
     encoded_filename = quote(filename)
 
-    # 方式1：磁盘文件（单LOT任务）
+    # 方式1：磁盘文件（单LOT任务）— 可能是 zip 或 xlsx
     result_path = task.get("result_path")
     if result_path:
         if not os.path.exists(result_path):
             raise HTTPException(status_code=404, detail="导出文件不存在")
+        _is_zip = filename.lower().endswith(".zip")
+        _media = "application/zip" if _is_zip else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         return FileResponse(
             result_path,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            media_type=_media,
             filename=filename,
         )
 
@@ -614,6 +621,7 @@ def run_export_task(
     chars_row: int,
     delta_site: float,
     selected_items: str,
+    site_mode: str,
     db: Session
 ):
     """后台执行导出任务"""
@@ -625,6 +633,8 @@ def run_export_task(
         import pandas as pd
         import io
         import numpy as np
+        import zipfile
+        import re as _re
 
         export_tasks[task_id]["progress"] = 5
         
@@ -632,6 +642,14 @@ def run_export_task(
         if not lot:
             export_tasks[task_id].update({"status": "failed", "error": "LOT不存在"})
             return
+
+        # 规范导出文件名: {filename去后缀}_hist{MMDDHHMMSS}.zip
+        # 最上方名称 = lot.filename, 去掉常见压缩/数据后缀(.csv.zip/.xlsx/.csv/.zip等)
+        _base_name = lot.filename or f"LOT_{lot_id}"
+        _base_name = _re.sub(r'\.(?:csv\.zip|xlsx|xls|csv|zip|txt|std|dat)(?:\.gz)?$', '', _base_name, flags=_re.IGNORECASE)
+        _hist_suffix = time.strftime("%m%d%H%M%S", time.localtime())
+        _zip_filename = f"{_base_name}_hist{_hist_suffix}.zip"
+        _xlsx_inside = f"{_base_name}_hist{_hist_suffix}.xlsx"
 
         # 1. 获取数据
         lot_info = get_lot_info(lot_id, db)
@@ -659,6 +677,7 @@ def run_export_task(
                 df_all = df_all.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='first')
 
         output_path = os.path.join(EXPORT_RESULT_DIR, f"{task_id}.xlsx")
+        final_zip_path = os.path.join(EXPORT_RESULT_DIR, f"{task_id}.zip")
         with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
             workbook = writer.book
             
@@ -801,8 +820,8 @@ def run_export_task(
             header_format = workbook.add_format({'bold': True, 'font_color': 'blue'})
             hist_sheet.write(0, 2, "Data:", header_format)
             hist_sheet.write(0, 3, lot.filename, header_format)
-            hist_sheet.write(1, 2, "Wafer:", header_format)
-            hist_sheet.write(1, 3, lot.wafer_id, header_format)
+            hist_sheet.write(1, 2, "LOT:", header_format)
+            hist_sheet.write(1, 3, f"{lot.lot_id}_{lot.wafer_id}" if lot.lot_id else (lot.wafer_id or ""), header_format)
             
             from app.services.stats import apply_filter, calc_param_stats, calc_hist_edges, calc_hist_x_range
             
@@ -815,161 +834,65 @@ def run_export_task(
                     ax_obj.text(0.5, current_y, line_text, transform=ax_obj.transAxes, 
                                 color='#000000', fontweight='bold', fontsize=8, ha='center')
 
-            fig, ax = plt.subplots(figsize=(5.47, 4.5)) 
-            SITE_COLORS = ['#ff6b6b', '#4dabf7', '#69db7c', '#ffd43b', '#e599f7', '#74c0fc', '#a9e34b', '#ffa94d']
-            
-            total_items = len(items_summary)
-            for i, item in enumerate(items_summary):
-                # 更新进度: 15% -> 80%
-                current_progress = 15 + int((i / total_items) * 65) if total_items > 0 else 15
-                export_tasks[task_id]["progress"] = current_progress
+            # ─── Parallel histogram rendering (persistent process pool) ───
+            # Worker module is pure (no app imports) so spawn stays fast.
+            import multiprocessing as _mp
+            from concurrent.futures import ProcessPoolExecutor as _PPE
+            from app.workers.hist_worker import _hist_worker_init, _render_hist_png
 
-                p_name = item['item_name']
-                p_num = item['item_number']
-                if p_name not in df_all.columns: continue
-                
-                ll, ul = item.get('lower_limit'), item.get('upper_limit')
-                unit = item.get('unit') or ''
-                vals = df_all[p_name].dropna().values.astype(float)
-                if len(vals) == 0: continue
-                filtered_all = apply_filter(vals, filter_type, ll, ul, sigma)
-                if len(filtered_all) == 0: continue
-                edges, exceeds_limit, ll_bin_idx, ul_bin_idx = calc_hist_edges(filtered_all, ll, ul)
-                
-                sites_data = []
-                if 'SITE_NUM' in df_all.columns:
-                    site_groups = df_all.dropna(subset=[p_name]).groupby('SITE_NUM')
-                    for site_num, site_df in site_groups:
-                        if site_num == 0: continue
-                        site_vals = site_df[p_name].values.astype(float)
-                        site_filtered = apply_filter(site_vals, filter_type, ll, ul, sigma)
-                        if len(site_filtered) > 0:
-                            counts, _ = np.histogram(site_filtered, bins=edges)
-                            sites_data.append({'site': int(site_num), 'counts': counts})
-                if not sites_data:
-                    counts, _ = np.histogram(filtered_all, bins=edges)
-                    sites_data.append({'site': 0, 'counts': counts})
+            # Persistent global pool (created once, reused across exports)
+            global _HIST_POOL
+            if '_HIST_POOL' not in globals() or globals().get('_HIST_POOL') is None:
+                _ctx_pool = _mp.get_context('spawn')
+                _HIST_POOL = _PPE(max_workers=min(4, _mp.cpu_count()), mp_context=_ctx_pool)
 
-                ax.clear()
-                ax.set_axisbelow(True)
-                ax.yaxis.grid(True, linestyle='--', alpha=0.5, zorder=0)
-                s0_stats = calc_param_stats(filtered_all, ll, ul, len(filtered_all))
-                data_min, data_max = float(np.min(filtered_all)), float(np.max(filtered_all))
-                edges_min, edges_max = float(edges[0]), float(edges[-1])
-                x_range_info = calc_hist_x_range(data_min, data_max, ll, ul, edges_min, edges_max)
-                x_min, x_max = x_range_info['x_min'], x_range_info['x_max']
-                
-                if exceeds_limit:
-                    max_count = np.max([np.max(s['counts']) for s in sites_data]) if sites_data else 1
-                    min_h = max_count * 0.02
-                    outlier_h = max_count * 0.05
-                    for idx, s in enumerate(sites_data):
-                        color = SITE_COLORS[idx % len(SITE_COLORS)]
-                        sigma_l = s0_stats['mean'] - 6 * s0_stats['stdev'] if s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None else None
-                        sigma_u = s0_stats['mean'] + 6 * s0_stats['stdev'] if s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None else None
-                        final_normal, final_outlier = [], []
-                        for i_bin, cnt in enumerate(s['counts']):
-                            center = (edges[i_bin] + edges[i_bin+1]) / 2
-                            is_outlier_type = sigma_l is not None and (center < sigma_l or center > sigma_u) and 0 < cnt < 5
-                            if is_outlier_type:
-                                final_normal.append(0); final_outlier.append(max(cnt, outlier_h))
-                            elif cnt > 0:
-                                val = max(cnt, min_h) if cnt < 5 else cnt
-                                final_normal.append(val); final_outlier.append(0)
-                            else:
-                                final_normal.append(0); final_outlier.append(0)
-                        bar_w = 0.9
-                        ax.bar(range(len(final_normal)), final_normal, width=bar_w, alpha=0.7, color=color, label=f"Site{s['site']}", zorder=3)
-                        if any(v > 0 for v in final_outlier):
-                            ax.bar(range(len(final_outlier)), final_outlier, width=bar_w, alpha=0.8, color=color, zorder=4)
-                    if ll_bin_idx is not None:
-                        ax.axvline(ll_bin_idx, color='red', linestyle='--', linewidth=1.5, zorder=4)
-                        ax.text(ll_bin_idx, ax.get_ylim()[1]*0.5, f'LL:{ll}', color='red', fontsize=7, ha='left', va='center', rotation=0)
-                    if ul_bin_idx is not None:
-                        ax.axvline(ul_bin_idx, color='red', linestyle='--', linewidth=1.5, zorder=4)
-                        ax.text(ul_bin_idx, ax.get_ylim()[1]*0.5, f'UL:{ul}', color='red', fontsize=7, ha='right', va='center', rotation=0)
-                    tick_indices = np.linspace(0, len(edges)-2, 11).astype(int)
-                    ax.set_xticks(tick_indices)
-                    ax.set_xticklabels([f"{edges[t]:.3f}" for t in tick_indices], rotation=30)
-                else:
-                    bin_centers = (edges[:-1] + edges[1:]) / 2
-                    bin_w = edges[1] - edges[0] if len(edges) > 1 else 1
-                    max_count = np.max([np.max(s['counts']) for s in sites_data]) if sites_data else 1
-                    min_h = max_count * 0.02
-                    outlier_h = max_count * 0.05
-                    for idx, s in enumerate(sites_data):
-                        color = SITE_COLORS[idx % len(SITE_COLORS)]
-                        sigma_l = s0_stats['mean'] - 6 * s0_stats['stdev'] if s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None else None
-                        sigma_u = s0_stats['mean'] + 6 * s0_stats['stdev'] if s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None else None
-                        final_normal, final_outlier = [], []
-                        for i_bin, cnt in enumerate(s['counts']):
-                            center = (edges[i_bin] + edges[i_bin+1]) / 2
-                            is_outlier_type = sigma_l is not None and (center < sigma_l or center > sigma_u) and 0 < cnt < 5
-                            if is_outlier_type:
-                                final_normal.append(0); final_outlier.append(max(cnt, outlier_h))
-                            elif cnt > 0:
-                                val = max(cnt, min_h) if cnt < 5 else cnt
-                                final_normal.append(val); final_outlier.append(0)
-                            else:
-                                final_normal.append(0); final_outlier.append(0)
-                        bar_w = max(bin_w * 0.9, (x_max - x_min) * 0.015)
-                        ax.bar(bin_centers, final_normal, width=bar_w, alpha=0.7, color=color, label=f"Site{s['site']}", zorder=3)
-                        if any(v > 0 for v in final_outlier):
-                            ax.bar(bin_centers, final_outlier, width=bar_w, alpha=0.8, color=color, zorder=4)
-                    ax.set_xlim(x_min, x_max)
-                    if ll is not None:
-                        ax.axvline(ll, color='red', linestyle='--', linewidth=1.5, zorder=4)
-                        ax.text(ll, ax.get_ylim()[1]*0.5, f'LL:{ll}', color='red', fontsize=7, ha='left', va='center', rotation=0)
-                    if ul is not None:
-                        ax.axvline(ul, color='red', linestyle='--', linewidth=1.5, zorder=4)
-                        ax.text(ul, ax.get_ylim()[1]*0.5, f'UL:{ul}', color='red', fontsize=7, ha='right', va='center', rotation=0)
-                    ax.set_xticks(x_range_info['ticks'])
-                    ax.xaxis.set_major_formatter(plt.FormatStrFormatter('%.3f'))
-                    ax.tick_params(axis='x', rotation=30)
-                
-                if filter_type == 'filter_by_sigma':
-                    sigma_val = float(sigma) if sigma else 3.0
-                    sigma_l, sigma_u = s0_stats['mean'] - sigma_val * s0_stats['stdev'], s0_stats['mean'] + sigma_val * s0_stats['stdev']
-                    if exceeds_limit:
-                        def find_bin(val):
-                            for b_i in range(len(edges)-1):
-                                if edges[b_i] <= val <= edges[b_i+1]: return b_i
-                            return 0 if val < edges[0] else len(edges)-2
-                        ax.axvline(find_bin(sigma_l), color='#00c853', linestyle='--', linewidth=1, zorder=4)
-                        ax.axvline(find_bin(sigma_u), color='#00c853', linestyle='--', linewidth=1, zorder=4)
-                    else:
-                        ax.axvline(sigma_l, color='#00c853', linestyle='--', linewidth=1, zorder=4)
-                        ax.axvline(sigma_u, color='#00c853', linestyle='--', linewidth=1, zorder=4)
-                
-                ax.set_title(f"{p_num}.{p_name}", fontsize=12, fontweight='bold', color='black', pad=32)
-                cpk_val = s0_stats['cpk'] if s0_stats['cpk'] is not None else 0
-                stats_info = [
-                    ("Min=", f"{s0_stats['min_val']:.4f}"), 
-                    ("Max=", f"{s0_stats['max_val']:.4f}"),
-                    ("Mean=", f"{s0_stats['mean']:.4f}"), 
-                    ("Stdev=", f"{s0_stats['stdev']:.4f}"), 
-                    ("CPK=", f"{cpk_val:.4f}")
-                ]
-                draw_stats_line(ax, 1.05, [stats_info])
-                ax.set_ylabel("Parts", fontsize=8)
-                ax.set_xlabel(unit, fontsize=12, fontweight='bold', color='black')
-                ax.tick_params(labelsize=7)
-                ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.22), ncol=4, fontsize=7, frameon=False)
-                fig.tight_layout()
-                img_data = io.BytesIO()
-                plt.savefig(img_data, format='png', dpi=100)
-                img_data.seek(0)
-                
-                group_idx = i // chars_row
-                within_group_idx = i % chars_row
-                r_idx = group_idx * 22 + 2
-                c_idx = within_group_idx * 7 + 2
-                info_r_idx = group_idx * 22 + 6 + within_group_idx
-                hist_sheet.write(info_r_idx, 0, p_num)
-                hist_sheet.write(info_r_idx, 1, p_name)
-                hist_sheet.insert_image(r_idx, c_idx, f'h_{i}.png', {'image_data': img_data, 'x_scale': 1.0, 'y_scale': 1.0})
+            _n_workers = min(4, _mp.cpu_count())
+            lot_label = f"{lot.lot_id}_{lot.wafer_id}" if lot.lot_id else (lot.wafer_id or "ALL")
 
-            plt.close(fig)
+            # Column-selective parquet read: only needed columns
+            import pyarrow.parquet as _pq
+            _pf = _pq.ParquetFile(lot.parquet_path)
+            _all_cols = [f.name for f in _pf.schema]
+            _param_cols = [it['item_name'] for it in items_summary if it['item_name'] in _all_cols]
+            _needed_cols = list(set([c for c in (['SITE_NUM', 'X_COORD', 'Y_COORD'] + _param_cols) if c in _all_cols]))
+
+            _items_data = [{'item_number': it['item_number'], 'item_name': it['item_name'],
+                            'lower_limit': it.get('lower_limit'), 'upper_limit': it.get('upper_limit'),
+                            'unit': it.get('unit')} for it in items_summary]
+            _total_render = len(_items_data)
+
+            # Setup phase: each worker reads parquet + creates reusable figure.
+            # Submit init to each of the N workers (idempotent; extra calls just re-init).
+            _init_futs = [_HIST_POOL.submit(_hist_worker_init, lot.parquet_path, _needed_cols,
+                                            _items_data, site_mode, lot_label, filter_type, sigma)
+                          for _ in range(_n_workers)]
+            for _f in _init_futs:
+                _f.result()
+
+            # Render phase: ex.map is the optimized batch pattern.
+            _t0 = __import__('time').time()
+            _raw_results = list(_HIST_POOL.map(_render_hist_png, range(_total_render)))
+            _t1 = __import__('time').time()
+            print(f"[export] render phase: {_total_render} items in {_t1-_t0:.1f}s ({(_t1-_t0)/max(_total_render,1)*1000:.0f}ms/项)", flush=True)
+            _render_results = [r[1] if r else None for r in _raw_results]
+            _done = sum(1 for _p in _render_results if _p is not None)
+            export_tasks[task_id]["progress"] = 15 + int((_done / max(_total_render, 1)) * 65)
+
+            # Insert phase: write images into Excel in main process (openpyxl/xlsxwriter).
+            for _i, _png in enumerate(_render_results):
+                if _png is None:
+                    continue
+                _it = _items_data[_i]
+                _group_idx = _i // chars_row
+                _within = _i % chars_row
+                _r_idx = _group_idx * 22 + 2
+                _c_idx = _within * 7 + 2
+                _info_r_idx = _group_idx * 22 + 6 + _within
+                hist_sheet.write(_info_r_idx, 0, _it['item_number'])
+                hist_sheet.write(_info_r_idx, 1, _it['item_name'])
+                hist_sheet.insert_image(_r_idx, _c_idx, f'h_{_i}.png',
+                                        {'image_data': io.BytesIO(_png), 'x_scale': 1.0, 'y_scale': 1.0})
+
             export_tasks[task_id]["progress"] = 80
 
             # ─── Sheet 3: Bin Info & Map ───
@@ -1083,8 +1006,14 @@ def run_export_task(
                             fail_count = sum(1 for v in BIN_COLORS.values() if v != '#69db7c')
                             BIN_COLORS[b_num] = FAIL_COLORS[fail_count % len(FAIL_COLORS)]
                 n_bins = len(BIN_COLORS)
-                # 放大 Map 图表尺寸
-                fig, ax = plt.subplots(figsize=(10 + max(0, n_bins*0.05), 8 + max(0, n_bins*0.1)))
+                # 方形 Map 画布：1000x1000，die 保持正方（不拉伸），地图居中，右侧留白放图例
+                _plot_lock.acquire()
+                try:
+                    fig, ax = plt.subplots(figsize=(10, 10))
+                    fig.subplots_adjust(left=0.06, right=0.72, top=0.93, bottom=0.10)
+                except Exception:
+                    _plot_lock.release()
+                    raise
                 xs, ys, bins = df_map['x'].values, df_map['y'].values, df_map['bin'].values
                 rects = [patches.Rectangle((x - 0.5, y - 0.5), 1, 1) for x, y in zip(xs, ys)]
                 colors = [BIN_COLORS.get(int(b), '#000000') for b in bins]
@@ -1116,17 +1045,28 @@ def run_export_task(
                 ax.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1.02, 0.5), frameon=False, labelcolor='#333333')
                 
                 img_data = io.BytesIO()
-                plt.savefig(img_data, format='png', dpi=100, bbox_inches='tight')
+                plt.savefig(img_data, format='png', dpi=100)
                 plt.close(fig)
+                _plot_lock.release()
                 img_data.seek(0)
-                bin_sheet.insert_image(row, 0, 'wafer_map.png', {'image_data': img_data, 'x_scale': 1.1, 'y_scale': 1.1})
+                bin_sheet.insert_image(row, 0, 'wafer_map.png', {'image_data': img_data, 'x_scale': 1.0, 'y_scale': 1.0})
 
             export_tasks[task_id]["progress"] = 95
+
+        # 将 xlsx 打包为 zip (解压后即 Excel), 使用规范文件名
+        with zipfile.ZipFile(final_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.write(output_path, arcname=_xlsx_inside)
+        # 清理临时 xlsx
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
 
         export_tasks[task_id].update({
             "status": "completed",
             "progress": 100,
-            "result_path": output_path
+            "result_path": final_zip_path,
+            "filename": _zip_filename
         })
     except Exception as e:
         import traceback
@@ -1292,8 +1232,8 @@ def export_test_items(
         header_format = workbook.add_format({'bold': True, 'font_color': 'blue'})
         hist_sheet.write(0, 2, "Data:", header_format) # C1
         hist_sheet.write(0, 3, lot.filename, header_format) # D1
-        hist_sheet.write(1, 2, "Wafer:", header_format) # C2
-        hist_sheet.write(1, 3, lot.wafer_id, header_format) # D2
+        hist_sheet.write(1, 2, "LOT:", header_format) # C2
+        hist_sheet.write(1, 3, f"{lot.lot_id}_{lot.wafer_id}" if lot.lot_id else (lot.wafer_id or ""), header_format) # D2
         
         from app.services.stats import apply_filter, calc_param_stats, calc_hist_edges, calc_hist_x_range
         
@@ -1503,7 +1443,7 @@ def export_test_items(
             
             fig.tight_layout()
             img_data = io.BytesIO()
-            plt.savefig(img_data, format='png', dpi=100)
+            plt.savefig(img_data, format='png', dpi=100, bbox_inches='tight')
             img_data.seek(0)
             
             # 计算位置
@@ -1647,8 +1587,9 @@ def export_test_items(
                         BIN_COLORS[b_num] = FAIL_COLORS[fail_count % len(FAIL_COLORS)]
             
             n_bins = len(BIN_COLORS)
-            # 放大 Map 图表尺寸
-            fig, ax = plt.subplots(figsize=(10 + max(0, n_bins*0.05), 8 + max(0, n_bins*0.1)))
+            # 方形 Map 画布：1000x1000，die 保持正方（不拉伸），地图居中，右侧留白放图例
+            fig, ax = plt.subplots(figsize=(10, 10))
+            fig.subplots_adjust(left=0.06, right=0.72, top=0.93, bottom=0.10)
             
             xs = df_map['x'].values
             ys = df_map['y'].values
@@ -1712,10 +1653,10 @@ def export_test_items(
             ax.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1.02, 0.5), frameon=False, labelcolor='#333333')
             
             img_data = io.BytesIO()
-            plt.savefig(img_data, format='png', dpi=100, bbox_inches='tight')
+            plt.savefig(img_data, format='png', dpi=100)
             plt.close(fig)
             img_data.seek(0)
-            bin_sheet.insert_image(row, 0, 'wafer_map.png', {'image_data': img_data, 'x_scale': 1.1, 'y_scale': 1.1})
+            bin_sheet.insert_image(row, 0, 'wafer_map.png', {'image_data': img_data, 'x_scale': 1.0, 'y_scale': 1.0})
 
     output.seek(0)
     filename = f"LOT_{lot_id}_FullReport_{filter_type}.xlsx"
@@ -2317,11 +2258,74 @@ def get_param_data(
     NUM_BINS = len(global_edges) - 1  # 实际 bin 数量（非均匀时仍为50）
     global_edges_list = [round(float(e), 6) for e in global_edges.tolist()]
 
+    # ── 计算ALL(site=0)聚合的 histogram / scatter / wafer_map ──
+    # histogram：用全局 edges 分箱
+    if len(filtered_all) > 0:
+        all_hist, _ = np.histogram(filtered_all, bins=global_edges)
+        all_histogram = {"counts": all_hist.tolist(), "edges": global_edges_list}
+    else:
+        all_histogram = {"counts": [0] * NUM_BINS, "edges": global_edges_list}
+
+    # scatter：用过滤后的全部数据（带坐标），idx 用全局序号
+    all_scatter = []
+    all_wafer_map = []
+    if 'X_COORD' in df.columns and 'Y_COORD' in df.columns:
+        coord_df = df[[param_name, 'SITE_NUM', 'X_COORD', 'Y_COORD']].dropna(subset=[param_name])
+        # 坐标去重已在上面完成，这里直接用
+        for i, (idx, row) in enumerate(coord_df.iterrows()):
+            all_scatter.append({"idx": int(i), "val": float(row[param_name])})
+            all_wafer_map.append({"x": int(row['X_COORD']), "y": int(row['Y_COORD']), "val": float(row[param_name]), "site": int(row['SITE_NUM'])})
+        # 散点图最值下采样
+        target_points = 2000
+        if len(all_scatter) > target_points:
+            num_buckets = target_points // 2
+            bucket_size = max(1, len(all_scatter) // num_buckets)
+            downsampled = []
+            for i in range(0, len(all_scatter), bucket_size):
+                chunk = all_scatter[i:i+bucket_size]
+                if not chunk:
+                    continue
+                min_point = min(chunk, key=lambda p: p["val"])
+                max_point = max(chunk, key=lambda p: p["val"])
+                if min_point["idx"] < max_point["idx"]:
+                    downsampled.append(min_point)
+                    downsampled.append(max_point)
+                elif min_point["idx"] > max_point["idx"]:
+                    downsampled.append(max_point)
+                    downsampled.append(min_point)
+                else:
+                    downsampled.append(min_point)
+            all_scatter = downsampled
+    else:
+        # 无坐标：仅 scatter，无 wafer_map
+        valid_all_series = df[param_name].dropna()
+        all_scatter = [{"idx": int(i), "val": float(v)} for i, v in enumerate(valid_all_series.values)]
+        target_points = 2000
+        if len(all_scatter) > target_points:
+            num_buckets = target_points // 2
+            bucket_size = max(1, len(all_scatter) // num_buckets)
+            downsampled = []
+            for i in range(0, len(all_scatter), bucket_size):
+                chunk = all_scatter[i:i+bucket_size]
+                if not chunk:
+                    continue
+                min_point = min(chunk, key=lambda p: p["val"])
+                max_point = max(chunk, key=lambda p: p["val"])
+                if min_point["idx"] < max_point["idx"]:
+                    downsampled.append(min_point)
+                    downsampled.append(max_point)
+                elif min_point["idx"] > max_point["idx"]:
+                    downsampled.append(max_point)
+                    downsampled.append(min_point)
+                else:
+                    downsampled.append(min_point)
+            all_scatter = downsampled
+
     result_data.append({
         "site": 0,
-        "histogram": {"counts": [], "edges": global_edges_list},
-        "scatter": [],
-        "wafer_map": [],
+        "histogram": all_histogram,
+        "scatter": all_scatter,
+        "wafer_map": all_wafer_map,
         "stats": all_stats,
     })
 
@@ -2819,7 +2823,12 @@ def run_multi_export_task(
                     ax_obj.text(0.5, current_y, line_text, transform=ax_obj.transAxes, 
                                 color='#000000', fontweight='bold', fontsize=8, ha='center')
 
-            fig, ax = plt.subplots(figsize=(5.47, 4.5)) 
+            _plot_lock.acquire()
+            try:
+                fig, ax = plt.subplots(figsize=(5.47, 4.5)) 
+            except Exception:
+                _plot_lock.release()
+                raise
             LOT_COLORS = ['#4dabf7', '#ff6b6b', '#69db7c', '#ffd43b', '#e599f7', '#ffa94d', '#74c0fc', '#a9e34b']
             
             total_items = len(items_summary)
@@ -2950,7 +2959,7 @@ def run_multi_export_task(
                 
                 fig.tight_layout()
                 img_data = io.BytesIO()
-                plt.savefig(img_data, format='png', dpi=100)
+                plt.savefig(img_data, format='png', dpi=100, bbox_inches='tight')
                 img_data.seek(0)
                 
                 group_idx = i // chars_row
@@ -2963,6 +2972,7 @@ def run_multi_export_task(
                 hist_sheet.insert_image(r_idx, c_idx, f'h_{i}.png', {'image_data': img_data, 'x_scale': 1.0, 'y_scale': 1.0})
 
             plt.close(fig)
+            _plot_lock.release()
             export_tasks[task_id]["progress"] = 80
 
             # ─── Sheet 3: Bin Info ───
@@ -3250,11 +3260,62 @@ def get_multi_lot_wafer_bin_maps(
     return {"maps": result}
 
 @router.get("/idle_check/config")
-def get_idle_check_config(program_name: str, db: Session = Depends(get_db)):
+def get_idle_check_config(
+    program_name: str,
+    lot_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Get Idle Check configuration for a program along with all available test parameters.
+    """
     config = db.query(IdleCheckConfig).filter(IdleCheckConfig.program_name == program_name).first()
-    if not config:
-        return {"program_name": program_name, "params": [], "threshold": 2}
-    return config
+    selected_params = config.params if config else []
+    threshold = config.threshold if config else 2
+
+    # Retrieve all available parameters for this program or lot
+    all_params = []
+    lot = None
+    if lot_id:
+        lot = db.query(Lot).filter(Lot.id == lot_id).first()
+    if not lot:
+        lot = (
+            db.query(Lot)
+            .filter(Lot.program == program_name, Lot.parquet_path.isnot(None), Lot.status != 'deleted')
+            .order_by(Lot.id.desc())
+            .first()
+        )
+
+    if lot and lot.parquet_path and os.path.exists(lot.parquet_path):
+        try:
+            df = pd.read_parquet(lot.parquet_path)
+            meta_cols = {
+                'SERIES', 'SITE_NUM', 'SOFT_BIN', 'HARD_BIN', 'T_TIME', 'TEST_NUM',
+                'Cor_X', 'Cor_Y', 'X_COORD', 'Y_COORD', 'Product_name', 'Product_sub_name',
+                'Version_Flag', 'Pgs_Flag', 'Tempera_Flag', 'Efuse_Flag', 'AMR_Flag',
+                'Board_ID', 'DUT', 'BIN_NO', 'DUT_NO', 'DUT_ID', 'fingerprint', 'is_alarm',
+                'chip_id', 'CHIP_NO', 'calc_chip_id'
+            }
+            all_params = [c for c in df.columns if c not in meta_cols]
+        except Exception as e:
+            print(f"[get_idle_check_config] Error reading parquet: {e}")
+
+    if not all_params and lot:
+        items = db.query(TestItem.item_name).filter(TestItem.lot_id == lot.id, TestItem.site == 0).all()
+        all_params = [it[0] for it in items]
+
+    if not all_params:
+        all_params = selected_params
+    else:
+        for p in selected_params:
+            if p not in all_params:
+                all_params.append(p)
+
+    return {
+        "program_name": program_name,
+        "params": selected_params,
+        "threshold": threshold,
+        "all_params": all_params
+    }
 
 @router.post("/idle_check/config")
 def set_idle_check_config(config_in: IdleCheckConfigCreate, db: Session = Depends(get_db)):
@@ -3595,6 +3656,19 @@ def export_idle_check(
     else:
         raise HTTPException(status_code=500, detail=task.get("error", "导出失败"))
 
+@router.get("/lot/{lot_id}/site_corr")
+def get_site_corr_analysis(
+    lot_id: int,
+    params: Optional[str] = Query(None),
+    weights: Optional[str] = Query(None),
+    exclude_chips: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """Site correlation analysis aligned by common sample numbers across sites."""
+    from app.services.site_corr import build_site_corr_response
+    return build_site_corr_response(lot_id, params, weights, exclude_chips, db)
+
+
 @router.post("/lot/{lot_id}/idle_check/corr")
 def perform_corr_processing(
     lot_id: int,
@@ -3604,84 +3678,107 @@ def perform_corr_processing(
     db: Session = Depends(get_db)
 ):
     """
-    Correlation处理：
-    1. 计算指纹值
-    2. 找出跨 Site 匹配的共同指纹
-    3. 对齐数据，重新标记 TEST_NUM
-    4. 删掉无法匹配的数据
-    5. 保存为新 LOT (_corr 结尾)
+    Correlation processing:
+    1. Check for Site Correlation step-shift pattern (Sites 1..16 and Sites 17..32)
+    2. Fallback to fingerprint value matching across sites
+    3. Align data and re-index TEST_NUM / CHIP_NO
+    4. Save as new aligned LOT with suffix '_corr'
     """
     lot = db.query(Lot).filter(Lot.id == lot_id).first()
     if not lot or not lot.parquet_path:
-        raise HTTPException(status_code=404, detail="数据不存在")
-
-    # 获取程序的配置
-    config = db.query(IdleCheckConfig).filter(IdleCheckConfig.program_name == lot.program).first()
-    if not config or not config.params:
-        raise HTTPException(status_code=400, detail="未配置指纹参数")
+        raise HTTPException(status_code=404, detail="Lot data not found")
 
     df = pd.read_parquet(lot.parquet_path)
-    
-    # 数据过滤
-    if data_filter == 'pass_only' and 'SOFT_BIN' in df.columns:
-        df = df[df['SOFT_BIN'].isin([1, 2])].copy()
-    
-    selected_params = [p for p in config.params if p in df.columns]
-    if not selected_params:
-         raise HTTPException(status_code=400, detail="选中的参数在数据中不存在")
-
-    # 解析权重
-    use_weights = []
-    if weights:
-        try: use_weights = [int(w) for w in weights.split(',')]
-        except: use_weights = []
-    if not use_weights or len(use_weights) < len(selected_params):
-        use_weights = [i + 1 for i in range(len(selected_params))]
-
-    # 计算指纹值
-    param_data = df[selected_params].astype(float)
-    fingerprints = []
-    for i, p in enumerate(selected_params):
-        fingerprints.append(param_data[p] * use_weights[i])
-    df['fingerprint'] = pd.concat(fingerprints, axis=1).sum(axis=1)
-
-    # Corr 处理逻辑
     if 'SITE_NUM' not in df.columns:
-        raise HTTPException(status_code=400, detail="数据缺少 Site 信息，无法进行 Site 间对比")
-    
-    sites = sorted(df['SITE_NUM'].unique().tolist())
-    if len(sites) < 2:
-        raise HTTPException(status_code=400, detail="Site 数量不足，无法进行 Site 间对比")
+        raise HTTPException(status_code=400, detail="Missing SITE_NUM column in lot data")
 
-    # 找出所有 Site 都有的指纹值 (精确匹配)
-    site_dfs = {site: df[df['SITE_NUM'] == site] for site in sites}
-    site_fps = {site: set(site_dfs[site]['fingerprint'].dropna().unique()) for site in sites}
-    
-    common_fps = set.intersection(*site_fps.values())
-    if not common_fps:
-        raise HTTPException(status_code=400, detail="未找到跨 Site 匹配的共同指纹数据")
+    df['SITE_NUM'] = df['SITE_NUM'].astype(int)
+    if 'SERIES' in df.columns:
+        df['SERIES'] = df['SERIES'].astype(int)
 
-    # 按第一个 Site 的原始出现顺序排列共同指纹
-    ref_site = sites[0]
-    ordered_fps = []
-    seen = set()
-    for fp in site_dfs[ref_site]['fingerprint']:
-        if fp in common_fps and fp not in seen:
-            ordered_fps.append(fp)
-            seen.add(fp)
+    # Data filter
+    if data_filter == 'pass_only' and 'SOFT_BIN' in df.columns:
+        df = df[df['SOFT_BIN'].isin([1, 2, '1', '2'])].copy()
 
-    # 对齐并重新编号
+    # Try step-shift alignment first if SERIES is present
     aligned_rows = []
-    for i, fp in enumerate(ordered_fps):
-        test_num = i + 1
-        for site in sites:
-            match = site_dfs[site][site_dfs[site]['fingerprint'] == fp].head(1).copy()
-            match['TEST_NUM'] = test_num
-            aligned_rows.append(match)
+    if 'SERIES' in df.columns:
+        sites = sorted(df['SITE_NUM'].unique().tolist())
 
-    new_df = pd.concat(aligned_rows, ignore_index=True)
-    
-    # 创建新 LOT
+        # Group 1: Sites 1..16
+        df1 = df[(df['SITE_NUM'] >= 1) & (df['SITE_NUM'] <= 16)].copy()
+        if len(df1) > 0:
+            df1['calc_chip_id'] = df1['SERIES'] + (16 - df1['SITE_NUM'])
+            counts1 = df1.groupby('calc_chip_id')['SITE_NUM'].nunique()
+            full_chips1 = sorted(counts1[counts1 == 16].index.tolist())
+            for chip_idx, cid in enumerate(full_chips1):
+                chip_rows = df1[df1['calc_chip_id'] == cid].sort_values('SITE_NUM').copy()
+                chip_rows['CHIP_NO'] = chip_idx + 1
+                chip_rows['TEST_NUM'] = chip_idx + 1
+                aligned_rows.append(chip_rows)
+
+        # Group 2: Sites 17..32
+        df2 = df[(df['SITE_NUM'] >= 17) & (df['SITE_NUM'] <= 32)].copy()
+        if len(df2) > 0:
+            df2['calc_chip_id'] = df2['SERIES'] + (32 - df2['SITE_NUM'])
+            counts2 = df2.groupby('calc_chip_id')['SITE_NUM'].nunique()
+            full_chips2 = sorted(counts2[counts2 == 16].index.tolist())
+            for chip_idx, cid in enumerate(full_chips2):
+                chip_rows = df2[df2['calc_chip_id'] == cid].sort_values('SITE_NUM').copy()
+                chip_rows['CHIP_NO'] = chip_idx + 1
+                chip_rows['TEST_NUM'] = chip_idx + 1
+                aligned_rows.append(chip_rows)
+
+    if aligned_rows:
+        new_df = pd.concat(aligned_rows, ignore_index=True)
+    else:
+        # Fallback to Fingerprint matching
+        config = db.query(IdleCheckConfig).filter(IdleCheckConfig.program_name == lot.program).first()
+        if not config or not config.params:
+            raise HTTPException(status_code=400, detail="Fingerprint parameters not configured for this program")
+
+        selected_params = [p for p in config.params if p in df.columns]
+        if not selected_params:
+            raise HTTPException(status_code=400, detail="Selected parameters missing in dataset")
+
+        use_weights = []
+        if weights:
+            try: use_weights = [int(w) for w in weights.split(',')]
+            except: use_weights = []
+        if not use_weights or len(use_weights) < len(selected_params):
+            use_weights = [i + 1 for i in range(len(selected_params))]
+
+        param_data = df[selected_params].astype(float)
+        fingerprints = [param_data[p] * use_weights[i] for i, p in enumerate(selected_params)]
+        df['fingerprint'] = pd.concat(fingerprints, axis=1).sum(axis=1)
+
+        sites = sorted(df['SITE_NUM'].unique().tolist())
+        site_dfs = {site: df[df['SITE_NUM'] == site] for site in sites}
+        site_fps = {site: set(site_dfs[site]['fingerprint'].dropna().unique()) for site in sites}
+
+        common_fps = set.intersection(*site_fps.values())
+        if not common_fps:
+            raise HTTPException(status_code=400, detail="No matching common fingerprints found across sites")
+
+        ref_site = sites[0]
+        ordered_fps = []
+        seen = set()
+        for fp in site_dfs[ref_site]['fingerprint']:
+            if fp in common_fps and fp not in seen:
+                ordered_fps.append(fp)
+                seen.add(fp)
+
+        fp_rows = []
+        for i, fp in enumerate(ordered_fps):
+            test_num = i + 1
+            for site in sites:
+                match = site_dfs[site][site_dfs[site]['fingerprint'] == fp].head(1).copy()
+                match['TEST_NUM'] = test_num
+                fp_rows.append(match)
+
+        new_df = pd.concat(fp_rows, ignore_index=True)
+
+    # Create new Lot
     new_filename = f"{lot.filename}_corr"
     new_lot = Lot(
         filename=new_filename,
@@ -3702,7 +3799,7 @@ def perform_corr_processing(
     db.commit()
     db.refresh(new_lot)
 
-    # 保存 Parquet
+    # Save parquet file
     parquet_dir = os.path.join(UPLOAD_DIR, 'parquet')
     os.makedirs(parquet_dir, exist_ok=True)
     parquet_path = os.path.join(parquet_dir, f"lot_{new_lot.id}.parquet")
@@ -3710,7 +3807,7 @@ def perform_corr_processing(
     new_lot.parquet_path = parquet_path
     db.commit()
 
-    # 计算统计
+    # Save summary statistics
     ref_items = db.query(TestItem).filter(TestItem.lot_id == lot.id, TestItem.site == 0).all()
     param_names = [it.item_name for it in ref_items]
     param_ll = {it.item_name: it.lower_limit for it in ref_items}
@@ -3731,11 +3828,11 @@ def perform_corr_processing(
         param_units=param_units,
         bin_definitions=bin_definitions,
     )
-    
+
     save_stats_to_db(new_lot, parsed, db, [1, 2])
-    
+
     new_lot.status = 'processed'
     new_lot.finish_date = datetime.now(timezone.utc)
     db.commit()
-    
+
     return {"id": new_lot.id, "filename": new_lot.filename}

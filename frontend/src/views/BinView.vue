@@ -30,6 +30,16 @@
         </div>
 
         <div class="opt-group">
+          <span class="opt-label">Map角度</span>
+          <select v-model="options.rotate" @change="onMapRotateChange" style="font-size:12px;padding:2px 6px;border:1px solid #d9d9d9;border-radius:4px">
+            <option value="0">0°</option>
+            <option value="90">90°</option>
+            <option value="180">180°</option>
+            <option value="270">270°</option>
+          </select>
+        </div>
+
+        <div class="opt-group">
           <span class="opt-label">Site</span>
           <label>
             <input type="checkbox" :checked="isAllSiteSelected" @change="toggleAllSite" /> All
@@ -38,16 +48,6 @@
             <input type="checkbox" :checked="options.selected_sites.includes(s)" @change="toggleSite(s)" />
             Site{{ s }}
           </label>
-        </div>
-
-        <div class="opt-group" v-if="false">
-          <span class="opt-label">Map旋转</span>
-          <select v-model="options.rotate" @change="renderBinMap()" style="font-size:12px;padding:2px 6px;border:1px solid #d9d9d9;border-radius:4px">
-            <option value="0">0°</option>
-            <option value="90">90°</option>
-            <option value="180">180°</option>
-            <option value="270">270°</option>
-          </select>
         </div>
 
         <div class="opt-group">
@@ -338,6 +338,33 @@ const options = ref({
   show_fail_bin: false,
 })
 
+const MAP_ROTATE_KEY_PREFIX = 'ate_map_rotate_'
+
+function productMapRotateKey() {
+  const program = lotInfo.value?.program || ''
+  const name = String(program).trim()
+  if (!name) return ''
+  const idx = name.indexOf('_')
+  return MAP_ROTATE_KEY_PREFIX + (idx > 0 ? name.slice(0, idx) : name)
+}
+
+function loadMapRotate() {
+  const key = productMapRotateKey()
+  if (!key) return '0'
+  const saved = localStorage.getItem(key)
+  return saved === '90' || saved === '180' || saved === '270' ? saved : '0'
+}
+
+function saveMapRotate() {
+  const key = productMapRotateKey()
+  if (key) localStorage.setItem(key, options.value.rotate)
+}
+
+function onMapRotateChange() {
+  saveMapRotate()
+  renderBinMap()
+}
+
 const BIN_COLORS: Record<number, string> = {}
 const FAIL_COLORS = [
   '#ff6b6b', '#4dabf7', '#ffd43b', '#e599f7', '#74c0fc',
@@ -484,6 +511,7 @@ function toggleRetestSort(key: 'from_bin' | 'count') {
 
 async function fetchLotInfo() {
   lotInfo.value = await api.get(`/analysis/lot/${lotId.value}/info`)
+  options.value.rotate = loadMapRotate()
 }
 
 async function fetchBinData() {

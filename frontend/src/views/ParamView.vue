@@ -34,6 +34,29 @@
 
     <!-- Tab内容 -->
     <div class="tab-content" v-if="currentTab">
+      <!-- 图表显示控制栏 (固定在顶部，控制本页 + VS另一半) -->
+      <div class="viz-bar">
+        <div class="option-item">
+          <label>Chart</label>
+          <label><input type="checkbox" :checked="currentTab?.options.show_histogram" @change="updateOption('show_histogram', ($event.target as HTMLInputElement).checked)" /> Histogram</label>
+          <label><input type="checkbox" :checked="currentTab?.options.show_scatter" @change="updateOption('show_scatter', ($event.target as HTMLInputElement).checked)" /> Scatter</label>
+          <label v-if="lotInfo?.data_type === 'CP'"><input type="checkbox" :checked="currentTab?.options.show_map" @change="updateOption('show_map', ($event.target as HTMLInputElement).checked)" /> Map Chart</label>
+          <button v-if="lotInfo?.data_type === 'CP'" class="btn-vs" :class="{ active: vsMode }" @click="toggleVsMode">VS</button>
+        </div>
+        <!-- Site 选择 chips：默认仅全S高亮(不含ALL)；点ALL⇄仅ALL聚合；点Sn→多选累加，隐藏ALL聚合 -->
+        <div class="site-chips" v-if="currentTab.data">
+          <span class="chip chip-all" :class="{ active: isAllChipActive(currentTab) }" @click="onChipClick(currentTab, 0)">ALL</span>
+          <span
+            v-for="(s, idx) in currentTab.data.sites.filter((s:any) => s.site > 0)"
+            :key="s.site"
+            class="chip"
+            :class="{ active: isSiteChipActive(currentTab, s.site) }"
+            :style="chipStyle(s.site)"
+            @click="onChipClick(currentTab, s.site)"
+          >S{{ s.site }}</span>
+        </div>
+        <!-- VS 侧的 Site 选择已由顶部全局 chips 统一控制，不再单独显示 -->
+      </div>
       <!-- 内容区 -->
       <div class="content-row">
         <div class="charts-area">
@@ -86,17 +109,6 @@
                 <label><input type="radio" :checked="currentTab?.options.data_range === 'all'" @change="updateOption('data_range', 'all')" /> All</label>
               </div>
 
-              <button class="mode-toggle-btn" @click="toggleSiteDisplay(currentTab.id)">
-                {{ currentTab.options.site_display_mode === 'all' ? 'Site' : 'ALL' }}
-              </button>
-
-              <div class="option-item">
-                <label>Chart</label>
-                <label><input type="checkbox" :checked="currentTab?.options.show_histogram" @change="updateOption('show_histogram', ($event.target as HTMLInputElement).checked)" /> Histogram</label>
-                <label><input type="checkbox" :checked="currentTab?.options.show_scatter" @change="updateOption('show_scatter', ($event.target as HTMLInputElement).checked)" /> Scatter</label>
-                <label v-if="lotInfo?.data_type === 'CP'"><input type="checkbox" :checked="currentTab?.options.show_map" @change="updateOption('show_map', ($event.target as HTMLInputElement).checked)" /> Map Chart</label>
-                <button v-if="lotInfo?.data_type === 'CP'" class="btn-vs" :class="{ active: vsMode }" @click="toggleVsMode">VS</button>
-              </div>
             </div>
           </div>
           <!-- 统计汇总行 -->
@@ -120,7 +132,7 @@
               </thead>
               <tbody>
                 <tr v-for="s in displayedSites(currentTab)" :key="s.site">
-                  <td>{{ s.site === 0 ? 'ALL' : `Site${s.site}` }}</td>
+                  <td><span class="site-cell-label">{{ s.site === 0 ? 'ALL' : `Site${s.site}` }}</span></td>
                   <td>{{ s.stats.exec_qty - s.stats.fail_count }}</td>
                   <td>{{ s.stats.fail_count }}</td>
                   <td>{{ s.stats.exec_qty }}</td>
@@ -138,13 +150,57 @@
           </div>
 
           <!-- 直方图 -->
-          <div v-if="currentTab.options.show_histogram && currentTab.data" class="chart-container">
+          <div v-if="currentTab.options.show_histogram && currentTab.data" class="chart-container" style="flex-direction:column;align-items:center">
             <div :ref="el => setChartRef(currentTab?.id, 'hist', el)" style="width:600px;height:400px"></div>
+            <div class="chart-legend">
+              <span
+                v-for="s in chartSites(currentTab)"
+                :key="'hl'+s.site"
+                class="chart-legend-item"
+                :style="{ '--lg-color': siteColor(s.site) }"
+              >{{ legendLabel(s.site) }}</span>
+            </div>
           </div>
 
           <!-- Scatter图 -->
-          <div v-if="currentTab.options.show_scatter && currentTab.data" class="chart-container">
+          <div v-if="currentTab.options.show_scatter && currentTab.data" class="chart-container" style="flex-direction:column;align-items:center">
+            <div class="scatter-axis-mode-box">
+              <span class="label">Y轴:</span>
+              <button
+                :class="['axis-mode-btn', { active: currentTab?.options.scatter_y_mode === 'auto' }]"
+                @click="setScatterYMode('auto')"
+                title="按当前数据最大值/最小值自动缩放"
+              >Auto (Max/Min)</button>
+              <button
+                :class="['axis-mode-btn', { active: currentTab?.options.scatter_y_mode === 'limit' }]"
+                @click="setScatterYMode('limit')"
+                title="显示 Low/High Limit 并按 Limit 调整 Y 轴"
+              >Limit</button>
+              <button
+                :class="['axis-mode-btn', { active: currentTab?.options.scatter_y_mode === 'sigma' }]"
+                @click="setScatterYMode('sigma')"
+                title="按均值 ± N 倍标准差调整 Y 轴"
+              >N σ</button>
+              <input
+                v-model.number="scatterSigmaNInput"
+                type="number"
+                min="1"
+                max="20"
+                step="0.5"
+                class="sigma-input"
+                :disabled="currentTab?.options.scatter_y_mode !== 'sigma'"
+                @change="applyScatterSigmaN"
+              />
+            </div>
             <div :ref="el => setChartRef(currentTab?.id, 'scatter', el)" style="width:800px;height:260px"></div>
+            <div class="chart-legend">
+              <span
+                v-for="s in chartSites(currentTab)"
+                :key="'sl'+s.site"
+                class="chart-legend-item"
+                :style="{ '--lg-color': siteColor(s.site) }"
+              >{{ legendLabel(s.site) }}</span>
+            </div>
           </div>
 
           <!-- Wafer Map -->
@@ -158,18 +214,6 @@
               ></canvas>
               <div ref="waferTooltipEl" class="wafer-tooltip" style="display:none"></div>
               <div ref="leftLinkedTooltipEl" class="wafer-tooltip wafer-linked-tooltip" style="display:none"></div>
-            </div>
-            <div class="wafer-legend" v-if="currentTab.data">
-              <span
-                v-for="(s, idx) in currentTab.data.sites.filter((s:any) => s.site > 0)"
-                :key="s.site"
-                class="wafer-legend-item"
-                :class="{ hidden: hiddenSites.has(s.site) }"
-                @click="toggleSite(s.site)"
-              >
-                <span class="wafer-legend-dot" :style="{ background: SITE_COLORS[idx % SITE_COLORS.length] }"></span>
-                Site{{ s.site }}
-              </span>
             </div>
           </div>
         </div>
@@ -222,9 +266,6 @@
                 <label><input type="radio" :checked="vsTab.options.data_range === 'original'" @change="updateVsOption('data_range','original')" /> Original</label>
                 <label><input type="radio" :checked="vsTab.options.data_range === 'all'" @change="updateVsOption('data_range','all')" /> All</label>
               </div>
-              <button class="mode-toggle-btn" @click="toggleSiteDisplay(VS_TAB_ID)">
-                {{ vsTab.options.site_display_mode === 'all' ? 'Site' : 'ALL' }}
-              </button>
             </div>
             <!-- VS stats table -->
             <div class="stats-table" v-if="vsTab.data">
@@ -237,7 +278,7 @@
                 </thead>
                 <tbody>
                   <tr v-for="s in displayedSites(vsTab)" :key="s.site">
-                    <td>{{ s.site === 0 ? 'ALL' : `Site${s.site}` }}</td>
+                    <td><span class="site-cell-label">{{ s.site === 0 ? 'ALL' : `Site${s.site}` }}</span></td>
                     <td>{{ s.stats.exec_qty - s.stats.fail_count }}</td>
                     <td>{{ s.stats.fail_count }}</td>
                     <td>{{ s.stats.exec_qty }}</td>
@@ -254,12 +295,56 @@
               </table>
             </div>
             <!-- VS Histogram -->
-            <div v-if="currentTab.options.show_histogram && vsTab.data" class="chart-container">
+            <div v-if="currentTab.options.show_histogram && vsTab.data" class="chart-container" style="flex-direction:column;align-items:center">
               <div :ref="el => setChartRef(VS_TAB_ID, 'hist', el)" style="width:600px;height:400px"></div>
+              <div class="chart-legend">
+                <span
+                  v-for="s in chartSites(vsTab)"
+                  :key="'vhl'+s.site"
+                  class="chart-legend-item"
+                  :style="{ '--lg-color': siteColor(s.site) }"
+                >{{ legendLabel(s.site) }}</span>
+              </div>
             </div>
             <!-- VS Scatter -->
-            <div v-if="currentTab.options.show_scatter && vsTab.data" class="chart-container">
+            <div v-if="currentTab.options.show_scatter && vsTab.data" class="chart-container" style="flex-direction:column;align-items:center">
+              <div class="scatter-axis-mode-box">
+                <span class="label">Y轴:</span>
+                <button
+                  :class="['axis-mode-btn', { active: vsTab?.options.scatter_y_mode === 'auto' }]"
+                  @click="setVsScatterYMode('auto')"
+                  title="按当前数据最大值/最小值自动缩放"
+                >Auto (Max/Min)</button>
+                <button
+                  :class="['axis-mode-btn', { active: vsTab?.options.scatter_y_mode === 'limit' }]"
+                  @click="setVsScatterYMode('limit')"
+                  title="显示 Low/High Limit 并按 Limit 调整 Y 轴"
+                >Limit</button>
+                <button
+                  :class="['axis-mode-btn', { active: vsTab?.options.scatter_y_mode === 'sigma' }]"
+                  @click="setVsScatterYMode('sigma')"
+                  title="按均值 ± N 倍标准差调整 Y 轴"
+                >N σ</button>
+                <input
+                  v-model.number="vsScatterSigmaNInput"
+                  type="number"
+                  min="1"
+                  max="20"
+                  step="0.5"
+                  class="sigma-input"
+                  :disabled="vsTab?.options.scatter_y_mode !== 'sigma'"
+                  @change="applyVsScatterSigmaN"
+                />
+              </div>
               <div :ref="el => setChartRef(VS_TAB_ID, 'scatter', el)" style="width:800px;height:260px"></div>
+              <div class="chart-legend">
+                <span
+                  v-for="s in chartSites(vsTab)"
+                  :key="'vsl'+s.site"
+                  class="chart-legend-item"
+                  :style="{ '--lg-color': siteColor(s.site) }"
+                >{{ legendLabel(s.site) }}</span>
+              </div>
             </div>
             <!-- VS Wafer Map -->
             <div v-if="currentTab.options.show_map && vsTab.data && lotInfo?.data_type === 'CP'" class="chart-container" style="flex-direction:column;align-items:center">
@@ -271,18 +356,6 @@
                 ></canvas>
                 <div ref="vsWaferTooltipEl" class="wafer-tooltip" style="display:none"></div>
                 <div ref="vsLinkedTooltipEl" class="wafer-tooltip wafer-linked-tooltip" style="display:none"></div>
-              </div>
-              <div class="wafer-legend" v-if="vsTab.data">
-                <span
-                  v-for="(s, idx) in vsTab.data.sites.filter((s:any) => s.site > 0)"
-                  :key="s.site"
-                  class="wafer-legend-item"
-                  :class="{ hidden: vsHiddenSites.has(s.site) }"
-                  @click="toggleVsSite(s.site)"
-                >
-                  <span class="wafer-legend-dot" :style="{ background: SITE_COLORS[idx % SITE_COLORS.length] }"></span>
-                  Site{{ s.site }}
-                </span>
               </div>
             </div>
           </div>
@@ -359,9 +432,13 @@ const draftOptions = ref({
   custom_ll: null as number | null,
   custom_ul: null as number | null,
   show_histogram: true,
-  show_scatter: false,
+  show_scatter: true,
   show_map: true,
+  scatter_y_mode: 'auto',   // scatter Y-axis range mode: 'auto' | 'limit' | 'sigma'
+  scatter_sigma_n: 6,        // N value for sigma mode (default 6, matches IdleCheck)
   site_display_mode: 'site',
+  site_view: 'all',       // 'all'(默认: 所有Site，不含ALL聚合) | 'all_only'(仅ALL聚合) | 'site'(多选Site)
+  active_sites: [] as number[],  // site_view==='site' 时生效（可多选）
 })
 
 const sigmaInputValue = ref(draftOptions.value.sigma)
@@ -370,6 +447,36 @@ const customMaxInput = ref<number | null>(null)
 const customLLInput = ref<number | null>(null)
 const customULInput = ref<number | null>(null)
 
+// Scatter Y-axis range mode controls (Auto / Limit / N sigma)
+const scatterSigmaNInput = ref<number>(6)
+
+function setScatterYMode(mode: 'auto' | 'limit' | 'sigma') {
+  if (!currentTab.value) return
+  currentTab.value.options.scatter_y_mode = mode
+  renderScatter(currentTab.value.id)
+}
+
+function applyScatterSigmaN() {
+  if (!currentTab.value) return
+  currentTab.value.options.scatter_sigma_n = scatterSigmaNInput.value
+  renderScatter(currentTab.value.id)
+}
+
+// VS 侧 Scatter Y轴：独立控制
+const vsScatterSigmaNInput = ref<number>(6)
+
+function setVsScatterYMode(mode: 'auto' | 'limit' | 'sigma') {
+  if (!vsTab.value) return
+  vsTab.value.options.scatter_y_mode = mode
+  renderScatter(VS_TAB_ID)
+}
+
+function applyVsScatterSigmaN() {
+  if (!vsTab.value) return
+  vsTab.value.options.scatter_sigma_n = vsScatterSigmaNInput.value
+  renderScatter(VS_TAB_ID)
+}
+
 watch(currentTab, (newTab) => {
   if (newTab) {
     sigmaInputValue.value = newTab.options.sigma
@@ -377,6 +484,7 @@ watch(currentTab, (newTab) => {
     customMaxInput.value = newTab.options.custom_max
     customLLInput.value = newTab.options.custom_ll
     customULInput.value = newTab.options.custom_ul
+    scatterSigmaNInput.value = newTab.options.scatter_sigma_n ?? 6
     currentParamName.value = newTab.param_name
   }
 }, { immediate: true })
@@ -388,6 +496,7 @@ watch(vsTab, (newTab) => {
     vsCustomMaxInput.value = newTab.options.custom_max
     vsCustomLLInput.value = newTab.options.custom_ll
     vsCustomULInput.value = newTab.options.custom_ul
+    vsScatterSigmaNInput.value = newTab.options.scatter_sigma_n ?? 6
     vsParamName.value = newTab.param_name
   }
 }, { immediate: true })
@@ -461,24 +570,161 @@ function toggleVsSite(siteNum: number) {
   if (canvas) renderWaferMap(VS_TAB_ID, canvas)
 }
 
-function displayedSites(tab: Tab | null | undefined) {
-  if (!tab?.data?.sites) return []
-  if (tab.options.site_display_mode === 'all') {
-    return tab.data.sites.filter((s: any) => s.site === 0)
+function isSiteSelected(tab: Tab | null | undefined, siteNum: number): boolean {
+  if (!tab?.data?.sites) return true
+  if (!tab.options?.selected_sites) return true
+  return tab.options.selected_sites.includes(siteNum)
+}
+
+function toggleSiteSelection(tabId: string, siteNum: number) {
+  const tab = getTabById(tabId)
+  if (!tab?.data?.sites) return
+  if (!tab.options.selected_sites) {
+    tab.options.selected_sites = tab.data.sites.map((s: any) => s.site)
   }
-  return tab.data.sites
+
+  const allSiteNums: number[] = tab.data.sites.map((s: any) => s.site)
+  const indivSiteNums: number[] = tab.data.sites.filter((s: any) => s.site > 0).map((s: any) => s.site)
+
+  if (siteNum === 0) {
+    if (tab.options.selected_sites.includes(0)) {
+      tab.options.selected_sites = []
+    } else {
+      tab.options.selected_sites = [...allSiteNums]
+    }
+  } else {
+    const idx = tab.options.selected_sites.indexOf(siteNum)
+    if (idx >= 0) {
+      tab.options.selected_sites.splice(idx, 1)
+      const zeroIdx = tab.options.selected_sites.indexOf(0)
+      if (zeroIdx >= 0) tab.options.selected_sites.splice(zeroIdx, 1)
+    } else {
+      tab.options.selected_sites.push(siteNum)
+      const allIndivChecked = indivSiteNums.every((s: number) => tab.options.selected_sites.includes(s))
+      if (allIndivChecked && !tab.options.selected_sites.includes(0)) {
+        tab.options.selected_sites.push(0)
+      }
+    }
+  }
+
+  nextTick(() => {
+    if (tabId === VS_TAB_ID) {
+      renderVsCharts()
+    } else {
+      renderCharts(tabId)
+    }
+  })
+}
+
+// 统计表格展示的Site：与图表显示一致（默认仅所有Site；all_only 仅ALL；site 模式仅选中的Site）
+function displayedSites(tab: Tab | null | undefined) {
+  return chartSites(tab)
+}
+
+// 图例标签：site0(ALL聚合) → 用 lotid_waferid；其它 → SiteN
+function lotWaferLabel() {
+  const li = lotInfo.value
+  if (li && li.lot_id && li.wafer_id != null) return `${li.lot_id}_${li.wafer_id}`
+  return 'ALL'
+}
+function siteLabel(site: number) {
+  return site === 0 ? lotWaferLabel() : `Site${site}`
+}
+
+// 图例标签（与顶部 chip 风格一致）：site0 -> lotid_waferid(如 DPK145_02)，siteN -> S{N}
+function legendLabel(site: number) {
+  return site === 0 ? lotWaferLabel() : `S${site}`
+}
+
+// 选中ALL聚合 chip：仅 all_only(仅ALL聚合) 时高亮；默认/all 状态不显示ALL故不高亮
+function isAllChipActive(tab: Tab | null | undefined) {
+  if (!tab) return false
+  return (tab.options?.site_view ?? 'all') === 'all_only'
+}
+// 选中单个 Site chip：默认'all'全显时全部高亮；site_view==='site' 时仅选中的高亮
+function isSiteChipActive(tab: Tab | null | undefined, siteNum: number) {
+  if (!tab) return false
+  const v = tab.options?.site_view ?? 'all'
+  if (v === 'all') return true
+  if (v === 'site') return (tab.options?.active_sites ?? []).includes(siteNum)
+  return false // all_only
+}
+function chipStyle(siteNum: number) {
+  // S1..Sx 的颜色：用 site 编号映射 SITE_COLORS
+  const c = SITE_COLORS[(siteNum - 1) % SITE_COLORS.length]
+  return { '--chip-bg': c } as any
+}
+
+// chip 点击逻辑（多选累加 + ALL两态切换）：
+//  默认(all, 仅所有Site高亮，不含ALL聚合) → 点ALL → all_only(仅ALL聚合)；点Sn → site(仅选Sn，隐藏ALL聚合)
+//  all_only 状态 → 点ALL → 回到 all(所有Site)；点Sn → site(仅选Sn)
+//  site(多选) 状态 → 点Sn → 切换该Site选中/取消；点别的Sn → 累加进选中集合
+//                   全部取消 → 回到 all；点ALL → 显示所有Site
+function onChipClick(tab: Tab | null | undefined, siteNum: number) {
+  if (!tab?.options) return
+  const v = tab.options.site_view ?? 'all'
+  if (siteNum === 0) {
+    // ALL chip 两态切换：默认/子集点ALL→仅ALL聚合；all_only 再点→回到所有Site
+    if (v === 'all_only') {
+      tab.options.site_view = 'all'
+    } else if (v === 'site') {
+      tab.options.site_view = 'all' // 子集状态点ALL → 显示所有Site
+    } else {
+      tab.options.site_view = 'all_only' // 默认状态点ALL → 仅ALL聚合
+    }
+  } else if (v !== 'site') {
+    // 从 all / all_only 进入选择模式：只选当前 Site，隐藏ALL聚合
+    tab.options.site_view = 'site'
+    tab.options.active_sites = [siteNum]
+  } else {
+    // 多选：切换该 Site 的选中状态
+    const set = new Set<number>(tab.options.active_sites ?? [])
+    if (set.has(siteNum)) {
+      set.delete(siteNum)
+    } else {
+      set.add(siteNum)
+    }
+    if (set.size === 0) {
+      // 全部取消 → 回到 all（所有Site，不含ALL聚合）
+      tab.options.site_view = 'all'
+      tab.options.active_sites = []
+    } else {
+      tab.options.active_sites = [...set].sort((a, b) => a - b)
+    }
+  }
+  const tid = tab.id
+  // 全局控制：点击左侧(当前tab) Site chips 时，把选择同步到 VS 右侧面板，
+  // 使两侧图表统一受顶部 chips 控制（VS 侧不再有独立 chips）。
+  const isLeftTab = tab.id !== VS_TAB_ID
+  if (isLeftTab && vsMode.value && vsTab.value) {
+    vsTab.value.options.site_view = tab.options.site_view
+    vsTab.value.options.active_sites = tab.options.active_sites ? [...tab.options.active_sites] : []
+  }
+  nextTick(() => {
+    renderHistogram(tid); renderScatter(tid)
+    const cv = chartInstances[`${tid}_wafer`]
+    if (cv) renderWaferMap(tid, cv)
+    if (isLeftTab && vsMode.value && vsTab.value) {
+      renderHistogram(VS_TAB_ID); renderScatter(VS_TAB_ID)
+      const vcv = chartInstances[`${VS_TAB_ID}_wafer`]
+      if (vcv) renderWaferMap(VS_TAB_ID, vcv)
+    }
+  })
 }
 
 function chartSites(tab: Tab | null | undefined) {
   if (!tab?.data?.sites) return []
-  if (tab.options.site_display_mode === 'all') {
+  const v = tab.options?.site_view ?? 'all'
+  if (v === 'all_only') {
+    // 仅 ALL 聚合(site=0)
     return tab.data.sites.filter((s: any) => s.site === 0)
   }
+  if (v === 'site') {
+    const active = tab.options?.active_sites ?? []
+    return tab.data.sites.filter((s: any) => s.site > 0 && active.includes(s.site))
+  }
+  // 默认 all：仅显示所有单个 site(>0)，不显示ALL聚合
   return tab.data.sites.filter((s: any) => s.site > 0)
-}
-
-function siteLabel(site: number) {
-  return site === 0 ? 'ALL' : `Site${site}`
 }
 
 function toggleSiteDisplay(tabId: string) {
@@ -537,6 +783,9 @@ async function loadVsData() {
   if (!vsTab.value) return
   const data = await fetchParamData(vsTab.value.param_name, vsTab.value.options)
   vsTab.value.data = data
+  if (data && data.sites && (!vsTab.value.options.selected_sites || vsTab.value.options.selected_sites.length === 0)) {
+    vsTab.value.options.selected_sites = data.sites.map((s: any) => s.site)
+  }
   await nextTick()
   renderVsCharts()
 }
@@ -822,6 +1071,10 @@ async function loadTabData(tabId: string) {
   const data = await fetchParamData(tab.param_name, tab.options)
   tab.data = data
 
+  if (data && data.sites && (!tab.options.selected_sites || tab.options.selected_sites.length === 0)) {
+    tab.options.selected_sites = data.sites.map((s: any) => s.site)
+  }
+
   if (tab.options.filter_type === 'custom' &&
       tab.options.custom_min == null && tab.options.custom_max == null) {
     const allSite = data.sites.find((s: any) => s.site === 0)
@@ -873,6 +1126,11 @@ function nextParam() {
 
 // ── 常量 ──────────────────────────────────────────────
 const SITE_COLORS = ['#ff6b6b', '#4dabf7', '#69db7c', '#ffd43b', '#e599f7', '#74c0fc', '#a9e34b', '#ffa94d']
+// site 颜色：site0(ALL聚合)→深灰；Sn→SITE_COLORS[(n-1)%len]，与 chips 一致
+const ALL_SITE_COLOR = '#2563eb'
+function siteColor(siteNum: number) {
+  return siteNum === 0 ? ALL_SITE_COLOR : SITE_COLORS[(siteNum - 1) % SITE_COLORS.length]
+}
 const NUM_COLOR_LEVELS = 20
 
 function renderCharts(tabId: string) {
@@ -1041,9 +1299,9 @@ function renderHistogram(tabId: string) {
 
       series.push({
         type: 'bar',
-        name: siteLabel(s.site),
+        name: legendLabel(s.site),
         data: normalData,
-        itemStyle: { color: SITE_COLORS[idx % SITE_COLORS.length], opacity: 0.7 },
+        itemStyle: { color: siteColor(s.site), opacity: 0.7 },
         barGap: '-100%',
         barWidth: '90%',
       })
@@ -1051,9 +1309,9 @@ function renderHistogram(tabId: string) {
       if (outlierData.some((d: any) => d !== '-')) {
         series.push({
           type: 'bar',
-          name: siteLabel(s.site),
+          name: legendLabel(s.site),
           data: outlierData,
-          itemStyle: { color: SITE_COLORS[idx % SITE_COLORS.length], opacity: 0.7 },
+          itemStyle: { color: siteColor(s.site), opacity: 0.7 },
           barGap: '-100%',
           barWidth: '90%',
           barMinHeight: 5,
@@ -1138,7 +1396,7 @@ function renderHistogram(tabId: string) {
           return tip
         },
       },
-      legend: { bottom: 0, data: allSites.map((s: any) => siteLabel(s.site)) },
+      legend: { show: false },
       xAxis: {
         type: 'category',
         data: binLabels,
@@ -1160,7 +1418,6 @@ function renderHistogram(tabId: string) {
             return ''
           },
         },
-        axisTick: { alignWithLabel: true },
       },
       yAxis: {
         type: 'value',
@@ -1212,9 +1469,9 @@ function renderHistogram(tabId: string) {
 
       series.push({
         type: 'bar',
-        name: siteLabel(s.site),
+        name: legendLabel(s.site),
         data: normalData,
-        itemStyle: { color: SITE_COLORS[idx % SITE_COLORS.length], opacity: 0.7 },
+        itemStyle: { color: siteColor(s.site), opacity: 0.7 },
         barGap: '-100%',
         barWidth: barWidthPct,
       })
@@ -1222,9 +1479,9 @@ function renderHistogram(tabId: string) {
       if (outlierData.length > 0) {
         series.push({
           type: 'bar',
-          name: siteLabel(s.site),
+          name: legendLabel(s.site),
           data: outlierData,
-          itemStyle: { color: SITE_COLORS[idx % SITE_COLORS.length], opacity: 0.7 },
+          itemStyle: { color: siteColor(s.site), opacity: 0.7 },
           barGap: '-100%',
           barWidth: barWidthPct,
           barMinHeight: 5,
@@ -1279,7 +1536,7 @@ function renderHistogram(tabId: string) {
         subtextStyle: { fontSize: 11, color: '#666' },
       },
       tooltip: { trigger: 'axis' },
-      legend: { bottom: 0, data: allSites.map((s: any) => siteLabel(s.site)) },
+      legend: { show: false },
       xAxis: {
         type: 'value',
         name: unit,
@@ -1364,10 +1621,10 @@ function renderScatter(tabId: string) {
 
     return {
       type: 'scatter',
-      name: siteLabel(s.site),
+      name: legendLabel(s.site),
       data: validData.map((p: any) => [p.idx, p.val]),
       symbolSize: 3,
-      itemStyle: { color: SITE_COLORS[idx % SITE_COLORS.length], opacity: 0.6 },
+      itemStyle: { color: siteColor(s.site), opacity: 0.6 },
     }
   })
 
@@ -1400,18 +1657,50 @@ function renderScatter(tabId: string) {
             lineStyle: { color: '#00c853', type: 'dashed' },
           }
         ] : []),
+        ...(tab.options.scatter_y_mode === 'sigma' && allSiteStats?.mean != null && allSiteStats?.stdev != null ? [
+          {
+            yAxis: allSiteStats.mean - (tab.options.scatter_sigma_n ?? 6) * allSiteStats.stdev,
+            label: { formatter: `Mean-${tab.options.scatter_sigma_n ?? 6}σ`, position: 'insideEndTop', color: '#722ed1' },
+            lineStyle: { color: '#722ed1', type: 'dashed' },
+          },
+          {
+            yAxis: allSiteStats.mean + (tab.options.scatter_sigma_n ?? 6) * allSiteStats.stdev,
+            label: { formatter: `Mean+${tab.options.scatter_sigma_n ?? 6}σ`, position: 'insideEndTop', color: '#722ed1' },
+            lineStyle: { color: '#722ed1', type: 'dashed' },
+          }
+        ] : []),
       ],
     },
   })
 
   const { min: globalMin, max: globalMax } = getGlobalRange(tab)
-  const padding = (globalMax - globalMin) * 0.05 || 0.1
-  const yMin = Math.min(globalMin, ll ?? globalMin) - padding
-  const yMax = Math.max(globalMax, ul ?? globalMax) + padding
+  const mode = tab.options.scatter_y_mode ?? 'auto'
+
+  let yMin: number
+  let yMax: number
+
+  if (mode === 'limit' && ll != null && ul != null) {
+    // Limit mode: Y axis spans Low/High Limit with 2% padding
+    const pad = (ul - ll) * 0.02 || Math.abs(ul) * 0.01 || 0.1
+    yMin = ll - pad
+    yMax = ul + pad
+  } else if (mode === 'sigma' && allSiteStats?.mean != null && allSiteStats?.stdev != null) {
+    // N sigma mode: Y axis spans mean ± N*stdev
+    const n = Math.max(1, Number(tab.options.scatter_sigma_n) || 6)
+    yMin = allSiteStats.mean - n * allSiteStats.stdev
+    yMax = allSiteStats.mean + n * allSiteStats.stdev
+    if (yMin === yMax) { yMin -= 1; yMax += 1 }
+  } else {
+    // Auto mode：按当前数据范围（global min/max）±5% padding，不强制包含LL/UL
+    const padding = (globalMax - globalMin) * 0.05 || 0.1
+    yMin = globalMin - padding
+    yMax = globalMax + padding
+    if (yMin === yMax) { yMin -= 1; yMax += 1 }
+  }
 
   chart.setOption({
     tooltip: { trigger: 'item' },
-    legend: { bottom: 0 },
+    legend: { show: false },
     xAxis: { type: 'value', name: 'Index' },
     yAxis: {
       type: 'value',
@@ -1445,11 +1734,15 @@ function renderWaferMap(tabId: string, canvas: HTMLCanvasElement) {
   const tab = getTabById(tabId)
   if (!tab?.data) return
 
-  // 只收集未被隐藏的site数据（VS tab 使用独立的 vsHiddenSites）
-  const hiddenSet = tabId === VS_TAB_ID ? vsHiddenSites.value : hiddenSites.value
+  // 与 histogram/scatter 一致：按 site_view/active_sites 过滤(由顶部 Site chip 控制)
+  // all_only(ALL聚合)时，wafer map 仍展示全部 site dies（site0 无独立 wafer_map）
+  const v = tab.options?.site_view ?? 'all'
+  const visibleSites = v === 'all_only'
+    ? new Set(tab.data.sites.filter((s: any) => s.site > 0).map((s: any) => s.site))
+    : new Set(chartSites(tab).map((s: any) => s.site))
   const siteDataMap: Map<number, any[]> = new Map()
   tab.data.sites.forEach((s: any) => {
-    if (s.site > 0 && s.wafer_map && !hiddenSet.has(s.site)) {
+    if (s.site > 0 && s.wafer_map && visibleSites.has(s.site)) {
       siteDataMap.set(s.site, s.wafer_map)
     }
   })
@@ -1499,6 +1792,27 @@ function renderWaferMap(tabId: string, canvas: HTMLCanvasElement) {
   const minX = Math.min(...xs), maxX = Math.max(...xs)
   const minY = Math.min(...ys), maxY = Math.max(...ys)
 
+  // Sync map rotation with Bin analysis page (localStorage key ate_map_rotate_<product>)
+  const rotateProgram = String(lotInfo.value?.program || '').trim()
+  const rotateIdx = rotateProgram.indexOf('_')
+  const rotateKey = 'ate_map_rotate_' + (rotateProgram ? (rotateIdx > 0 ? rotateProgram.slice(0, rotateIdx) : rotateProgram) : '')
+  const _savedRotate = rotateKey ? localStorage.getItem(rotateKey) : null
+  const mapRotate = (_savedRotate === '90' || _savedRotate === '180' || _savedRotate === '270') ? _savedRotate as string : '0'
+  const applyParamRotation = (x: number, y: number) => {
+    switch (mapRotate) {
+      case '90':  return { x: maxY - y + minX, y: x - minX + minY }
+      case '180': return { x: maxX - x + minX, y: maxY - y + minY }
+      case '270': return { x: y - minY + minX, y: maxX - x + minY }
+      default:    return { x, y }
+    }
+  }
+  const allCoordsRot = allCoords.map((d: any) => { const r = applyParamRotation(d.x, d.y); return { ...d, rx: r.x, ry: r.y } })
+  const validDataRot = validData.map((d: any) => { const r = applyParamRotation(d.x, d.y); return { ...d, rx: r.x, ry: r.y } })
+  const rxs = allCoordsRot.map((d: any) => d.rx)
+  const rys = allCoordsRot.map((d: any) => d.ry)
+  const rMinX = Math.min(...rxs), rMaxX = Math.max(...rxs)
+  const rMinY = Math.min(...rys), rMaxY = Math.max(...rys)
+
   // 布局：左侧range文字区 | 色块 | 右侧count文字区
   const LEGEND_RANGE_W = 80   // 左侧range文字
   const LEGEND_BLOCK_W = 16   // 色块宽度
@@ -1514,8 +1828,8 @@ function renderWaferMap(tabId: string, canvas: HTMLCanvasElement) {
   const centerY = H / 2
   const radius = Math.min(mapAreaW, H - margin * 2) / 2
 
-  const gridW = maxX - minX + 1
-  const gridH = maxY - minY + 1
+  const gridW = rMaxX - rMinX + 1
+  const gridH = rMaxY - rMinY + 1
   
   // 支持长方形 Die
   const dieW = (radius * 2) / gridW
@@ -1542,7 +1856,24 @@ function renderWaferMap(tabId: string, canvas: HTMLCanvasElement) {
 
   // 绘制 Notch (缺口)
   ctx.beginPath()
-  ctx.arc(centerX, centerY + radius, 12, Math.PI, 0)
+  let notchX = centerX, notchY = centerY + radius
+  let startAngle = Math.PI, endAngle = 0
+  switch (mapRotate) {
+    case '90':
+      notchX = centerX - radius; notchY = centerY
+      startAngle = 1.5 * Math.PI; endAngle = 0.5 * Math.PI
+      break
+    case '180':
+      notchX = centerX; notchY = centerY - radius
+      startAngle = 0; endAngle = Math.PI
+      break
+    case '270':
+      notchX = centerX + radius; notchY = centerY
+      startAngle = 0.5 * Math.PI; endAngle = 1.5 * Math.PI
+      break
+  }
+  ctx.beginPath()
+  ctx.arc(notchX, notchY, 12, startAngle, endAngle)
   ctx.fillStyle = '#ffffff'
   ctx.fill()
   ctx.strokeStyle = '#cccccc'
@@ -1550,9 +1881,9 @@ function renderWaferMap(tabId: string, canvas: HTMLCanvasElement) {
 
   // 绘制底图所有测试过的die (浅灰色背景)
   ctx.fillStyle = '#f5f5f5'
-  allCoords.forEach((d: any) => {
-    const px = offsetX + (d.x - minX) * dieW
-    const py = offsetY + (d.y - minY) * dieH
+  allCoordsRot.forEach((d: any) => {
+    const px = offsetX + (d.rx - rMinX) * dieW
+    const py = offsetY + (d.ry - rMinY) * dieH
     ctx.fillRect(px, py, Math.max(0.5, dieW - 0.2), Math.max(0.5, dieH - 0.2))
   })
 
@@ -1566,14 +1897,14 @@ function renderWaferMap(tabId: string, canvas: HTMLCanvasElement) {
   const dies: typeof waferMapState[string]['dies'] = []
   const activeLevel = waferMapState[tabId]?.activeLevel
 
-  validData.forEach(d => {
+  validDataRot.forEach(d => {
     const lvl = valToLevel(d.val, minVal, maxVal, NUM_COLOR_LEVELS)
     
     // 如果有选中的色阶且当前die不在此色阶，跳过绘制
     if (activeLevel != null && lvl !== activeLevel) return
 
-    const px = offsetX + (d.x - minX) * dieW
-    const py = offsetY + (d.y - minY) * dieH
+    const px = offsetX + (d.rx - rMinX) * dieW
+    const py = offsetY + (d.ry - rMinY) * dieH
     
     ctx.fillStyle = levelToColor(lvl, NUM_COLOR_LEVELS)
     ctx.fillRect(px, py, Math.max(0.5, dieW - 0.2), Math.max(0.5, dieH - 0.2))
@@ -1794,6 +2125,51 @@ onMounted(async () => {
   font-size: 12px;
 }
 
+/* Chart legend (chip style, matching top site chips) */
+.chart-legend {
+  display: grid;
+  grid-template-columns: repeat(16, auto);
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 4px 2px;
+}
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  min-width: 30px;
+  padding: 2px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--lg-color, #999);
+  border-radius: 6px;
+  line-height: 1.4;
+  user-select: none;
+}
+
+/* Fixed top chart-control bar (ALL toggle + Chart checkboxes + VS) — controls both panels */
+.viz-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+  background: white;
+  z-index: 100;
+}
+
+/* Scatter Y-axis range mode controls (Auto / Limit / N sigma) */
+.scatter-axis-mode-box { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.scatter-axis-mode-box .label { font-size: 12px; font-weight: 500; color: #4b5563; }
+.axis-mode-btn { border: 1px solid #d9d9d9; background: #fff; padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; color: #374151; }
+.axis-mode-btn:hover { border-color: #1890ff; color: #1890ff; }
+.axis-mode-btn.active { background: #1890ff; color: #fff; border-color: #1890ff; font-weight: 600; }
+.sigma-input { width: 58px; padding: 4px 6px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 12px; }
+.sigma-input:disabled { opacity: 0.45; cursor: not-allowed; }
+
 .mode-toggle-btn {
   min-width: 54px;
   height: 26px;
@@ -1959,5 +2335,53 @@ onMounted(async () => {
 .wafer-linked-tooltip {
   border: 2px solid #52c41a;
   background: rgba(0, 50, 0, 0.82) !important;
+}
+/* ── Site 选择 chips ── */
+.site-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 16px;
+  flex-wrap: wrap;
+}
+.chip-label {
+  font-size: 12px;
+  color: #888;
+  margin-right: 2px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  color: #fff;
+  background: var(--chip-bg, #999);
+  opacity: 0.35;
+  transition: opacity .15s, transform .1s;
+}
+.chip:hover { opacity: 0.7; }
+.chip.active {
+  opacity: 1;
+  border-color: #1a1a2e;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.15);
+}
+.chip-all {
+  background: #2b2b3c;
+  color: #ffd43b;
+}
+.chip-all.active { background: #495057; }
+
+/* stats 表格 Site 列标签（去掉勾选框后） */
+.site-cell-label {
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
 }
 </style>

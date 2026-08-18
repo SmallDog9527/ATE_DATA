@@ -842,6 +842,8 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                     ).first()
                     if mapping:
                         lot.product_name = mapping.product_name
+                    elif not lot.product_name and '_' in lot.program:
+                        lot.product_name = prefix.strip()
                 if summary_data.get('lot_id'):
                     lot.lot_id = summary_data['lot_id']
                 if summary_data.get('wafer_id'):

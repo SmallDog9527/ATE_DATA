@@ -1543,12 +1543,18 @@ async function handleDownload() {
     const link = document.createElement('a')
     link.href = url
 
-    // Extract filename from Content-Disposition header if available
-    const disposition = headers?.['content-disposition']
-    let filename = 'ATE_OriginalData.zip'
-    if (disposition && disposition.includes('filename=')) {
-      const match = disposition.match(/filename="?([^"]+)"?/)
-      if (match) filename = match[1]
+    // Prefer filename*=UTF-8''..., then fall back to filename="..."
+    const disposition = headers?.['content-disposition'] ?? ''
+    const now = new Date()
+    const pad2 = (n: number) => String(n).padStart(2, '0')
+    const defaultName = `ATE_DATA_${pad2(now.getMonth() + 1)}${pad2(now.getDate())}${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}.zip`
+    let filename = defaultName
+    const encodedMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+    if (encodedMatch) {
+      filename = decodeURIComponent(encodedMatch[1].trim())
+    } else {
+      const plainMatch = disposition.match(/filename="?([^"]+)"?/i)
+      if (plainMatch) filename = plainMatch[1]
     }
     link.download = filename
 

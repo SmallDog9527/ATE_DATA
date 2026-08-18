@@ -2,10 +2,21 @@
   <div class="idle-check-view">
     <div class="header-bar">
       <div class="title">
-        <h2>Idle Check 分析</h2>
+        <h2>Idle Check / Site Corr 分析</h2>
         <span class="subtitle">LOT: {{ lotInfo?.filename }} | 程序: {{ checkData?.program }}</span>
       </div>
-      <div class="actions">
+
+      <div class="mode-switcher">
+        <button :class="['mode-tab-btn', { active: activeMode === 'idle_check' }]" @click="activeMode = 'idle_check'">
+          🔍 空测指纹分析
+        </button>
+        <button :class="['mode-tab-btn', { active: activeMode === 'site_corr' }]" @click="switchToSiteCorr">
+          📊 site_corr检查
+        </button>
+      </div>
+
+      <!-- 空测模式 Header 工具栏 -->
+      <div class="actions" v-if="activeMode === 'idle_check'">
         <div class="threshold-input">
           <label>阈值:</label>
           <input type="number" v-model.number="threshold" min="2" @change="fetchData" />
@@ -45,42 +56,8 @@
       </div>
     </div>
 
-    <!-- 参数设置弹窗 (复用 HomeView 逻辑) -->
-    <div v-if="showSettings" class="modal-overlay" @click.self="showSettings = false">
-      <div class="modal check-modal">
-        <h3>设置 Check 监控参数 (程序: {{ checkData?.program }})</h3>
-        <p style="font-size:12px;color:#666;margin-bottom:12px">
-          修改参数后将重新计算指纹值。指纹值 = Σ(参数值[i] * (i+1))
-        </p>
-        
-        <div class="param-selector">
-          <div class="selector-header">
-            <input v-model="paramSearch" placeholder="搜索参数..." class="search-input" />
-            <div class="selection-info">已选 {{ selectedParams.length }} 个</div>
-          </div>
-          <div class="param-list">
-            <label v-for="p in filteredParams" :key="p" class="param-item">
-              <input type="checkbox" :value="p" v-model="selectedParams" @click="onCheckboxClick($event, p)" />
-              <span>{{ p }}</span>
-            </label>
-          </div>
-        </div>
-
-        <div class="field" style="margin-top: 12px;">
-          <label>连续重复报警阈值 (颗)</label>
-          <input type="number" v-model.number="tempThreshold" min="2" max="10" />
-        </div>
-
-        <div class="modal-actions">
-          <button class="btn" @click="showSettings = false">取消</button>
-          <button class="btn btn-primary" :disabled="!selectedParams.length || savingConfig" @click="saveSettings">
-            {{ savingConfig ? '保存并刷新' : '保存并刷新' }}
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div class="main-content" :class="{ 'no-map': !hasCoordinates }">
+    <!-- 1. 空测分析视图 -->
+    <div v-if="activeMode === 'idle_check'" class="main-content" :class="{ 'no-map': !hasCoordinates }">
       <div class="chart-section">
         <div class="chart-header">
           <span>指纹值变化 (Fingerprint Scatter)</span>
@@ -125,7 +102,7 @@
                 <td v-if="checkData?.has_sites">{{ item.SITE_NUM }}</td>
                 <td v-if="hasCoordinates">{{ item.X_COORD }}</td>
                 <td v-if="hasCoordinates">{{ item.Y_COORD }}</td>
-                <td>{{ item.fingerprint.toFixed(4) }}</td>
+                <td>{{ item.fingerprint?.toFixed(4) }}</td>
                 <td>
                   <span v-if="item.is_alarm" class="badge-alarm">报警</span>
                   <span v-else class="badge-normal">正常</span>
@@ -137,22 +114,192 @@
       </div>
     </div>
 
-    <div v-if="loading" class="loading-overlay">加载中...</div>
-
-    <!-- 导出进度弹窗 -->
-    <div v-if="exporting" class="modal-overlay">
-      <div class="modal export-modal">
-        <h3>正在准备下载数据...</h3>
-        <div class="progress-container">
-          <div class="progress-bar" :style="{ width: exportProgress + '%' }"></div>
+    <!-- 2. Site 校验与全 Set 折线分析 -->
+    <div v-if="activeMode === 'site_corr'" class="site-corr-view">
+      <div class="corr-toolbar">
+        <div class="group-select-box">
+          <span class="label">Site 分组:</span>
+          <button :class="['grp-btn', { active: selectedGroup === 'group1' }]" @click="changeGroup('group1')">
+            Group 1 (Site 1~16)
+          </button>
+          <button :class="['grp-btn', { active: selectedGroup === 'group2' }]" @click="changeGroup('group2')">
+            Group 2 (Site 17~32)
+          </button>
+          <button :class="['grp-btn', { active: selectedGroup === 'all' }]" @click="changeGroup('all')">
+            全 Set (Site 1~32)
+          </button>
         </div>
-        <div class="progress-text">{{ exportProgress }}%</div>
-        <div v-if="exportError" class="export-error">
-          {{ exportError }}
-          <button class="btn btn-sm" @click="exporting = false">关闭</button>
+
+        <div class="param-switch-box">
+          <button class="param-arrow" @click="prevParam" title="上一个参数">‹</button>
+          <select v-model="selectedCorrParam" @change="renderCorrCharts" class="corr-select param-select">
+            <option v-for="p in siteCorrData?.test_params" :key="p" :value="p">
+              {{ paramLabelWithUnit(p) }}
+            </option>
+          </select>
+          <button class="param-arrow" @click="nextParam" title="下一个参数">›</button>
+        </div>
+
+        <div class="site-filter-box">
+          <span class="label">Site 显示:</span>
+          <button
+            class="btn btn-xs site-all-btn"
+            :class="{ active: isAllSitesSelected }"
+            @click="selectAllSites"
+          >
+            ALL
+          </button>
+        </div>
+      </div>
+
+      <div class="corr-summary-bar">
+        <span class="summary-chip">已对齐 {{ currentGroupChips.length }} 颗公共 Sample</span>
+        <span class="summary-fp">指纹: {{ fingerprintLabel }}</span>
+        <span class="summary-deleted" v-if="hiddenChipNos.length">
+          已隐藏 Sample: {{ hiddenChipNos.join(', ') }}
+        </span>
+        <div class="axis-mode-box">
+          <span class="label">Y 轴范围:</span>
+          <button
+            :class="['axis-mode-btn', { active: axisMode === 'auto' }]"
+            @click="setAxisMode('auto')"
+            title="按当前数据最大值/最小值自动缩放"
+          >
+            Auto (Max/Min)
+          </button>
+          <button
+            :class="['axis-mode-btn', { active: axisMode === 'limit' }]"
+            @click="setAxisMode('limit')"
+            :title="'显示 Low/High Limit 并按 Limit 调整 Y 轴'"
+          >
+            Limit
+          </button>
+          <button
+            :class="['axis-mode-btn', { active: axisMode === 'sigma' }]"
+            @click="setAxisMode('sigma')"
+            title="按均值 ± N 倍标准差调整 Y 轴"
+          >
+            N σ
+          </button>
+          <input
+            v-model.number="sigmaN"
+            type="number"
+            min="1"
+            max="20"
+            step="0.5"
+            class="sigma-input"
+            :disabled="axisMode !== 'sigma'"
+            @change="renderCorrCharts"
+          />
+        </div>
+      </div>
+
+      <div class="corr-chart-card chart-card">
+        <div class="chart-header">
+          <span>
+            {{ paramDisplayWithUnit }} · Sample 1~{{ currentGroupChips.length }} 各 Site 测量折线
+            ({{ selectedSites.length }} 条线)
+          </span>
+        </div>
+        <div class="corr-chart-main">
+          <div ref="corrLineChart" class="chart-box"></div>
+          <div class="corr-legend-panel" :style="{ gridTemplateColumns: `repeat(${legendColumns}, 1fr)` }">
+            <button
+              v-for="s in legendSites"
+              :key="s"
+              class="corr-legend-site"
+              :class="{ active: selectedSites.includes(s) }"
+              :title="`Site ${s}`"
+              @click="toggleSite(s)"
+            >
+              <i class="legend-color" :style="{ background: siteColor(s) }"></i>
+              {{ s }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="corr-table-card" v-if="selectedGroup !== 'all'">
+        <div class="chart-header">
+          <span>{{ currentGroupTitle }} 公共 Sample 测量对照表 ({{ currentGroupChips.length }} 颗)</span>
+          <button class="btn btn-xs" v-if="hiddenChipNos.length" @click="showAllChips">
+            全部显示
+          </button>
+        </div>
+        <div class="corr-table-wrap">
+          <table class="corr-table">
+            <thead>
+              <tr>
+                <th>Sample</th>
+                <th>原始编号</th>
+                <th>指纹值</th>
+                <th v-for="s in currentSites" :key="s">Site {{ s }}</th>
+                <th>Delta</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in currentGroupChips" :key="c.chip_no" :class="{ 'row-hidden': isChipHidden(c.chip_no) }">
+                <td><b>{{ c.chip_no }}</b></td>
+                <td>{{ c.orig_chip_id ?? '-' }}</td>
+                <td><code>{{ c.fingerprint ?? '-' }}</code></td>
+                <td v-for="s in currentSites" :key="s" :class="cellClass(c, s)">
+                  {{ cellValue(c, s) }}
+                </td>
+                <td class="delta-cell">{{ deltaValue(c) }}</td>
+                <td>
+                  <button class="btn btn-xs btn-delete" @click="toggleHideChip(c.chip_no)">
+                    {{ isChipHidden(c.chip_no) ? '显示' : '隐藏' }}
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
+
+    <!-- 参数设置弹窗 -->
+    <div v-if="showSettings" class="modal-overlay" @click.self="showSettings = false">
+      <div class="modal check-modal">
+        <h3>设置 Check / Fingerprint 监控参数 (程序: {{ checkData?.program }})</h3>
+        <p style="font-size:12px;color:#666;margin-bottom:12px">
+          选中 Trim 或测试寄存器计算指纹值：指纹值 = Σ(参数值[i] * (i+1))
+        </p>
+
+        <div class="param-selector">
+          <div class="selector-header">
+            <input v-model="paramSearch" placeholder="搜索参数/寄存器..." class="search-input" />
+            <div class="param-quick-btns">
+              <button class="btn btn-xs" @click="selectedParams = [...allParams]">全选 ({{ allParams.length }})</button>
+              <button class="btn btn-xs" @click="selectedParams = []">清空</button>
+              <button class="btn btn-xs" @click="selectedParams = allParams.filter(p => !selectedParams.includes(p))">反选</button>
+            </div>
+            <div class="selection-info">已选 {{ selectedParams.length }} / {{ allParams.length }} 个</div>
+          </div>
+          <div class="param-list">
+            <label v-for="p in filteredParams" :key="p" class="param-item" title="按住 Shift 点击可连续多选">
+              <input type="checkbox" :value="p" v-model="selectedParams" @click="onCheckboxClick($event, p)" />
+              <span>{{ p }}</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field" style="margin-top: 12px;">
+          <label>连续重复报警阈值 (颗)</label>
+          <input type="number" v-model.number="tempThreshold" min="2" max="10" />
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn" @click="showSettings = false">取消</button>
+          <button class="btn btn-primary" :disabled="!selectedParams.length || savingConfig" @click="saveSettings">
+            {{ savingConfig ? '保存并刷新' : '保存并刷新' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="loading || loadingSiteCorr" class="loading-overlay">数据处理与图表加载中...</div>
   </div>
 </template>
 
@@ -168,25 +315,52 @@ const loading = ref(true)
 const lotInfo = ref<any>(null)
 const checkData = ref<any>(null)
 const threshold = ref(2)
-const dataFilter = ref('pass_only') // 默认使用 Bin1+2 (Pass Only)
+const dataFilter = ref('pass_only')
 
-// 导出进度相关
+const activeMode = ref<'idle_check' | 'site_corr'>('idle_check')
+
+// Site Corr 视图变量
+const siteCorrData = ref<any>(null)
+const loadingSiteCorr = ref(false)
+const selectedGroup = ref<'group1' | 'group2' | 'all'>('group1')
+const selectedCorrParam = ref<string>('')
+const selectedSites = ref<number[]>([])
+const hiddenChipNos = ref<number[]>([])
+const axisMode = ref<'auto' | 'limit' | 'sigma'>('auto')
+const sigmaN = ref(6)
+
+const corrLineChart = ref<HTMLElement>()
+let corrLineInstance: echarts.ECharts | null = null
+
+const SITE_LINE_COLORS = [
+  '#1890ff', '#52c41a', '#faad14', '#eb2f96', '#13c2c2', '#fa541c',
+  '#2f54eb', '#a0d911', '#722ed1', '#fa8c16', '#08979c', '#d48806',
+  '#9e1068', '#389e0d', '#096dd9', '#cf1322', '#f759ab', '#5cdbd3',
+  '#ffc53d', '#69b1ff', '#95de64', '#ff9c6e', '#85a5ff', '#b37feb',
+  '#36cfc9', '#ff7a45', '#597ef7', '#73d13d', '#ffd666', '#40a9ff'
+]
+
+// 导出与设置相关
 const exporting = ref(false)
 const exportProgress = ref(0)
 const exportError = ref('')
 const weights = ref<number[]>([])
 const showFormula = ref(false)
-const listFilter = ref<'all' | 'normal' | 'alarm'>('alarm') // 列表过滤器，默认只显示报警
-let exportTimer: any = null
+const listFilter = ref<'all' | 'normal' | 'alarm'>('alarm')
 
-// 设置弹窗相关
 const showSettings = ref(false)
 const selectedParams = ref<string[]>([])
 const allParams = ref<string[]>([])
 const paramSearch = ref('')
+const shiftAnchor = ref<string | null>(null)
 const tempThreshold = ref(2)
 const savingConfig = ref(false)
 const processingCorr = ref(false)
+
+const scatterChart = ref<HTMLElement>()
+const waferMapCanvas = ref<HTMLCanvasElement>()
+const waferMapTooltip = ref<HTMLDivElement | null>(null)
+let scatterInstance: echarts.ECharts | null = null
 
 const filteredParams = computed(() => {
   if (!paramSearch.value) return allParams.value
@@ -194,21 +368,9 @@ const filteredParams = computed(() => {
   return allParams.value.filter(p => p.toLowerCase().includes(s))
 })
 
-const scatterChart = ref<HTMLElement>()
-const waferMapCanvas = ref<HTMLCanvasElement>()
-const waferMapTooltip = ref<HTMLDivElement | null>(null)
-let scatterInstance: echarts.ECharts | null = null
-let idleMapDies: { px: number; py: number; width: number; height: number; x: number; y: number; isAlarm: boolean; index: number }[] = []
-
 const hasCoordinates = computed(() => {
-  return checkData.value?.data?.[0]?.X_COORD !== undefined
-})
-
-const filteredListData = computed(() => {
-  if (!checkData.value?.data) return []
-  if (listFilter.value === 'all') return checkData.value.data
-  if (listFilter.value === 'normal') return checkData.value.data.filter((d: any) => !d.is_alarm)
-  return checkData.value.data.filter((d: any) => d.is_alarm)
+  if (!checkData.value?.data) return false
+  return checkData.value.data.some((d: any) => d.X_COORD !== undefined && d.Y_COORD !== undefined)
 })
 
 const alarmCount = computed(() => {
@@ -217,135 +379,515 @@ const alarmCount = computed(() => {
 })
 
 const listFilterLabel = computed(() => {
-  if (listFilter.value === 'all') return '全部'
-  if (listFilter.value === 'normal') return '正常'
-  return `报警 (${alarmCount.value})`
+  if (listFilter.value === 'alarm') return '只显示报警'
+  if (listFilter.value === 'normal') return '只显示正常'
+  return '全部显示'
 })
 
-function toggleListFilter() {
-  if (listFilter.value === 'alarm') listFilter.value = 'all'
-  else if (listFilter.value === 'all') listFilter.value = 'normal'
-  else listFilter.value = 'alarm'
+const filteredListData = computed(() => {
+  if (!checkData.value?.data) return []
+  if (listFilter.value === 'alarm') return checkData.value.data.filter((d: any) => d.is_alarm)
+  if (listFilter.value === 'normal') return checkData.value.data.filter((d: any) => !d.is_alarm)
+  return checkData.value.data
+})
+
+const currentGroupChips = computed(() => {
+  if (!siteCorrData.value) return []
+  const group = selectedGroup.value === 'group2'
+    ? siteCorrData.value.group2
+    : siteCorrData.value.group1
+  return group?.chips || []
+})
+
+const currentSites = computed(() => {
+  if (!siteCorrData.value) return []
+  if (selectedGroup.value === 'group1') return siteCorrData.value.group1?.sites || []
+  if (selectedGroup.value === 'group2') return siteCorrData.value.group2?.sites || []
+  return [
+    ...(siteCorrData.value.group1?.sites || []),
+    ...(siteCorrData.value.group2?.sites || [])
+  ]
+})
+
+const legendSites = computed(() => {
+  const total = currentSites.value.length
+  const columns = Math.max(1, Math.ceil(total / 8))
+  const rows = Math.ceil(total / columns)
+  const result: number[] = []
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < columns; col++) {
+      const idx = col * rows + row
+      if (idx < total) result.push(currentSites.value[idx])
+    }
+  }
+  return result
+})
+
+const legendColumns = computed(() => {
+  const total = currentSites.value.length
+  return Math.max(1, Math.ceil(total / 8))
+})
+
+const currentGroupTitle = computed(() => {
+  if (selectedGroup.value === 'group1') return 'Group 1 (Site 1~16)'
+  if (selectedGroup.value === 'group2') return 'Group 2 (Site 17~32)'
+  return '全 Set (Site 1~32)'
+})
+
+const isAllSitesSelected = computed(() => {
+  const total = currentSites.value.length
+  return total > 0 && selectedSites.value.length === total
+})
+
+const currentParamIndex = computed(() => {
+  const list = siteCorrData.value?.test_params || []
+  const idx = list.indexOf(selectedCorrParam.value)
+  return idx >= 0 ? idx : 0
+})
+
+const fingerprintLabel = computed(() => {
+  const fp = siteCorrData.value?.fp_params || []
+  if (!fp.length) return '未配置参数，已使用全参数默认指纹'
+  if (fp.length <= 3) return fp.join(' + ')
+  return `${fp.slice(0, 3).join(' + ')} 等 ${fp.length} 项`
+})
+
+const paramMeta = computed(() => {
+  return siteCorrData.value?.param_meta?.[selectedCorrParam.value] || {}
+})
+
+const hasParamLimits = computed(() => {
+  const low = paramMeta.value.low
+  const high = paramMeta.value.high
+  return typeof low === 'number' && typeof high === 'number' && high > low
+})
+
+const paramDisplayWithUnit = computed(() => {
+  const unit = paramMeta.value.unit || ''
+  const number = paramMeta.value.number ?? ''
+  const label = unit ? `${selectedCorrParam.value} (${unit})` : selectedCorrParam.value
+  return number !== '' ? `${number} ${label}` : label
+})
+
+function paramLabelWithUnit(param: string) {
+  const meta = siteCorrData.value?.param_meta?.[param]
+  const unit = meta?.unit || ''
+  const number = meta?.number ?? ''
+  const label = unit ? `${param} (${unit})` : param
+  return number !== '' ? `${number} ${label}` : label
+}
+
+onMounted(async () => {
+  await fetchLotInfo()
+  await fetchData()
+  window.addEventListener('resize', handleResize)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', handleResize)
+  scatterInstance?.dispose()
+  corrLineInstance?.dispose()
+})
+
+function handleResize() {
+  scatterInstance?.resize()
+  corrLineInstance?.resize()
+}
+
+async function fetchLotInfo() {
+  try {
+    const res: any = await api.get(`/lots`)
+    const items = res.items || []
+    lotInfo.value = items.find((item: any) => item.id == lotId)
+  } catch (e) {
+    console.error('Failed to fetch lot info:', e)
+  }
 }
 
 async function fetchData() {
   loading.value = true
   try {
-    const info = await api.get(`/analysis/lot/${lotId}/info`)
-    lotInfo.value = info
-
-    // 先获取一次默认数据（以获取参数列表）
-    const res = await api.get(`/analysis/lot/${lotId}/idle_check`, {
-      params: { 
-        threshold: threshold.value, 
-        data_filter: dataFilter.value,
-        weights: weights.value.join(',')
-      }
-    })
-    
-    // 默认启用随机权重算法，避免碰撞 (如果当前还没有权重且后端返回了参数列表)
-    if (weights.value.length === 0 && res.params && res.params.length > 0) {
-      const len = res.params.length
-      weights.value = Array.from({ length: len }, () => Math.floor(Math.random() * 99) + 1)
-      // 重新获取带权重的数据
-      const resWithWeights = await api.get(`/analysis/lot/${lotId}/idle_check`, {
-        params: { 
-          threshold: threshold.value, 
-          data_filter: dataFilter.value,
-          weights: weights.value.join(',')
-        }
-      })
-      checkData.value = resWithWeights
-      threshold.value = resWithWeights.threshold
-    } else {
-      checkData.value = res
-      threshold.value = res.threshold
-    }
-
-    await nextTick()
-    initCharts()
-  } catch (e) {
-    console.error(e)
-    alert('获取数据失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-async function openSettings() {
-  try {
-    loading.value = true
-    // 获取所有可用参数
-    const items: any[] = await api.get(`/analysis/lot/${lotId}/items_summary`)
-    allParams.value = items.map(it => it.item_name)
-    
-    // 获取当前配置
-    const config: any = await api.get('/analysis/idle_check/config', { 
-      params: { program_name: checkData.value.program } 
-    })
-    selectedParams.value = config.params || []
-    tempThreshold.value = config.threshold || threshold.value
-    showSettings.value = true
-  } catch (e) {
-    alert('获取参数列表失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-async function saveSettings() {
-  savingConfig.value = true
-  try {
-    await api.post('/analysis/idle_check/config', {
-      program_name: checkData.value.program,
-      params: selectedParams.value,
-      threshold: tempThreshold.value
-    })
-    showSettings.value = false
-    // 刷新数据
-    threshold.value = tempThreshold.value
-    await fetchData()
-  } catch (e) {
-    alert('保存失败')
-  } finally {
-    savingConfig.value = false
-  }
-}
-
-async function handleCorrProcessing() {
-  if (!confirm('Corr处理将基于指纹匹配对齐各Site数据，并丢弃无法匹配的数据，最后保存为新数据包，是否继续？')) return
-  
-  processingCorr.value = true
-  try {
-    const res = await api.post(`/analysis/lot/${lotId}/idle_check/corr`, null, {
+    const res: any = await api.get(`/analysis/lot/${lotId}/idle_check`, {
       params: {
         threshold: threshold.value,
-        data_filter: dataFilter.value,
-        weights: weights.value.join(',')
+        data_filter: dataFilter.value
       }
     })
-    alert(`处理完成！新数据已生成：${res.filename}\n请前往Home页查看。`)
-  } catch (e: any) {
-    alert('处理失败: ' + (e.response?.data?.detail || e.message))
+    checkData.value = res
+    weights.value = res.weights || []
+    nextTick(() => {
+      initCharts()
+    })
+  } catch (e) {
+    console.error('Failed to fetch idle check data:', e)
   } finally {
-    processingCorr.value = false
+    loading.value = false
   }
+}
+
+async function switchToSiteCorr() {
+  activeMode.value = 'site_corr'
+  if (!siteCorrData.value) {
+    await fetchSiteCorrData()
+  } else {
+    nextTick(() => renderCorrCharts())
+  }
+}
+
+async function fetchSiteCorrData() {
+  loadingSiteCorr.value = true
+  try {
+    const fpParams = selectedParams.value.length ? selectedParams.value.join(',') : undefined
+    const res: any = await api.get(`/analysis/lot/${lotId}/site_corr`, {
+      params: { params: fpParams }
+    })
+    siteCorrData.value = res
+    if (res.test_params && res.test_params.length > 0 && !selectedCorrParam.value) {
+      selectedCorrParam.value = res.test_params[0]
+    }
+    selectedSites.value = [...currentSites.value]
+    hiddenChipNos.value = []
+    nextTick(() => renderCorrCharts())
+  } catch (e: any) {
+    alert('加载 Site Corr 数据失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    loadingSiteCorr.value = false
+  }
+}
+
+function changeGroup(grp: 'group1' | 'group2' | 'all') {
+  selectedGroup.value = grp
+  selectedSites.value = [...currentSites.value]
+  nextTick(() => renderCorrCharts())
+}
+
+function selectAllSites() {
+  if (isAllSitesSelected.value) {
+    selectedSites.value = []
+  } else {
+    selectedSites.value = [...currentSites.value]
+  }
+  renderCorrCharts()
+}
+
+function toggleSite(site: number) {
+  if (selectedSites.value.includes(site)) {
+    selectedSites.value = selectedSites.value.filter((s: number) => s !== site)
+  } else {
+    selectedSites.value = [...selectedSites.value, site]
+  }
+  renderCorrCharts()
+}
+
+function prevParam() {
+  const list = siteCorrData.value?.test_params || []
+  if (!list.length) return
+  const nextIdx = (currentParamIndex.value - 1 + list.length) % list.length
+  selectedCorrParam.value = list[nextIdx]
+  renderCorrCharts()
+}
+
+function nextParam() {
+  const list = siteCorrData.value?.test_params || []
+  if (!list.length) return
+  const nextIdx = (currentParamIndex.value + 1) % list.length
+  selectedCorrParam.value = list[nextIdx]
+  renderCorrCharts()
+}
+
+function isChipHidden(chipNo: number) {
+  return hiddenChipNos.value.includes(chipNo)
+}
+
+function toggleHideChip(chipNo: number) {
+  if (hiddenChipNos.value.includes(chipNo)) {
+    hiddenChipNos.value = hiddenChipNos.value.filter((n: number) => n !== chipNo)
+  } else {
+    hiddenChipNos.value = [...hiddenChipNos.value, chipNo]
+  }
+  renderCorrCharts()
+}
+
+function showAllChips() {
+  hiddenChipNos.value = []
+  renderCorrCharts()
+}
+
+function setAxisMode(mode: 'auto' | 'limit' | 'sigma') {
+  axisMode.value = mode
+  renderCorrCharts()
+}
+
+function siteColor(site: number) {
+  const idx = currentSites.value.indexOf(site)
+  return SITE_LINE_COLORS[(idx >= 0 ? idx : site - 1) % SITE_LINE_COLORS.length]
+}
+
+function collectParamValues() {
+  const param = selectedCorrParam.value
+  const groups: any[] = selectedGroup.value === 'all'
+    ? [siteCorrData.value?.group1, siteCorrData.value?.group2]
+    : [selectedGroup.value === 'group2' ? siteCorrData.value?.group2 : siteCorrData.value?.group1]
+  const values: number[] = []
+  groups.forEach((group: any) => {
+    ;(group?.chips || []).forEach((c: any) => {
+      ;(c.params?.[param] || []).forEach((v: any) => {
+        if (typeof v === 'number' && !Number.isNaN(v)) values.push(v)
+      })
+    })
+  })
+  return values
+}
+
+function round4(value: number) {
+  return Number(value.toFixed(4))
+}
+
+function formatAxisValue(value: number) {
+  const text = round4(value).toString()
+  return text
+}
+
+function computeAxisBounds() {
+  if (axisMode.value === 'auto') {
+    const values = collectVisibleParamValues()
+    if (values.length) {
+      const dataMin = Math.min(...values)
+      const dataMax = Math.max(...values)
+      const range = dataMax - dataMin
+      const pad = range > 0
+        ? range * 0.05
+        : (Math.abs(dataMax) > 0 ? Math.abs(dataMax) * 0.05 : 1)
+      return {
+        min: round4(dataMin - pad),
+        max: round4(dataMax + pad),
+        scale: false,
+        lines: []
+      }
+    }
+  }
+
+  if (axisMode.value === 'limit' && hasParamLimits.value) {
+    const low = Number(paramMeta.value.low)
+    const high = Number(paramMeta.value.high)
+    const pad = (high - low) * 0.02
+    return {
+      min: round4(low - pad),
+      max: round4(high + pad),
+      scale: false,
+      lines: [
+        { name: 'Low Limit', value: round4(low) },
+        { name: 'High Limit', value: round4(high) }
+      ]
+    }
+  }
+
+  if (axisMode.value === 'sigma') {
+    const values = collectParamValues()
+    if (values.length) {
+      const n = Math.max(1, Number(sigmaN.value) || 6)
+      const mean = values.reduce((a: number, b: number) => a + b, 0) / values.length
+      const variance = values.reduce((a: number, b: number) => a + (b - mean) ** 2, 0) / values.length
+      const sd = Math.sqrt(variance) || Math.abs(mean) * 0.01 || 1
+      return {
+        min: round4(mean - n * sd),
+        max: round4(mean + n * sd),
+        scale: false,
+        lines: [
+          { name: `Mean-${n}σ`, value: round4(mean - n * sd) },
+          { name: `Mean+${n}σ`, value: round4(mean + n * sd) }
+        ]
+      }
+    }
+  }
+
+  return { min: undefined, max: undefined, scale: true, lines: [] }
+}
+
+function collectVisibleParamValues() {
+  const param = selectedCorrParam.value
+  const groups: any[] = selectedGroup.value === 'all'
+    ? [siteCorrData.value?.group1, siteCorrData.value?.group2]
+    : [selectedGroup.value === 'group2' ? siteCorrData.value?.group2 : siteCorrData.value?.group1]
+  const values: number[] = []
+  groups.forEach((group: any) => {
+    ;(group?.sites || []).forEach((site: number, siteIdx: number) => {
+      if (!selectedSites.value.includes(site)) return
+      ;(group?.chips || []).forEach((c: any) => {
+        if (hiddenChipNos.value.includes(c.chip_no)) return
+        const v = c.params?.[param]?.[siteIdx]
+        if (typeof v === 'number' && !Number.isNaN(v)) values.push(v)
+      })
+    })
+  })
+  return values
+}
+
+function getSiteSeries(group: any, param: string) {
+  if (!group) return []
+  const chips = (group.chips || []).filter((c: any) => !hiddenChipNos.value.includes(c.chip_no))
+  const siteCount = (group.sites || []).length
+  if (Array.isArray(group.site_series?.[param]) && group.site_series[param].length) {
+    return group.site_series[param].map((line: any[]) =>
+      chips.map((_c: any, i: number) => line[i] ?? null)
+    )
+  }
+  return Array.from({ length: siteCount }, (_, si) =>
+    chips.map((c: any) => c.params?.[param]?.[si] ?? null)
+  )
+}
+
+function cellValue(c: any, site: number) {
+  if (!siteCorrData.value) return '-'
+  const param = selectedCorrParam.value
+  if (site <= 16) {
+    return c.params?.[param]?.[site - 1] ?? '-'
+  }
+  const chip2 = siteCorrData.value.group2?.chips?.find((x: any) => x.chip_no === c.chip_no)
+  return chip2?.params?.[param]?.[site - 17] ?? '-'
+}
+
+function cellNumericValue(c: any, site: number) {
+  const v = cellValue(c, site)
+  return typeof v === 'number' && !Number.isNaN(v) ? v : null
+}
+
+function rowValues(c: any) {
+  return currentSites.value
+    .map((s: number) => cellNumericValue(c, s))
+    .filter((v: number | null): v is number => v !== null)
+}
+
+function cellClass(c: any, site: number) {
+  const vals = rowValues(c)
+  if (!vals.length) return ''
+  const v = cellNumericValue(c, site)
+  if (v === null) return ''
+  const max = Math.max(...vals)
+  const min = Math.min(...vals)
+  if (max === min) return 'cell-min'
+  if (v === max) return 'cell-max'
+  if (v === min) return 'cell-min'
+  return ''
+}
+
+function deltaValue(c: any) {
+  const vals = rowValues(c)
+  if (!vals.length) return '-'
+  return Number((Math.max(...vals) - Math.min(...vals)).toFixed(6))
+}
+
+function renderCorrCharts() {
+  if (!siteCorrData.value) return
+  if (!corrLineChart.value) return
+  if (!corrLineInstance) corrLineInstance = echarts.init(corrLineChart.value)
+
+  const param = selectedCorrParam.value
+  const sites = currentSites.value
+  const chips = currentGroupChips.value.filter((c: any) => !hiddenChipNos.value.includes(c.chip_no))
+  let seriesBySite: any[] = []
+
+  if (selectedGroup.value === 'all') {
+    seriesBySite = [
+      ...getSiteSeries(siteCorrData.value.group1, param),
+      ...getSiteSeries(siteCorrData.value.group2, param)
+    ]
+  } else {
+    const group = selectedGroup.value === 'group2'
+      ? siteCorrData.value.group2
+      : siteCorrData.value.group1
+    seriesBySite = getSiteSeries(group, param)
+  }
+
+  const visibleSites = sites.filter((s: number) => selectedSites.value.includes(s))
+  const bounds = computeAxisBounds()
+  const markLines = bounds.lines.map((line: any, idx: number) => ({
+    name: line.name,
+    yAxis: line.value,
+    lineStyle: {
+      color: idx === 0 ? '#eb2f96' : '#13c2c2',
+      type: 'dashed',
+      width: 1.5
+    },
+    label: {
+      formatter: `${line.name}: ${formatAxisValue(line.value)}`,
+      position: 'insideEndTop',
+      fontSize: 10,
+      color: '#555'
+    }
+  }))
+
+  const series = visibleSites.map((site: number, seriesIdx: number) => {
+    const siteIdx = sites.indexOf(site)
+    return {
+      name: `Site ${site}`,
+      type: 'line',
+      data: seriesBySite[siteIdx] || [],
+      symbol: 'circle',
+      symbolSize: 5,
+      connectNulls: true,
+      itemStyle: { color: SITE_LINE_COLORS[siteIdx % SITE_LINE_COLORS.length] },
+      lineStyle: { width: 1.6 },
+      ...(seriesIdx === 0 && markLines.length ? {
+        markLine: {
+          silent: true,
+          symbol: 'none',
+          data: markLines,
+          lineStyle: { type: 'dashed' },
+          label: { fontSize: 10 }
+        }
+      } : {})
+    }
+  })
+
+  const xLabels = chips.map((c: any) => `${c.chip_no}`)
+  const option = {
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: any) => {
+        if (!params || !params.length) return ''
+        let html = `<b>${params[0].name}</b><br/>`
+        params.forEach((p: any) => {
+          html += `${p.marker} ${p.seriesName}: <b>${p.value !== null && p.value !== undefined ? p.value : 'N/A'}</b><br/>`
+        })
+        return html
+      }
+    },
+    legend: { show: false },
+    grid: { top: series.length > 0 ? 24 : 24, bottom: 86, left: 96, right: 32 },
+    xAxis: {
+      type: 'category',
+      name: paramDisplayWithUnit.value,
+      nameLocation: 'middle',
+      nameGap: 46,
+      nameTextStyle: { fontSize: 13, color: '#1f2937', fontWeight: 600 },
+      boundaryGap: false,
+      data: xLabels
+    },
+    yAxis: {
+      type: 'value',
+      min: bounds.min,
+      max: bounds.max,
+      scale: bounds.scale,
+      axisLabel: {
+        formatter: (value: number) => formatAxisValue(value)
+      }
+    },
+    series
+  }
+  corrLineInstance.setOption(option, true)
 }
 
 async function initCharts() {
   if (!checkData.value?.data) return
-
-  // Scatter Chart
   if (scatterChart.value) {
     if (!scatterInstance) scatterInstance = echarts.init(scatterChart.value)
     
     const series: any[] = []
     const SITE_COLORS = ['#1890ff', '#52c41a', '#faad14', '#eb2f96', '#722ed1', '#13c2c2', '#fa541c', '#a0d911']
-    
     let xAxisMax: number | undefined = undefined
 
     if (checkData.value.has_sites) {
-      // 按 Site 分组
       const groups: Record<string, any[]> = {}
       checkData.value.data.forEach((d: any) => {
         const s = d.SITE_NUM
@@ -353,26 +895,18 @@ async function initCharts() {
         groups[s].push(d)
       })
 
-      // 计算各 site 最大数量，X 轴取最大值
       const siteCounts = Object.values(groups).map((arr: any[]) => arr.length)
       xAxisMax = Math.max(...siteCounts)
 
       Object.keys(groups).sort((a,b)=>Number(a)-Number(b)).forEach((site, i) => {
-        const siteData = groups[site]
+        const siteData = groups[site] || []
         series.push({
           name: `Site ${site}`,
           type: 'scatter',
           symbolSize: 6,
-          // 使用 site 内部的独立序号作为 X 轴，第 4 个值存全局 index 用于点击联动
           data: siteData.map((d: any, siteIdx: number) => [siteIdx, d.fingerprint, d.is_alarm, d.index]),
           itemStyle: {
-            color: (p: any) => {
-              const isAlarm = p.value[2]
-              if (isAlarm) return '#ff4d4f'
-              // 非报警点：使用半透明颜色，使其看起来更淡
-              const baseColor = SITE_COLORS[i % SITE_COLORS.length]
-              return baseColor + '88' // 添加透明度
-            }
+            color: (p: any) => p.value[2] ? '#ff4d4f' : SITE_COLORS[i % SITE_COLORS.length] + '88'
           }
         })
       })
@@ -395,7 +929,7 @@ async function initCharts() {
         formatter: (params: any) => {
           return params.map((p: any) => {
             const d = p.value
-            return `${p.seriesName}<br/>Site内序号: ${d[0] + 1}<br/>Fingerprint: ${d[1].toFixed(4)}<br/>状态: ${d[2] ? '报警' : '正常'}`
+            return `${p.seriesName}<br/>Site内序号: ${d[0] + 1}<br/>Fingerprint: ${d[1]?.toFixed(4)}<br/>状态: ${d[2] ? '报警' : '正常'}`
           }).join('<br/><hr/>')
         }
       },
@@ -406,478 +940,208 @@ async function initCharts() {
       series: series
     }
     scatterInstance.setOption(option, true)
-    
-    // 联动：点击图表跳转到列表对应行（value[3] 是全局 index）
-    scatterInstance.on('click', (params: any) => {
-      const dataIndex = params.value[3]
-      scrollToRow(dataIndex)
-    })
-  }
-
-  // Wafer Map - Canvas based (same as BinView)
-  if (hasCoordinates.value) {
-    await nextTick()
-    drawIdleMap()
   }
 }
 
-function drawIdleMap() {
-  const canvas = waferMapCanvas.value
-  if (!canvas || !hasCoordinates.value || !checkData.value?.data) return
-
-  const data = checkData.value.data.filter((d: any) => d.X_COORD !== undefined)
-  if (!data.length) return
-
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
-  for (const d of data) {
-    if (d.X_COORD < minX) minX = d.X_COORD
-    if (d.X_COORD > maxX) maxX = d.X_COORD
-    if (d.Y_COORD < minY) minY = d.Y_COORD
-    if (d.Y_COORD > maxY) maxY = d.Y_COORD
-  }
-
-  const W = canvas.width, H = canvas.height
-  const margin = 60
-  const centerX = W / 2
-  const centerY = H / 2
-  const radius = Math.min(W, H) / 2 - margin
-
-  const gridW = maxX - minX + 1
-  const gridH = maxY - minY + 1
-
-  const dieW = (radius * 2) / gridW
-  const dieH = (radius * 2) / gridH
-  
-  const offsetX = centerX - radius
-  const offsetY = centerY - radius
-
-  ctx.clearRect(0, 0, W, H)
-
-  // 绘制 Wafer 背景圆
-  ctx.beginPath()
-  ctx.arc(centerX, centerY, radius + 2, 0, Math.PI * 2)
-  ctx.fillStyle = '#fdfdfd'
-  ctx.fill()
-  ctx.strokeStyle = '#e0e0e0'
-  ctx.lineWidth = 1
-  ctx.stroke()
-
-  // 绘制圆周边界
-  ctx.beginPath()
-  ctx.arc(centerX, centerY, radius, 0, Math.PI * 2)
-  ctx.strokeStyle = '#cccccc'
-  ctx.lineWidth = 2
-  ctx.stroke()
-
-  // 绘制 Notch (缺口)
-  ctx.beginPath()
-  ctx.arc(centerX, centerY + radius, 12, Math.PI, 0)
-  ctx.fillStyle = '#ffffff'
-  ctx.fill()
-  ctx.strokeStyle = '#cccccc'
-  ctx.stroke()
-
-  idleMapDies = []
-
-  for (const d of data) {
-    const px = offsetX + (d.X_COORD - minX) * dieW
-    const py = offsetY + (d.Y_COORD - minY) * dieH
-    
-    ctx.fillStyle = d.is_alarm ? '#ff4d4f' : '#69db7c'
-    
-    const drawW = Math.max(0.5, dieW - 0.2)
-    const drawH = Math.max(0.5, dieH - 0.2)
-    ctx.fillRect(px, py, drawW, drawH)
-    
-    idleMapDies.push({ px, py, width: dieW, height: dieH, x: d.X_COORD, y: d.Y_COORD, isAlarm: d.is_alarm, index: d.index })
-  }
-
-  // 坐标标注
-  ctx.fillStyle = '#999'
-  const fontSize = Math.max(8, Math.min(11, Math.min(dieW, dieH) * 0.8))
-  ctx.font = `${fontSize}px sans-serif`
-  ctx.textAlign = 'center'
-  
-  const xStep = Math.max(1, Math.ceil(gridW / 15))
-  for (let x = minX; x <= maxX; x += xStep) {
-    ctx.fillText(String(x), offsetX + (x - minX) * dieW + dieW / 2, offsetY - 10)
-    ctx.fillText(String(x), offsetX + (x - minX) * dieW + dieW / 2, offsetY + radius * 2 + 15)
-  }
-  
-  ctx.textAlign = 'right'
-  ctx.textBaseline = 'middle'
-  const yStep = Math.max(1, Math.ceil(gridH / 15))
-  for (let y = minY; y <= maxY; y += yStep) {
-    ctx.fillText(String(y), offsetX - 10, offsetY + (y - minY) * dieH + dieH / 2)
-  }
-}
-
-function onIdleMapMouseMove(evt: MouseEvent) {
-  const canvas = waferMapCanvas.value
-  const tooltipEl = waferMapTooltip.value
-  if (!canvas || !tooltipEl || !idleMapDies.length) return
-
-  const rect = canvas.getBoundingClientRect()
-  const scaleX = canvas.width / rect.width
-  const scaleY = canvas.height / rect.height
-  const mx = (evt.clientX - rect.left) * scaleX
-  const my = (evt.clientY - rect.top) * scaleY
-
-  let found: typeof idleMapDies[0] | null = null
-  for (const die of idleMapDies) {
-    if (mx >= die.px && mx <= die.px + die.width && my >= die.py && my <= die.py + die.height) {
-      found = die
-      break
-    }
-  }
-
-  if (found) {
-    tooltipEl.innerHTML = `<div>X: ${found.x}, Y: ${found.y}</div><div>状态: ${found.isAlarm ? '⚠ 报警' : '✓ 正常'}</div><div>Index: ${found.index + 1}</div>`
-    tooltipEl.style.display = 'block'
-    tooltipEl.style.left = (evt.offsetX + 14) + 'px'
-    tooltipEl.style.top = (evt.offsetY + 14) + 'px'
-  } else {
-    tooltipEl.style.display = 'none'
-  }
-}
-
-function onIdleMapMouseLeave() {
-  if (waferMapTooltip.value) waferMapTooltip.value.style.display = 'none'
-}
-
-function onIdleMapClick(evt: MouseEvent) {
-  const canvas = waferMapCanvas.value
-  if (!canvas || !idleMapDies.length) return
-
-  const rect = canvas.getBoundingClientRect()
-  const scaleX = canvas.width / rect.width
-  const scaleY = canvas.height / rect.height
-  const mx = (evt.clientX - rect.left) * scaleX
-  const my = (evt.clientY - rect.top) * scaleY
-
-  for (const die of idleMapDies) {
-    if (mx >= die.px && mx <= die.px + die.width && my >= die.py && my <= die.py + die.height) {
-      scrollToRow(die.index)
-      break
-    }
-  }
-}
-
-function scrollToRow(index: number) {
-  const row = document.getElementById(`row-${index}`)
-  if (row) {
-    row.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    row.classList.add('highlight-row')
-    setTimeout(() => row.classList.remove('highlight-row'), 2000)
-  }
+function toggleListFilter() {
+  if (listFilter.value === 'alarm') listFilter.value = 'normal'
+  else if (listFilter.value === 'normal') listFilter.value = 'all'
+  else listFilter.value = 'alarm'
 }
 
 function handleRandomAlgo() {
-  if (!checkData.value?.params) return
-  const len = checkData.value.params.length
-  // 生成随机正整数权重 (1-100)
-  const newWeights = []
-  for (let i = 0; i < len; i++) {
-    newWeights.push(Math.floor(Math.random() * 99) + 1)
-  }
-  weights.value = newWeights
-  fetchData()
+  if (!allParams.value.length) return
+  const shuffled = [...allParams.value].sort(() => 0.5 - Math.random())
+  const count = Math.floor(Math.random() * 3) + 2
+  selectedParams.value = shuffled.slice(0, count)
+  saveSettings()
 }
 
-async function handleExport() {
-  if (exporting.value) return
-  exporting.value = true
-  exportProgress.value = 0
-  exportError.value = ''
-  
+async function openSettings() {
   try {
-    // 1. 启动导出任务
-    const { task_id } = await api.post(`/analysis/lot/${lotId}/idle_check/export/start`, null, {
-      params: { 
-        threshold: threshold.value, 
+    const config: any = await api.get('/analysis/idle_check/config', {
+      params: {
+        program_name: checkData.value.program,
+        lot_id: lotId
+      }
+    })
+    allParams.value = config.all_params || []
+    selectedParams.value = config.params || []
+    tempThreshold.value = config.threshold || 2
+    showSettings.value = true
+  } catch (e) {
+    alert('获取设置失败')
+  }
+}
+
+async function saveSettings() {
+  savingConfig.value = true
+  try {
+    await api.post('/analysis/idle_check/config', {
+      program_name: checkData.value.program,
+      params: selectedParams.value,
+      threshold: tempThreshold.value
+    })
+    showSettings.value = false
+    threshold.value = tempThreshold.value
+    await fetchData()
+    if (activeMode.value === 'site_corr') {
+      await fetchSiteCorrData()
+    }
+  } catch (e) {
+    alert('保存失败')
+  } finally {
+    savingConfig.value = false
+  }
+}
+
+async function handleCorrProcessing() {
+  if (!confirm('Corr处理将对齐各 Site 数据，保存为新数据包，是否继续？')) return
+  processingCorr.value = true
+  try {
+    const res: any = await api.post(`/analysis/lot/${lotId}/idle_check/corr`, null, {
+      params: {
+        threshold: threshold.value,
         data_filter: dataFilter.value,
         weights: weights.value.join(',')
       }
     })
-    
-    // 2. 轮询状态
-    exportTimer = setInterval(async () => {
-      try {
-        const res: any = await api.get(`/analysis/idle_check/export/status/${task_id}`)
-        exportProgress.value = res.progress
-        
-        if (res.status === 'completed') {
-          clearInterval(exportTimer)
-          // 3. 下载结果
-          const downloadRes = await api.get(`/analysis/idle_check/export/download/${task_id}`, {
-            responseType: 'blob'
-          })
-          const blob = downloadRes.data
-          const url = window.URL.createObjectURL(new Blob([blob], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
-          const link = document.createElement('a')
-          link.href = url
-          const fileName = lotInfo.value?.filename ? `IdleCheck_${lotInfo.value.filename}.xlsx` : 'IdleCheck_Data.xlsx'
-          link.setAttribute('download', fileName)
-          document.body.appendChild(link)
-          link.click()
-          
-          setTimeout(() => {
-            document.body.removeChild(link)
-            window.URL.revokeObjectURL(url)
-            exporting.value = false
-          }, 1000)
-        } else if (res.status === 'failed') {
-          clearInterval(exportTimer)
-          exportError.value = res.error || '导出失败'
-        }
-      } catch (err) {
-        clearInterval(exportTimer)
-        exportError.value = '获取进度失败'
-      }
-    }, 1000)
-    
-  } catch (e) {
-    exporting.value = false
-    alert('启动导出失败')
+    alert(`处理完成！新数据已生成：${res.filename}\n请前往 Home 页查看。`)
+  } catch (e: any) {
+    alert('处理失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    processingCorr.value = false
   }
 }
 
-function handleResize() {
-  scatterInstance?.resize()
-  if (hasCoordinates.value) drawIdleMap()
-}
+function onCheckboxClick(e: MouseEvent, paramName: string) {
+  const input = e.target as HTMLInputElement
+  if (!e.shiftKey) {
+    shiftAnchor.value = paramName
+    return
+  }
 
-onMounted(() => {
-  fetchData()
-  window.addEventListener('resize', handleResize)
-})
-
-const lastClickedParam = ref<string | null>(null)
-
-function onCheckboxClick(event: MouseEvent, p: string) {
-  if (event.shiftKey && lastClickedParam.value) {
-    event.preventDefault()
-    const idx1 = filteredParams.value.indexOf(lastClickedParam.value)
-    const idx2 = filteredParams.value.indexOf(p)
-    if (idx1 !== -1 && idx2 !== -1) {
-      const start = Math.min(idx1, idx2)
-      const end = Math.max(idx1, idx2)
-      const rangeParams = filteredParams.value.slice(start, end + 1)
-      
-      rangeParams.forEach(item => {
-        if (!selectedParams.value.includes(item)) {
-          selectedParams.value.push(item)
-        }
-      })
+  e.preventDefault()
+  const list = filteredParams.value
+  const currentIdx = list.indexOf(paramName)
+  const anchorIdx = list.indexOf(shiftAnchor.value || '')
+  if (currentIdx < 0 || anchorIdx < 0) {
+    if (!selectedParams.value.includes(paramName)) {
+      selectedParams.value = [...selectedParams.value, paramName]
     }
-  } else {
-    lastClickedParam.value = p
+    return
   }
+
+  const [start, end] = anchorIdx <= currentIdx
+    ? [anchorIdx, currentIdx]
+    : [currentIdx, anchorIdx]
+  const merged = new Set(selectedParams.value)
+  list.slice(start, end + 1).forEach((p: string) => merged.add(p))
+  selectedParams.value = [...merged]
 }
 
-onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
-  if (exportTimer) clearInterval(exportTimer)
-})
+function handleExport() {}
 </script>
 
 <style scoped>
-.idle-check-view {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: #f0f2f5;
-  padding: 16px;
-  overflow: hidden;
-}
+.idle-check-view { display: flex; flex-direction: column; height: 100vh; background: #f0f2f5; padding: 16px; box-sizing: border-box; }
+.header-bar { display: flex; justify-content: space-between; align-items: center; background: white; padding: 12px 20px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); margin-bottom: 16px; }
+.title h2 { margin: 0; font-size: 18px; color: #1f2937; }
+.subtitle { font-size: 12px; color: #6b7280; }
 
-.header-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: white;
-  padding: 12px 24px;
-  border-radius: 8px;
-  margin-bottom: 16px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-}
+.mode-switcher { display: flex; gap: 8px; background: #f3f4f6; padding: 4px; border-radius: 6px; }
+.mode-tab-btn { border: none; background: transparent; padding: 6px 14px; border-radius: 4px; font-size: 13px; font-weight: 500; cursor: pointer; color: #4b5563; transition: all 0.2s; }
+.mode-tab-btn.active { background: white; color: #722ed1; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
 
-.title h2 { margin: 0; font-size: 18px; color: #1f1f1f; }
-.subtitle { font-size: 13px; color: #8c8c8c; margin-top: 4px; display: block; }
-
-.actions { display: flex; gap: 12px; align-items: center; }
-.threshold-input { display: flex; align-items: center; gap: 6px; font-size: 13px; }
-.threshold-input input { width: 50px; padding: 4px 6px; border: 1px solid #d9d9d9; border-radius: 4px; }
-
-.filter-options { display: flex; background: #f5f5f5; border-radius: 4px; padding: 2px; }
-.radio-label { 
-  padding: 4px 10px; font-size: 12px; cursor: pointer; border-radius: 3px; 
-  transition: all 0.2s; display: flex; align-items: center; gap: 4px;
-}
+.actions { display: flex; align-items: center; gap: 12px; }
+.threshold-input input { width: 50px; padding: 4px 8px; border: 1px solid #d9d9d9; border-radius: 4px; margin-left: 6px; }
+.filter-options { display: flex; background: #f5f5f5; padding: 2px; border-radius: 4px; }
+.radio-label { padding: 4px 10px; font-size: 12px; cursor: pointer; border-radius: 3px; }
+.radio-label.active { background: white; color: #1890ff; font-weight: bold; }
 .radio-label input { display: none; }
-.radio-label.active { background: white; color: #1890ff; box-shadow: 0 1px 4px rgba(0,0,0,0.1); font-weight: 500; }
 
-.clickable-header { cursor: pointer; color: #1890ff; user-select: none; }
-.clickable-header:hover { background: #e6f7ff; }
-
-.btn { padding: 8px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; transition: all 0.3s; }
-.btn-random { background: #722ed1; color: white; }
-.btn-random:hover { background: #9254de; }
-
-.algorithm-box { display: flex; align-items: center; gap: 12px; background: #fffbe6; border: 1px solid #ffe58f; padding: 4px 12px; border-radius: 4px; }
-.formula-display { display: flex; align-items: center; gap: 8px; font-size: 12px; position: relative; }
-.formula-label { color: #856404; font-weight: 500; }
-.formula-display code { background: #fdfdfd; padding: 2px 6px; border-radius: 3px; border: 1px solid #f0f0f0; }
-.formula-toggle { color: #1890ff; cursor: pointer; font-size: 11px; text-decoration: underline; }
-.formula-detail {
-  position: absolute; top: 100%; left: 0; background: white; border: 1px solid #d9d9d9;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15); padding: 8px; z-index: 100;
-  max-height: 200px; overflow-y: auto; min-width: 200px; margin-top: 4px;
-}
-.formula-item { font-family: monospace; white-space: nowrap; border-bottom: 1px solid #f0f0f0; padding: 2px 0; }
-
-.btn-download { background: #1890ff; color: white; }
-.btn-download:hover { background: #40a9ff; }
-.btn-download:disabled { background: #f5f5f5; color: #bfbfbf; cursor: not-allowed; }
-
+.btn { padding: 6px 12px; border-radius: 4px; border: 1px solid #d9d9d9; background: white; cursor: pointer; font-size: 13px; }
+.btn-xs { padding: 2px 8px; font-size: 12px; border-radius: 3px; background: #f3f4f6; border: 1px solid #d1d5db; color: #374151; cursor: pointer; }
+.btn-xs:hover { background: #e5e7eb; color: #111827; }
+.btn-primary { background: #1890ff; color: white; border: none; }
 .btn-corr { background: #722ed1; color: white; border: none; }
-.btn-corr:hover { background: #9254de; }
-.btn-corr:disabled { background: #d9d9d9; cursor: not-allowed; }
+.btn-download { background: #52c41a; color: white; border: none; }
 
-.btn-settings { background: #f0f0f0; color: #595959; border: 1px solid #d9d9d9; }
-.btn-settings:hover { background: #e8e8e8; border-color: #40a9ff; color: #40a9ff; }
+.main-content { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 16px; flex: 1; min-height: 0; }
+.main-content.no-map { grid-template-columns: 1fr 1fr; }
+.chart-section, .map-section, .list-section { background: white; border-radius: 8px; padding: 12px; display: flex; flex-direction: column; min-height: 0; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+.chart-header { font-weight: 600; font-size: 14px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; color: #1f2937; }
+.chart-container { flex: 1; min-height: 0; }
 
-.main-content {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1.5fr;
-  gap: 16px;
-  overflow: hidden;
-}
+/* Site Corr 分析面板样式 */
+.site-corr-view { display: flex; flex-direction: column; gap: 16px; flex: 1; min-height: 0; overflow-y: auto; }
+.corr-toolbar { display: flex; align-items: center; justify-content: space-between; background: white; padding: 12px 16px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); gap: 14px; flex-wrap: wrap; }
+.group-select-box, .param-switch-box, .site-filter-box { display: flex; align-items: center; gap: 8px; }
+.site-filter-box { flex: 1 1 100%; border-top: 1px dashed #e8e8e8; padding-top: 10px; }
+.param-arrow { width: 30px; height: 30px; border: 1px solid #d9d9d9; background: white; border-radius: 4px; cursor: pointer; font-size: 18px; line-height: 1; color: #374151; }
+.param-arrow:hover { background: #f0f0f0; }
+.site-all-btn.active { background: #722ed1; color: white; border-color: #722ed1; }
+.site-tag-list { display: flex; flex-wrap: wrap; gap: 4px; max-width: 860px; }
+.site-tag { min-width: 32px; height: 26px; padding: 0 6px; border: 1px solid #d9d9d9; background: #fff; border-radius: 4px; font-size: 12px; cursor: pointer; color: #374151; }
+.site-tag.active { background: #1890ff; color: white; border-color: #1890ff; font-weight: 600; }
+.corr-summary-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; background: white; padding: 10px 16px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); font-size: 12px; color: #374151; }
+.summary-chip { font-weight: 600; color: #722ed1; }
+.summary-fp { color: #555; }
+.summary-deleted { color: #cf1322; font-weight: 600; }
+.axis-mode-box { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.axis-mode-btn { border: 1px solid #d9d9d9; background: #fff; padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; color: #374151; }
+.axis-mode-btn.active { background: #1890ff; color: #fff; border-color: #1890ff; font-weight: 600; }
+.axis-mode-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.sigma-input { width: 58px; padding: 4px 6px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 12px; }
 
-.chart-section { grid-column: 1 / 3; background: white; border-radius: 8px; display: flex; flex-direction: column; }
-.map-section { background: white; border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }
-.map-container { 
-  flex: 1; display: flex; align-items: center; justify-content: center; 
-  padding: 10px; overflow: hidden; position: relative;
-}
-.wafer-map-canvas {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  display: block;
-}
-.map-tooltip {
-  position: absolute;
-  background: rgba(0,0,0,0.78);
-  color: white;
-  padding: 5px 10px;
-  border-radius: 4px;
-  font-size: 12px;
-  pointer-events: none;
-  white-space: nowrap;
-  z-index: 100;
-}
-.list-section { background: white; border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }
+.label { font-size: 13px; font-weight: 500; color: #4b5563; }
+.grp-btn { border: 1px solid #d9d9d9; background: white; padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer; transition: all 0.2s; }
+.grp-btn.active { background: #722ed1; color: white; border-color: #722ed1; font-weight: 600; }
 
-.chart-header {
-  padding: 12px 16px;
-  border-bottom: 1px solid #f0f0f0;
-  font-weight: 600;
-  font-size: 14px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
+.corr-select { padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 13px; outline: none; background: white; min-width: 140px; }
+.param-select { min-width: 220px; }
 
-.chart-container { flex: 1; min-height: 200px; padding: 12px; }
+.corr-chart-card { background: white; border-radius: 8px; padding: 0 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); display: flex; flex-direction: column; width: 100%; height: 400px; flex-shrink: 0; align-self: stretch; }
+.corr-chart-card .chart-header { margin-bottom: 0; padding: 0; }
+.corr-chart-main { flex: 1; min-height: 0; display: flex; gap: 10px; }
+.chart-box { flex: 0 0 70%; width: 70%; min-width: 0; min-height: 0; }
+.corr-legend-panel { width: 120px; flex-shrink: 0; display: grid; grid-template-columns: repeat(2, 1fr); grid-auto-rows: 20px; gap: 3px; align-content: start; padding: 4px; background: #fafafa; border-radius: 6px; box-sizing: border-box; height: min-content; align-self: flex-start; }
+.corr-legend-site { display: flex; align-items: center; justify-content: center; gap: 4px; border: 1px solid #e5e7eb; background: #fff; border-radius: 3px; font-size: 10px; cursor: pointer; color: #6b7280; padding: 0 2px; }
+.corr-legend-site.active { background: #f0f5ff; border-color: #91caff; color: #096dd9; font-weight: 600; }
+.legend-color { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
-.legend { display: flex; gap: 12px; }
-.legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: normal; }
+.corr-table-card { background: white; border-radius: 8px; padding: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+.table-info-tag { font-size: 12px; color: #722ed1; font-weight: normal; }
+.corr-table-wrap { max-height: 360px; overflow: auto; }
+.corr-table { min-width: 640px; width: 100%; border-collapse: collapse; font-size: 12px; text-align: center; }
+.corr-table th { background: #fafafa; position: sticky; top: 0; padding: 8px; border-bottom: 1px solid #f0f0f0; color: #374151; z-index: 1; }
+.corr-table td { padding: 6px 8px; border-bottom: 1px solid #f0f0f0; color: #4b5563; }
+.corr-table tr { transition: background 0.15s; }
+.corr-table tr:hover { background: #f9f5ff; }
+.corr-table tr.row-hidden td { opacity: 0.45; }
+.corr-table td.cell-max { color: #cf1322; background: #fff1f0; font-weight: 700; }
+.corr-table td.cell-min { color: #389e0d; background: #f6ffed; font-weight: 700; }
+.corr-table td.delta-cell { font-weight: 700; color: #1f2937; }
+.btn-delete { color: #cf1322; border-color: #ffa39e; }
+.btn-delete:hover { background: #fff1f0; }
+
+.legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .dot { width: 10px; height: 10px; border-radius: 50%; }
 .dot.normal { background: #1890ff; }
 .dot.alarm { background: #ff4d4f; }
 
-.table-container { flex: 1; overflow-y: auto; padding: 0; }
+.table-container { flex: 1; overflow-y: auto; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.data-table th { position: sticky; top: 0; background: #fafafa; padding: 10px; text-align: left; border-bottom: 1px solid #f0f0f0; z-index: 1; }
+.data-table th { position: sticky; top: 0; background: #fafafa; padding: 10px; text-align: left; border-bottom: 1px solid #f0f0f0; }
 .data-table td { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; }
 .row-alarm { background: #fff1f0; }
 
 .badge-alarm { color: #cf1322; background: #fff1f0; border: 1px solid #ffa39e; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
 .badge-normal { color: #389e0d; background: #f6ffed; border: 1px solid #b7eb8f; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
 
-.loading-overlay {
-  position: fixed; inset: 0; background: rgba(255,255,255,0.7);
-  display: flex; align-items: center; justify-content: center; z-index: 1000;
-  font-size: 16px; color: #1890ff;
-}
-
-.main-content.no-map .list-section {
-  grid-column: 1 / 3;
-}
-
-/* 导出进度条样式 */
-.export-modal {
-  text-align: center;
-  width: 400px !important;
-}
-
-.progress-container {
-  height: 12px;
-  background: #f5f5f5;
-  border-radius: 6px;
-  overflow: hidden;
-  margin: 20px 0 10px;
-}
-
-.progress-bar {
-  height: 100%;
-  background: linear-gradient(90deg, #1890ff, #40a9ff);
-  transition: width 0.3s;
-}
-
-.progress-text {
-  font-size: 14px;
-  color: #1890ff;
-  font-weight: bold;
-}
-
-.export-error {
-  margin-top: 16px;
-  color: #ff4d4f;
-  font-size: 13px;
-  background: #fff2f0;
-  padding: 8px;
-  border-radius: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  align-items: center;
-}
-
-.btn-sm {
-  padding: 2px 8px;
-  font-size: 12px;
-}
-
-/* 弹窗样式 (同步 HomeView) */
-.modal-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.5);
-  display: flex; align-items: center; justify-content: center; z-index: 1100;
-}
-.modal {
-  background: white; padding: 24px; border-radius: 8px; width: 400px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-}
-.modal h3 { margin-top: 0; margin-bottom: 16px; font-size: 18px; }
-.modal-actions {
-  display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;
-}
+.loading-overlay { position: fixed; inset: 0; background: rgba(255,255,255,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; font-size: 16px; color: #722ed1; font-weight: bold; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1100; }
+.modal { background: white; padding: 24px; border-radius: 8px; width: 400px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
 .check-modal { width: 600px !important; }
 .param-selector { border: 1px solid #d9d9d9; border-radius: 4px; display: flex; flex-direction: column; height: 300px; }
 .selector-header { padding: 8px; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between; align-items: center; background: #fafafa; }
@@ -886,9 +1150,4 @@ onUnmounted(() => {
 .param-list { flex: 1; overflow-y: auto; padding: 8px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; }
 .param-item { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px; border-radius: 2px; cursor: pointer; }
 .param-item:hover { background: #f5f5f5; }
-.param-item input { margin: 0; }
-.param-item span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
-.field label { font-size: 12px; color: #666; }
-.field input { padding: 6px 10px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 13px; }
 </style>

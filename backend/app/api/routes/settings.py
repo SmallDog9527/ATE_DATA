@@ -74,9 +74,9 @@ def save_smtp_config(
     cfg.smtp_ssl = body.smtp_ssl
     cfg.updated_at = datetime.now(timezone.utc)
 
-    # Synchronize admin user default email with SMTP sender address
+    # Synchronize admin user default email with SMTP sender address (only when configured)
     admin_user = db.query(User).filter(User.username == "admin").first()
-    if admin_user:
+    if admin_user and getattr(cfg, "smtp_from", None):
         admin_user.email = cfg.smtp_from
 
     db.commit()
@@ -1128,9 +1128,9 @@ def save_version_settings(
         db.add(cfg)
     cfg.version_update_content = body.content
     cfg.updated_at = datetime.now(timezone.utc)
-    # Synchronize admin user default email with SMTP sender address
+    # Synchronize admin user default email with SMTP sender address (only when configured)
     admin_user = db.query(User).filter(User.username == "admin").first()
-    if admin_user:
+    if admin_user and getattr(cfg, "smtp_from", None):
         admin_user.email = cfg.smtp_from
 
     db.commit()

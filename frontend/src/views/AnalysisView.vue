@@ -14,6 +14,10 @@
           <span class="value">{{ lotInfo.program }}</span>
         </div>
         <div class="info-item">
+          <span class="label">LOT</span>
+          <span class="value">{{ lotInfo.lot_id }}_{{ lotInfo.wafer_id }}</span>
+        </div>
+        <div class="info-item">
           <span class="label">测试机</span>
           <span class="value">{{ lotInfo.test_machine }}</span>
         </div>
@@ -128,6 +132,13 @@
             <label><input type="radio" v-model="options.mean_limit" value="hide" /> Hide</label>
           </div>
         </div>
+        <div class="option-group">
+          <label>Site_mode</label>
+          <div class="radio-group row">
+            <label><input type="radio" v-model="options.site_mode" value="site" /> SITE</label>
+            <label><input type="radio" v-model="options.site_mode" value="lot" /> LOT</label>
+          </div>
+        </div>
     </div>
 
       <!-- 右侧内容区 -->
@@ -187,7 +198,8 @@ const options = ref({
   sigma: 3,
   chars_row: 3,
   delta_site: 3,
-  mean_limit: 'hide',
+  mean_limit: 'show',
+  site_mode: 'site',
 })
 
 const exporting = ref(false)
@@ -303,8 +315,28 @@ const columnDefs = computed(() => {
       baseDefs.push({
         headerName: `Mean_S${siteNum}`,
         field: key,
-        width: 100,
-        valueFormatter: (p: any) => p.value?.toFixed(4) ?? '-'
+        width: 110,
+        valueFormatter: (p: any) => p.value?.toFixed(4) ?? '-',
+        cellStyle: (params: any) => {
+          const val = params.value;
+          if (val === null || val === undefined || typeof val !== 'number' || isNaN(val)) {
+            return {};
+          }
+          const validValues = sortedSiteKeys
+            .map(k => params.data?.[k])
+            .filter(v => v !== null && v !== undefined && typeof v === 'number' && !isNaN(v));
+          if (validValues.length < 2) return {};
+          const maxVal = Math.max(...validValues);
+          const minVal = Math.min(...validValues);
+          if (maxVal === minVal) return {};
+          if (Math.abs(val - maxVal) < 1e-9) {
+            return { color: 'red', fontWeight: 'bold' };
+          }
+          if (Math.abs(val - minVal) < 1e-9) {
+            return { color: 'green', fontWeight: 'bold' };
+          }
+          return {};
+        }
       });
     });
 
@@ -337,7 +369,8 @@ const columnDefs = computed(() => {
         valueGetter: (params: any) => {
           const delta = params.getValue('mean_delta');
           const allSiteMean = params.data.mean;
-          if (delta === null || !allSiteMean) return null;
+          if (delta === null || allSiteMean === null || allSiteMean === undefined) return null;
+          if (Math.abs(allSiteMean) < 0.05) return 0;
           return delta / allSiteMean;
         },
         valueFormatter: (p: any) => p.value !== null ? (p.value * 100).toFixed(2) + '%' : '-'
@@ -629,7 +662,17 @@ async function fetchItems() {
 
   testItems.value = data
   itemCount.value = data.length
-  
+
+  // Auto-set site_mode: >8 sites -> LOT, <=8 sites -> SITE
+  const siteKeys = new Set<string>()
+  data.forEach((item: any) => {
+    Object.keys(item).forEach(key => {
+      if (key.startsWith('mean_s')) siteKeys.add(key)
+    })
+  })
+  const siteCount = siteKeys.size
+  options.value.site_mode = siteCount > 8 ? 'lot' : 'site'
+
   // Auto-calculate yield if custom limits are loaded
   const hasCustom = data.some(row => (row.ll_new !== null && row.ll_new !== undefined && row.ll_new !== '') || (row.ul_new !== null && row.ul_new !== undefined && row.ul_new !== ''))
   if (hasCustom) {
@@ -662,6 +705,7 @@ async function handleExport() {
         data_range: options.value.data_range,
         chars_row: options.value.chars_row,
         delta_site: options.value.delta_site,
+        site_mode: options.value.site_mode,
         selected_items: selectedItems
       }
     })
@@ -674,7 +718,7 @@ async function handleExport() {
     const pollInterval = setInterval(async () => {
       try {
         const statusRes: any = await api.get(`/analysis/export_items/status/${taskId}`)
-        const { status, progress, error } = statusRes
+        const { status, progress, error, filename: resFilename } = statusRes
         
         if (status === 'completed') {
           clearInterval(pollInterval)
@@ -690,7 +734,8 @@ async function handleExport() {
           const url = window.URL.createObjectURL(blobData)
           const link = document.createElement('a')
           link.href = url
-          link.setAttribute('download', `LOT_${lotId.value}_Report_${options.value.filter_type}.xlsx`)
+          // 使用后端返回的规范文件名 (含 .zip), 回退到默认名
+          link.setAttribute('download', resFilename || `LOT_${lotId.value}_Report_${options.value.filter_type}.zip`)
           document.body.appendChild(link)
           link.click()
           document.body.removeChild(link)
