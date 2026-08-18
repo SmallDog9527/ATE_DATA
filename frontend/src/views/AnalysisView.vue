@@ -662,7 +662,17 @@ async function fetchItems() {
 
   testItems.value = data
   itemCount.value = data.length
-  
+
+  // Auto-set site_mode: >8 sites -> LOT, <=8 sites -> SITE
+  const siteKeys = new Set<string>()
+  data.forEach((item: any) => {
+    Object.keys(item).forEach(key => {
+      if (key.startsWith('mean_s')) siteKeys.add(key)
+    })
+  })
+  const siteCount = siteKeys.size
+  options.value.site_mode = siteCount > 8 ? 'lot' : 'site'
+
   // Auto-calculate yield if custom limits are loaded
   const hasCustom = data.some(row => (row.ll_new !== null && row.ll_new !== undefined && row.ll_new !== '') || (row.ul_new !== null && row.ul_new !== undefined && row.ul_new !== ''))
   if (hasCustom) {

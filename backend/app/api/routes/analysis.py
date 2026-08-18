@@ -649,7 +649,7 @@ def run_export_task(
         _base_name = _re.sub(r'\.(?:csv\.zip|xlsx|xls|csv|zip|txt|std|dat)(?:\.gz)?$', '', _base_name, flags=_re.IGNORECASE)
         _hist_suffix = time.strftime("%m%d%H%M%S", time.localtime())
         _zip_filename = f"{_base_name}_hist{_hist_suffix}.zip"
-        _xlsx_inside = f"{_base_name}.xlsx"
+        _xlsx_inside = f"{_base_name}_hist{_hist_suffix}.xlsx"
 
         # 1. 获取数据
         lot_info = get_lot_info(lot_id, db)
@@ -834,176 +834,65 @@ def run_export_task(
                     ax_obj.text(0.5, current_y, line_text, transform=ax_obj.transAxes, 
                                 color='#000000', fontweight='bold', fontsize=8, ha='center')
 
-            _plot_lock.acquire()
-            try:
-                fig, ax = plt.subplots(figsize=(5.47, 4.5)) 
-            except Exception:
-                _plot_lock.release()
-                raise
-            SITE_COLORS = ['#ff6b6b', '#4dabf7', '#69db7c', '#ffd43b', '#e599f7', '#74c0fc', '#a9e34b', '#ffa94d']
-            
-            total_items = len(items_summary)
-            for i, item in enumerate(items_summary):
-                # 更新进度: 15% -> 80%
-                current_progress = 15 + int((i / total_items) * 65) if total_items > 0 else 15
-                export_tasks[task_id]["progress"] = current_progress
+            # ─── Parallel histogram rendering (persistent process pool) ───
+            # Worker module is pure (no app imports) so spawn stays fast.
+            import multiprocessing as _mp
+            from concurrent.futures import ProcessPoolExecutor as _PPE
+            from app.workers.hist_worker import _hist_worker_init, _render_hist_png
 
-                p_name = item['item_name']
-                p_num = item['item_number']
-                if p_name not in df_all.columns: continue
-                
-                ll, ul = item.get('lower_limit'), item.get('upper_limit')
-                unit = item.get('unit') or ''
-                vals = df_all[p_name].dropna().values.astype(float)
-                if len(vals) == 0: continue
-                filtered_all = apply_filter(vals, filter_type, ll, ul, sigma)
-                if len(filtered_all) == 0: continue
-                edges, exceeds_limit, ll_bin_idx, ul_bin_idx = calc_hist_edges(filtered_all, ll, ul)
-                
-                # LOT 标签 (用于 site_mode=lot 时的图例)
-                lot_label = f"{lot.lot_id}_{lot.wafer_id}" if lot.lot_id else (lot.wafer_id or "ALL")
-                
-                sites_data = []
-                if site_mode == 'lot':
-                    # LOT 模式: 不分 Site, 显示所有值合并分布, 图例显示 LOT 内容
-                    counts, _ = np.histogram(filtered_all, bins=edges)
-                    sites_data.append({'site': 0, 'counts': counts, 'label': lot_label})
-                else:
-                    # SITE 模式: 按各 Site 分组, 图例显示 S1, S2...
-                    if 'SITE_NUM' in df_all.columns:
-                        site_groups = df_all.dropna(subset=[p_name]).groupby('SITE_NUM')
-                        for site_num, site_df in site_groups:
-                            if site_num == 0: continue
-                            site_vals = site_df[p_name].values.astype(float)
-                            site_filtered = apply_filter(site_vals, filter_type, ll, ul, sigma)
-                            if len(site_filtered) > 0:
-                                counts, _ = np.histogram(site_filtered, bins=edges)
-                                sites_data.append({'site': int(site_num), 'counts': counts, 'label': f"S{int(site_num)}"})
-                    if not sites_data:
-                        counts, _ = np.histogram(filtered_all, bins=edges)
-                        sites_data.append({'site': 0, 'counts': counts, 'label': lot_label})
+            # Persistent global pool (created once, reused across exports)
+            global _HIST_POOL
+            if '_HIST_POOL' not in globals() or globals().get('_HIST_POOL') is None:
+                _ctx_pool = _mp.get_context('spawn')
+                _HIST_POOL = _PPE(max_workers=min(4, _mp.cpu_count()), mp_context=_ctx_pool)
 
-                ax.clear()
-                ax.set_axisbelow(True)
-                ax.yaxis.grid(True, linestyle='--', alpha=0.5, zorder=0)
-                s0_stats = calc_param_stats(filtered_all, ll, ul, len(filtered_all))
-                data_min, data_max = float(np.min(filtered_all)), float(np.max(filtered_all))
-                edges_min, edges_max = float(edges[0]), float(edges[-1])
-                x_range_info = calc_hist_x_range(data_min, data_max, ll, ul, edges_min, edges_max)
-                x_min, x_max = x_range_info['x_min'], x_range_info['x_max']
-                
-                if exceeds_limit:
-                    max_count = np.max([np.max(s['counts']) for s in sites_data]) if sites_data else 1
-                    min_h = max_count * 0.02
-                    outlier_h = max_count * 0.05
-                    for idx, s in enumerate(sites_data):
-                        color = SITE_COLORS[idx % len(SITE_COLORS)]
-                        sigma_l = s0_stats['mean'] - 6 * s0_stats['stdev'] if s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None else None
-                        sigma_u = s0_stats['mean'] + 6 * s0_stats['stdev'] if s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None else None
-                        final_normal, final_outlier = [], []
-                        for i_bin, cnt in enumerate(s['counts']):
-                            center = (edges[i_bin] + edges[i_bin+1]) / 2
-                            is_outlier_type = sigma_l is not None and (center < sigma_l or center > sigma_u) and 0 < cnt < 5
-                            if is_outlier_type:
-                                final_normal.append(0); final_outlier.append(max(cnt, outlier_h))
-                            elif cnt > 0:
-                                val = max(cnt, min_h) if cnt < 5 else cnt
-                                final_normal.append(val); final_outlier.append(0)
-                            else:
-                                final_normal.append(0); final_outlier.append(0)
-                        bar_w = 0.9
-                        ax.bar(range(len(final_normal)), final_normal, width=bar_w, alpha=0.7, color=color, label=s['label'], zorder=3)
-                        if any(v > 0 for v in final_outlier):
-                            ax.bar(range(len(final_outlier)), final_outlier, width=bar_w, alpha=0.8, color=color, zorder=4)
-                    if ll_bin_idx is not None:
-                        ax.axvline(ll_bin_idx, color='red', linestyle='--', linewidth=1.5, zorder=4)
-                        ax.text(ll_bin_idx, ax.get_ylim()[1]*0.5, f'LL:{ll}', color='red', fontsize=7, ha='left', va='center', rotation=0)
-                    if ul_bin_idx is not None:
-                        ax.axvline(ul_bin_idx, color='red', linestyle='--', linewidth=1.5, zorder=4)
-                        ax.text(ul_bin_idx, ax.get_ylim()[1]*0.5, f'UL:{ul}', color='red', fontsize=7, ha='right', va='center', rotation=0)
-                    tick_indices = np.linspace(0, len(edges)-2, 11).astype(int)
-                    ax.set_xticks(tick_indices)
-                    ax.set_xticklabels([f"{edges[t]:.3f}" for t in tick_indices], rotation=30)
-                else:
-                    bin_centers = (edges[:-1] + edges[1:]) / 2
-                    bin_w = edges[1] - edges[0] if len(edges) > 1 else 1
-                    max_count = np.max([np.max(s['counts']) for s in sites_data]) if sites_data else 1
-                    min_h = max_count * 0.02
-                    outlier_h = max_count * 0.05
-                    for idx, s in enumerate(sites_data):
-                        color = SITE_COLORS[idx % len(SITE_COLORS)]
-                        sigma_l = s0_stats['mean'] - 6 * s0_stats['stdev'] if s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None else None
-                        sigma_u = s0_stats['mean'] + 6 * s0_stats['stdev'] if s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None else None
-                        final_normal, final_outlier = [], []
-                        for i_bin, cnt in enumerate(s['counts']):
-                            center = (edges[i_bin] + edges[i_bin+1]) / 2
-                            is_outlier_type = sigma_l is not None and (center < sigma_l or center > sigma_u) and 0 < cnt < 5
-                            if is_outlier_type:
-                                final_normal.append(0); final_outlier.append(max(cnt, outlier_h))
-                            elif cnt > 0:
-                                val = max(cnt, min_h) if cnt < 5 else cnt
-                                final_normal.append(val); final_outlier.append(0)
-                            else:
-                                final_normal.append(0); final_outlier.append(0)
-                        bar_w = max(bin_w * 0.9, (x_max - x_min) * 0.015)
-                        ax.bar(bin_centers, final_normal, width=bar_w, alpha=0.7, color=color, label=s['label'], zorder=3)
-                        if any(v > 0 for v in final_outlier):
-                            ax.bar(bin_centers, final_outlier, width=bar_w, alpha=0.8, color=color, zorder=4)
-                    ax.set_xlim(x_min, x_max)
-                    if ll is not None:
-                        ax.axvline(ll, color='red', linestyle='--', linewidth=1.5, zorder=4)
-                        ax.text(ll, ax.get_ylim()[1]*0.5, f'LL:{ll}', color='red', fontsize=7, ha='left', va='center', rotation=0)
-                    if ul is not None:
-                        ax.axvline(ul, color='red', linestyle='--', linewidth=1.5, zorder=4)
-                        ax.text(ul, ax.get_ylim()[1]*0.5, f'UL:{ul}', color='red', fontsize=7, ha='right', va='center', rotation=0)
-                    ax.set_xticks(x_range_info['ticks'])
-                    ax.xaxis.set_major_formatter(plt.FormatStrFormatter('%.3f'))
-                    ax.tick_params(axis='x', rotation=30)
-                
-                if filter_type == 'filter_by_sigma':
-                    sigma_val = float(sigma) if sigma else 3.0
-                    sigma_l, sigma_u = s0_stats['mean'] - sigma_val * s0_stats['stdev'], s0_stats['mean'] + sigma_val * s0_stats['stdev']
-                    if exceeds_limit:
-                        def find_bin(val):
-                            for b_i in range(len(edges)-1):
-                                if edges[b_i] <= val <= edges[b_i+1]: return b_i
-                            return 0 if val < edges[0] else len(edges)-2
-                        ax.axvline(find_bin(sigma_l), color='#00c853', linestyle='--', linewidth=1, zorder=4)
-                        ax.axvline(find_bin(sigma_u), color='#00c853', linestyle='--', linewidth=1, zorder=4)
-                    else:
-                        ax.axvline(sigma_l, color='#00c853', linestyle='--', linewidth=1, zorder=4)
-                        ax.axvline(sigma_u, color='#00c853', linestyle='--', linewidth=1, zorder=4)
-                
-                ax.set_title(f"{p_num}.{p_name}", fontsize=12, fontweight='bold', color='black', pad=32)
-                cpk_val = s0_stats['cpk'] if s0_stats['cpk'] is not None else 0
-                stats_info = [
-                    ("Min=", f"{s0_stats['min_val']:.4f}"), 
-                    ("Max=", f"{s0_stats['max_val']:.4f}"),
-                    ("Mean=", f"{s0_stats['mean']:.4f}"), 
-                    ("Stdev=", f"{s0_stats['stdev']:.4f}"), 
-                    ("CPK=", f"{cpk_val:.4f}")
-                ]
-                draw_stats_line(ax, 1.05, [stats_info])
-                ax.set_ylabel("Parts", fontsize=8)
-                ax.set_xlabel(unit, fontsize=12, fontweight='bold', color='black')
-                ax.tick_params(labelsize=7)
-                ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.22), ncol=4, fontsize=7, frameon=False)
-                fig.tight_layout()
-                img_data = io.BytesIO()
-                plt.savefig(img_data, format='png', dpi=100)
-                img_data.seek(0)
-                
-                group_idx = i // chars_row
-                within_group_idx = i % chars_row
-                r_idx = group_idx * 22 + 2
-                c_idx = within_group_idx * 7 + 2
-                info_r_idx = group_idx * 22 + 6 + within_group_idx
-                hist_sheet.write(info_r_idx, 0, p_num)
-                hist_sheet.write(info_r_idx, 1, p_name)
-                hist_sheet.insert_image(r_idx, c_idx, f'h_{i}.png', {'image_data': img_data, 'x_scale': 1.0, 'y_scale': 1.0})
+            _n_workers = min(4, _mp.cpu_count())
+            lot_label = f"{lot.lot_id}_{lot.wafer_id}" if lot.lot_id else (lot.wafer_id or "ALL")
 
-            plt.close(fig)
-            _plot_lock.release()
+            # Column-selective parquet read: only needed columns
+            import pyarrow.parquet as _pq
+            _pf = _pq.ParquetFile(lot.parquet_path)
+            _all_cols = [f.name for f in _pf.schema]
+            _param_cols = [it['item_name'] for it in items_summary if it['item_name'] in _all_cols]
+            _needed_cols = list(set([c for c in (['SITE_NUM', 'X_COORD', 'Y_COORD'] + _param_cols) if c in _all_cols]))
+
+            _items_data = [{'item_number': it['item_number'], 'item_name': it['item_name'],
+                            'lower_limit': it.get('lower_limit'), 'upper_limit': it.get('upper_limit'),
+                            'unit': it.get('unit')} for it in items_summary]
+            _total_render = len(_items_data)
+
+            # Setup phase: each worker reads parquet + creates reusable figure.
+            # Submit init to each of the N workers (idempotent; extra calls just re-init).
+            _init_futs = [_HIST_POOL.submit(_hist_worker_init, lot.parquet_path, _needed_cols,
+                                            _items_data, site_mode, lot_label, filter_type, sigma)
+                          for _ in range(_n_workers)]
+            for _f in _init_futs:
+                _f.result()
+
+            # Render phase: ex.map is the optimized batch pattern.
+            _t0 = __import__('time').time()
+            _raw_results = list(_HIST_POOL.map(_render_hist_png, range(_total_render)))
+            _t1 = __import__('time').time()
+            print(f"[export] render phase: {_total_render} items in {_t1-_t0:.1f}s ({(_t1-_t0)/max(_total_render,1)*1000:.0f}ms/项)", flush=True)
+            _render_results = [r[1] if r else None for r in _raw_results]
+            _done = sum(1 for _p in _render_results if _p is not None)
+            export_tasks[task_id]["progress"] = 15 + int((_done / max(_total_render, 1)) * 65)
+
+            # Insert phase: write images into Excel in main process (openpyxl/xlsxwriter).
+            for _i, _png in enumerate(_render_results):
+                if _png is None:
+                    continue
+                _it = _items_data[_i]
+                _group_idx = _i // chars_row
+                _within = _i % chars_row
+                _r_idx = _group_idx * 22 + 2
+                _c_idx = _within * 7 + 2
+                _info_r_idx = _group_idx * 22 + 6 + _within
+                hist_sheet.write(_info_r_idx, 0, _it['item_number'])
+                hist_sheet.write(_info_r_idx, 1, _it['item_name'])
+                hist_sheet.insert_image(_r_idx, _c_idx, f'h_{_i}.png',
+                                        {'image_data': io.BytesIO(_png), 'x_scale': 1.0, 'y_scale': 1.0})
+
             export_tasks[task_id]["progress"] = 80
 
             # ─── Sheet 3: Bin Info & Map ───
@@ -1553,7 +1442,7 @@ def export_test_items(
             
             fig.tight_layout()
             img_data = io.BytesIO()
-            plt.savefig(img_data, format='png', dpi=100)
+            plt.savefig(img_data, format='png', dpi=100, bbox_inches='tight')
             img_data.seek(0)
             
             # 计算位置
@@ -3068,7 +2957,7 @@ def run_multi_export_task(
                 
                 fig.tight_layout()
                 img_data = io.BytesIO()
-                plt.savefig(img_data, format='png', dpi=100)
+                plt.savefig(img_data, format='png', dpi=100, bbox_inches='tight')
                 img_data.seek(0)
                 
                 group_idx = i // chars_row

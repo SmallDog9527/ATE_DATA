@@ -164,6 +164,34 @@
 
           <!-- Scatter图 -->
           <div v-if="currentTab.options.show_scatter && currentTab.data" class="chart-container" style="flex-direction:column;align-items:center">
+            <div class="scatter-axis-mode-box">
+              <span class="label">Y轴:</span>
+              <button
+                :class="['axis-mode-btn', { active: currentTab?.options.scatter_y_mode === 'auto' }]"
+                @click="setScatterYMode('auto')"
+                title="按当前数据最大值/最小值自动缩放"
+              >Auto (Max/Min)</button>
+              <button
+                :class="['axis-mode-btn', { active: currentTab?.options.scatter_y_mode === 'limit' }]"
+                @click="setScatterYMode('limit')"
+                title="显示 Low/High Limit 并按 Limit 调整 Y 轴"
+              >Limit</button>
+              <button
+                :class="['axis-mode-btn', { active: currentTab?.options.scatter_y_mode === 'sigma' }]"
+                @click="setScatterYMode('sigma')"
+                title="按均值 ± N 倍标准差调整 Y 轴"
+              >N σ</button>
+              <input
+                v-model.number="scatterSigmaNInput"
+                type="number"
+                min="1"
+                max="20"
+                step="0.5"
+                class="sigma-input"
+                :disabled="currentTab?.options.scatter_y_mode !== 'sigma'"
+                @change="applyScatterSigmaN"
+              />
+            </div>
             <div :ref="el => setChartRef(currentTab?.id, 'scatter', el)" style="width:800px;height:260px"></div>
             <div class="chart-legend">
               <span
@@ -378,6 +406,8 @@ const draftOptions = ref({
   show_histogram: true,
   show_scatter: true,
   show_map: true,
+  scatter_y_mode: 'auto',   // scatter Y-axis range mode: 'auto' | 'limit' | 'sigma'
+  scatter_sigma_n: 6,        // N value for sigma mode (default 6, matches IdleCheck)
   site_display_mode: 'site',
   site_view: 'all',       // 'all'(默认全显) | 'all_only'(仅ALL聚合) | 'site'(仅单个Site)
   active_site: 0,          // site_view==='site' 时生效
@@ -389,6 +419,21 @@ const customMaxInput = ref<number | null>(null)
 const customLLInput = ref<number | null>(null)
 const customULInput = ref<number | null>(null)
 
+// Scatter Y-axis range mode controls (Auto / Limit / N sigma)
+const scatterSigmaNInput = ref<number>(6)
+
+function setScatterYMode(mode: 'auto' | 'limit' | 'sigma') {
+  if (!currentTab.value) return
+  currentTab.value.options.scatter_y_mode = mode
+  renderScatter(currentTab.value.id)
+}
+
+function applyScatterSigmaN() {
+  if (!currentTab.value) return
+  currentTab.value.options.scatter_sigma_n = scatterSigmaNInput.value
+  renderScatter(currentTab.value.id)
+}
+
 watch(currentTab, (newTab) => {
   if (newTab) {
     sigmaInputValue.value = newTab.options.sigma
@@ -396,6 +441,7 @@ watch(currentTab, (newTab) => {
     customMaxInput.value = newTab.options.custom_max
     customLLInput.value = newTab.options.custom_ll
     customULInput.value = newTab.options.custom_ul
+    scatterSigmaNInput.value = newTab.options.scatter_sigma_n ?? 6
     currentParamName.value = newTab.param_name
   }
 }, { immediate: true })
@@ -541,9 +587,9 @@ function siteLabel(site: number) {
   return site === 0 ? lotWaferLabel() : `Site${site}`
 }
 
-// 图例标签（与顶部 chip 风格一致）：site0 -> ALL，siteN -> S{N}
+// 图例标签（与顶部 chip 风格一致）：site0 -> lotid_waferid(如 DPK145_02)，siteN -> S{N}
 function legendLabel(site: number) {
-  return site === 0 ? 'ALL' : `S${site}`
+  return site === 0 ? lotWaferLabel() : `S${site}`
 }
 
 // 选中ALL聚合 chip：(site_view==='all_only') 或 (默认'all'全显时也高亮)
@@ -1020,7 +1066,7 @@ function nextParam() {
 // ── 常量 ──────────────────────────────────────────────
 const SITE_COLORS = ['#ff6b6b', '#4dabf7', '#69db7c', '#ffd43b', '#e599f7', '#74c0fc', '#a9e34b', '#ffa94d']
 // site 颜色：site0(ALL聚合)→深灰；Sn→SITE_COLORS[(n-1)%len]，与 chips 一致
-const ALL_SITE_COLOR = '#495057'
+const ALL_SITE_COLOR = '#2563eb'
 function siteColor(siteNum: number) {
   return siteNum === 0 ? ALL_SITE_COLOR : SITE_COLORS[(siteNum - 1) % SITE_COLORS.length]
 }
@@ -1550,14 +1596,45 @@ function renderScatter(tabId: string) {
             lineStyle: { color: '#00c853', type: 'dashed' },
           }
         ] : []),
+        ...(tab.options.scatter_y_mode === 'sigma' && allSiteStats?.mean != null && allSiteStats?.stdev != null ? [
+          {
+            yAxis: allSiteStats.mean - (tab.options.scatter_sigma_n ?? 6) * allSiteStats.stdev,
+            label: { formatter: `Mean-${tab.options.scatter_sigma_n ?? 6}σ`, position: 'insideEndTop', color: '#722ed1' },
+            lineStyle: { color: '#722ed1', type: 'dashed' },
+          },
+          {
+            yAxis: allSiteStats.mean + (tab.options.scatter_sigma_n ?? 6) * allSiteStats.stdev,
+            label: { formatter: `Mean+${tab.options.scatter_sigma_n ?? 6}σ`, position: 'insideEndTop', color: '#722ed1' },
+            lineStyle: { color: '#722ed1', type: 'dashed' },
+          }
+        ] : []),
       ],
     },
   })
 
   const { min: globalMin, max: globalMax } = getGlobalRange(tab)
-  const padding = (globalMax - globalMin) * 0.05 || 0.1
-  const yMin = Math.min(globalMin, ll ?? globalMin) - padding
-  const yMax = Math.max(globalMax, ul ?? globalMax) + padding
+  const mode = tab.options.scatter_y_mode ?? 'auto'
+
+  let yMin: number
+  let yMax: number
+
+  if (mode === 'limit' && ll != null && ul != null) {
+    // Limit mode: Y axis spans Low/High Limit with 2% padding
+    const pad = (ul - ll) * 0.02 || Math.abs(ul) * 0.01 || 0.1
+    yMin = ll - pad
+    yMax = ul + pad
+  } else if (mode === 'sigma' && allSiteStats?.mean != null && allSiteStats?.stdev != null) {
+    // N sigma mode: Y axis spans mean ± N*stdev
+    const n = Math.max(1, Number(tab.options.scatter_sigma_n) || 6)
+    yMin = allSiteStats.mean - n * allSiteStats.stdev
+    yMax = allSiteStats.mean + n * allSiteStats.stdev
+    if (yMin === yMax) { yMin -= 1; yMax += 1 }
+  } else {
+    // Auto mode (default): data min/max + 5% padding, ensure LL/UL visible
+    const padding = (globalMax - globalMin) * 0.05 || 0.1
+    yMin = Math.min(globalMin, ll ?? globalMin) - padding
+    yMax = Math.max(globalMax, ul ?? globalMax) + padding
+  }
 
   chart.setOption({
     tooltip: { trigger: 'item' },
@@ -1988,11 +2065,11 @@ onMounted(async () => {
 
 /* Chart legend (chip style, matching top site chips) */
 .chart-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(16, auto);
   justify-content: center;
   align-items: center;
+  gap: 6px;
   padding: 6px 4px 2px;
 }
 .chart-legend-item {
@@ -2021,6 +2098,15 @@ onMounted(async () => {
   background: white;
   z-index: 100;
 }
+
+/* Scatter Y-axis range mode controls (Auto / Limit / N sigma) */
+.scatter-axis-mode-box { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.scatter-axis-mode-box .label { font-size: 12px; font-weight: 500; color: #4b5563; }
+.axis-mode-btn { border: 1px solid #d9d9d9; background: #fff; padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; color: #374151; }
+.axis-mode-btn:hover { border-color: #1890ff; color: #1890ff; }
+.axis-mode-btn.active { background: #1890ff; color: #fff; border-color: #1890ff; font-weight: 600; }
+.sigma-input { width: 58px; padding: 4px 6px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 12px; }
+.sigma-input:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .mode-toggle-btn {
   min-width: 54px;
