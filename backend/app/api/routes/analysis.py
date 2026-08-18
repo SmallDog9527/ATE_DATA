@@ -1006,10 +1006,11 @@ def run_export_task(
                             fail_count = sum(1 for v in BIN_COLORS.values() if v != '#69db7c')
                             BIN_COLORS[b_num] = FAIL_COLORS[fail_count % len(FAIL_COLORS)]
                 n_bins = len(BIN_COLORS)
-                # 放大 Map 图表尺寸
+                # 方形 Map 画布：1000x1000，die 保持正方（不拉伸），地图居中，右侧留白放图例
                 _plot_lock.acquire()
                 try:
-                    fig, ax = plt.subplots(figsize=(10 + max(0, n_bins*0.05), 8 + max(0, n_bins*0.1)))
+                    fig, ax = plt.subplots(figsize=(10, 10))
+                    fig.subplots_adjust(left=0.06, right=0.72, top=0.93, bottom=0.10)
                 except Exception:
                     _plot_lock.release()
                     raise
@@ -1044,11 +1045,11 @@ def run_export_task(
                 ax.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1.02, 0.5), frameon=False, labelcolor='#333333')
                 
                 img_data = io.BytesIO()
-                plt.savefig(img_data, format='png', dpi=100, bbox_inches='tight')
+                plt.savefig(img_data, format='png', dpi=100)
                 plt.close(fig)
                 _plot_lock.release()
                 img_data.seek(0)
-                bin_sheet.insert_image(row, 0, 'wafer_map.png', {'image_data': img_data, 'x_scale': 1.1, 'y_scale': 1.1})
+                bin_sheet.insert_image(row, 0, 'wafer_map.png', {'image_data': img_data, 'x_scale': 1.0, 'y_scale': 1.0})
 
             export_tasks[task_id]["progress"] = 95
 
@@ -1586,8 +1587,9 @@ def export_test_items(
                         BIN_COLORS[b_num] = FAIL_COLORS[fail_count % len(FAIL_COLORS)]
             
             n_bins = len(BIN_COLORS)
-            # 放大 Map 图表尺寸
-            fig, ax = plt.subplots(figsize=(10 + max(0, n_bins*0.05), 8 + max(0, n_bins*0.1)))
+            # 方形 Map 画布：1000x1000，die 保持正方（不拉伸），地图居中，右侧留白放图例
+            fig, ax = plt.subplots(figsize=(10, 10))
+            fig.subplots_adjust(left=0.06, right=0.72, top=0.93, bottom=0.10)
             
             xs = df_map['x'].values
             ys = df_map['y'].values
@@ -1651,10 +1653,10 @@ def export_test_items(
             ax.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1.02, 0.5), frameon=False, labelcolor='#333333')
             
             img_data = io.BytesIO()
-            plt.savefig(img_data, format='png', dpi=100, bbox_inches='tight')
+            plt.savefig(img_data, format='png', dpi=100)
             plt.close(fig)
             img_data.seek(0)
-            bin_sheet.insert_image(row, 0, 'wafer_map.png', {'image_data': img_data, 'x_scale': 1.1, 'y_scale': 1.1})
+            bin_sheet.insert_image(row, 0, 'wafer_map.png', {'image_data': img_data, 'x_scale': 1.0, 'y_scale': 1.0})
 
     output.seek(0)
     filename = f"LOT_{lot_id}_FullReport_{filter_type}.xlsx"

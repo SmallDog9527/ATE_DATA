@@ -12,67 +12,11 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 
 # module-global state, set once per export by setup
 _G = {}
 
 SITE_COLORS = ['#ff6b6b', '#4dabf7', '#69db7c', '#ffd43b', '#e599f7', '#74c0fc', '#a9e34b', '#ffa94d']
-
-
-def _draw_site_legend(ax, sites_data, colors):
-    """Draw chip-style site legend: colored capsule badges, white text, max 16/row, centered."""
-    if not sites_data:
-        return
-    n = len(sites_data)
-    max_per_row = 16
-    # Build (label, color) pairs
-    entries = []
-    for sidx, s in enumerate(sites_data):
-        label = s.get('label', f"S{s['site']}")
-        if s['site'] == 0:
-            # LOT mode: use a neutral dark color for the single badge
-            color = '#555555'
-        else:
-            color = colors[(sidx) % len(colors)]
-        entries.append((label, color))
-    # Calculate rows and reserve space
-    # Badge layout params
-    xlim = ax.get_xlim()
-    ylim = ax.get_ylim()
-    x_range = xlim[1] - xlim[0]
-    # Expand y-axis to fit legend inside axes bounds
-    row_height = (ylim[1] - ylim[0]) * 0.04
-    rows = (n + max_per_row - 1) // max_per_row
-    total_legend_h = rows * row_height
-    new_ylim_min = ylim[0] - total_legend_h * 1.3
-    ax.set_ylim(new_ylim_min, ylim[1])
-    y_top = new_ylim_min
-
-    badge_w = x_range * 0.06
-    badge_h = row_height * 0.7
-    gap_x = x_range * 0.015
-    for row_i in range(rows):
-        row_entries = entries[row_i * max_per_row: (row_i + 1) * max_per_row]
-        row_n = len(row_entries)
-        total_w = row_n * badge_w + (row_n - 1) * gap_x
-        start_x = xlim[0] + (x_range - total_w) / 2
-        y_center = y_top - row_i * row_height
-        rs = badge_h / 2
-        for j, (label, color) in enumerate(row_entries):
-            x_left = start_x + j * (badge_w + gap_x)
-            # Draw rounded rectangle (capsule) with numeric rounding_size
-            boxstyle = f"round,pad=0,rounding_size={rs:.4f}"
-            rect = mpatches.FancyBboxPatch(
-                (x_left, y_center - badge_h / 2), badge_w, badge_h,
-                boxstyle=boxstyle,
-                facecolor=color, edgecolor='none', zorder=10,
-                transform=ax.transData, clip_on=False,
-            )
-            ax.add_patch(rect)
-            ax.text(x_left + badge_w / 2, y_center, label,
-                    ha='center', va='center', fontsize=6.5, fontweight='bold',
-                    color='white', zorder=11, clip_on=False)
 
 
 def _calc_cpk(data, ll, ul):
@@ -216,6 +160,15 @@ def _calc_hist_x_range(data_min, data_max, ll, ul, edges_min=None, edges_max=Non
             if eff_max > x_max:
                 x_max = eff_max + (limit_range * 0.05 if eff_max == ul else (eff_max - ul) * 0.1)
             return {'x_min': x_min, 'x_max': x_max, 'ticks': np.linspace(x_min, x_max, 11)}
+    if has_ll or has_ul:
+        # 单边限值: 限值纳入范围并扩展, 与 app.services.stats.calc_hist_x_range 保持一致
+        eff_min = edges_min if edges_min is not None else data_min
+        eff_max = edges_max if edges_max is not None else data_max
+        range_min = min(eff_min, ll) if has_ll else eff_min
+        range_max = max(eff_max, ul) if has_ul else eff_max
+        padding = (range_max - range_min) * 0.05 or abs(range_max) * 0.01 or 0.1
+        x_min, x_max = range_min - padding, range_max + padding
+        return {'x_min': x_min, 'x_max': x_max, 'ticks': np.linspace(x_min, x_max, 11)}
     # no limits
     pad = (data_max - data_min) * 0.05 or 0.1
     x_min, x_max = data_min - pad, data_max + pad
@@ -239,7 +192,7 @@ def _hist_worker_init(parquet_path, needed_cols, items_data, site_mode, lot_labe
     g['lot_label'] = lot_label
     g['filter_type'] = filter_type
     g['sigma'] = sigma
-    g['fig'], g['ax'] = plt.subplots(figsize=(5.47, 4.5))
+    g['fig'], g['ax'] = plt.subplots(figsize=(5.37, 4.21))
     _G.clear()
     _G.update(g)
 
@@ -301,7 +254,7 @@ def _render_hist_png(idx):
         min_h = max_count * 0.02
         outlier_h = max_count * 0.05
         for sidx, s in enumerate(sites_data):
-            color = SITE_COLORS[sidx % len(SITE_COLORS)]
+            color = '#4dabf7' if s['site'] == 0 else SITE_COLORS[sidx % len(SITE_COLORS)]
             sigma_l = s0_stats['mean'] - 6 * s0_stats['stdev'] if s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None else None
             sigma_u = s0_stats['mean'] + 6 * s0_stats['stdev'] if s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None else None
             final_normal, final_outlier = [], []
@@ -335,7 +288,7 @@ def _render_hist_png(idx):
         min_h = max_count * 0.02
         outlier_h = max_count * 0.05
         for sidx, s in enumerate(sites_data):
-            color = SITE_COLORS[sidx % len(SITE_COLORS)]
+            color = '#4dabf7' if s['site'] == 0 else SITE_COLORS[sidx % len(SITE_COLORS)]
             sigma_l = s0_stats['mean'] - 6 * s0_stats['stdev'] if s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None else None
             sigma_u = s0_stats['mean'] + 6 * s0_stats['stdev'] if s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None else None
             final_normal, final_outlier = [], []
@@ -390,9 +343,9 @@ def _render_hist_png(idx):
     ax.set_ylabel("Parts", fontsize=8)
     ax.set_xlabel(unit, fontsize=12, fontweight='bold', color='black')
     ax.tick_params(labelsize=7)
-    _draw_site_legend(ax, sites_data, SITE_COLORS)
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.22), ncol=4, fontsize=7, frameon=False)
     fig.tight_layout()
     img_data = io.BytesIO()
-    fig.savefig(img_data, format='png', dpi=100, bbox_inches='tight')
+    fig.savefig(img_data, format='png', dpi=100)
     img_data.seek(0)
     return (idx, img_data.getvalue())
