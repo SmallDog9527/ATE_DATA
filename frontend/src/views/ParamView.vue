@@ -43,7 +43,7 @@
           <label v-if="lotInfo?.data_type === 'CP'"><input type="checkbox" :checked="currentTab?.options.show_map" @change="updateOption('show_map', ($event.target as HTMLInputElement).checked)" /> Map Chart</label>
           <button v-if="lotInfo?.data_type === 'CP'" class="btn-vs" :class="{ active: vsMode }" @click="toggleVsMode">VS</button>
         </div>
-        <!-- Site 选择 chips：ALL 不可取消；默认 ALL+全S 高亮(=全显示)；点ALL→仅ALL聚合；点Sn→仅该Site -->
+        <!-- Site 选择 chips：默认仅全S高亮(不含ALL)；点ALL⇄仅ALL聚合；点Sn→多选累加，隐藏ALL聚合 -->
         <div class="site-chips" v-if="currentTab.data">
           <span class="chip chip-all" :class="{ active: isAllChipActive(currentTab) }" @click="onChipClick(currentTab, 0)">ALL</span>
           <span
@@ -409,8 +409,8 @@ const draftOptions = ref({
   scatter_y_mode: 'auto',   // scatter Y-axis range mode: 'auto' | 'limit' | 'sigma'
   scatter_sigma_n: 6,        // N value for sigma mode (default 6, matches IdleCheck)
   site_display_mode: 'site',
-  site_view: 'all',       // 'all'(默认全显) | 'all_only'(仅ALL聚合) | 'site'(仅单个Site)
-  active_site: 0,          // site_view==='site' 时生效
+  site_view: 'all',       // 'all'(默认: 所有Site，不含ALL聚合) | 'all_only'(仅ALL聚合) | 'site'(多选Site)
+  active_sites: [] as number[],  // site_view==='site' 时生效（可多选）
 })
 
 const sigmaInputValue = ref(draftOptions.value.sigma)
@@ -572,9 +572,9 @@ function toggleSiteSelection(tabId: string, siteNum: number) {
   })
 }
 
+// 统计表格展示的Site：与图表显示一致（默认仅所有Site；all_only 仅ALL；site 模式仅选中的Site）
 function displayedSites(tab: Tab | null | undefined) {
-  if (!tab?.data?.sites) return []
-  return tab.data.sites
+  return chartSites(tab)
 }
 
 // 图例标签：site0(ALL聚合) → 用 lotid_waferid；其它 → SiteN
@@ -592,18 +592,17 @@ function legendLabel(site: number) {
   return site === 0 ? lotWaferLabel() : `S${site}`
 }
 
-// 选中ALL聚合 chip：(site_view==='all_only') 或 (默认'all'全显时也高亮)
+// 选中ALL聚合 chip：仅 all_only(仅ALL聚合) 时高亮；默认/all 状态不显示ALL故不高亮
 function isAllChipActive(tab: Tab | null | undefined) {
   if (!tab) return false
-  const v = tab.options?.site_view ?? 'all'
-  return v === 'all' || v === 'all_only'
+  return (tab.options?.site_view ?? 'all') === 'all_only'
 }
-// 选中单个 Site chip：默认'all'全显时全部高亮；site_view==='site' 且 active_site===n 时仅它高亮
+// 选中单个 Site chip：默认'all'全显时全部高亮；site_view==='site' 时仅选中的高亮
 function isSiteChipActive(tab: Tab | null | undefined, siteNum: number) {
   if (!tab) return false
   const v = tab.options?.site_view ?? 'all'
   if (v === 'all') return true
-  if (v === 'site') return tab.options?.active_site === siteNum
+  if (v === 'site') return (tab.options?.active_sites ?? []).includes(siteNum)
   return false // all_only
 }
 function chipStyle(siteNum: number) {
@@ -612,22 +611,41 @@ function chipStyle(siteNum: number) {
   return { '--chip-bg': c } as any
 }
 
-// chip 点击逻辑：
-//  默认(all,全部高亮) → 点ALL → all_only(仅ALL)；点Sn → site(仅Sn)
-//  all_only 状态 → 点ALL → 回到 all(全显)；点Sn → site(仅Sn)
-//  site(单选) 状态 → 点当前选中Sn → 回到 all；点别的Sn → 切到那个；点ALL → all_only
+// chip 点击逻辑（多选累加 + ALL两态切换）：
+//  默认(all, 仅所有Site高亮，不含ALL聚合) → 点ALL → all_only(仅ALL聚合)；点Sn → site(仅选Sn，隐藏ALL聚合)
+//  all_only 状态 → 点ALL → 回到 all(所有Site)；点Sn → site(仅选Sn)
+//  site(多选) 状态 → 点Sn → 切换该Site选中/取消；点别的Sn → 累加进选中集合
+//                   全部取消 → 回到 all；点ALL → 显示所有Site
 function onChipClick(tab: Tab | null | undefined, siteNum: number) {
   if (!tab?.options) return
   const v = tab.options.site_view ?? 'all'
   if (siteNum === 0) {
-    // ALL chip：在 all 与 all_only 之间切换
-    tab.options.site_view = (v === 'all_only') ? 'all' : 'all_only'
-  } else {
-    if (v === 'site' && tab.options.active_site === siteNum) {
-      tab.options.site_view = 'all' // 再次点同一Sn → 全显
+    // ALL chip 两态切换：默认/子集点ALL→仅ALL聚合；all_only 再点→回到所有Site
+    if (v === 'all_only') {
+      tab.options.site_view = 'all'
+    } else if (v === 'site') {
+      tab.options.site_view = 'all' // 子集状态点ALL → 显示所有Site
     } else {
-      tab.options.site_view = 'site'
-      tab.options.active_site = siteNum
+      tab.options.site_view = 'all_only' // 默认状态点ALL → 仅ALL聚合
+    }
+  } else if (v !== 'site') {
+    // 从 all / all_only 进入选择模式：只选当前 Site，隐藏ALL聚合
+    tab.options.site_view = 'site'
+    tab.options.active_sites = [siteNum]
+  } else {
+    // 多选：切换该 Site 的选中状态
+    const set = new Set<number>(tab.options.active_sites ?? [])
+    if (set.has(siteNum)) {
+      set.delete(siteNum)
+    } else {
+      set.add(siteNum)
+    }
+    if (set.size === 0) {
+      // 全部取消 → 回到 all（所有Site，不含ALL聚合）
+      tab.options.site_view = 'all'
+      tab.options.active_sites = []
+    } else {
+      tab.options.active_sites = [...set].sort((a, b) => a - b)
     }
   }
   const tid = tab.id
@@ -636,7 +654,7 @@ function onChipClick(tab: Tab | null | undefined, siteNum: number) {
   const isLeftTab = tab.id !== VS_TAB_ID
   if (isLeftTab && vsMode.value && vsTab.value) {
     vsTab.value.options.site_view = tab.options.site_view
-    vsTab.value.options.active_site = tab.options.active_site
+    vsTab.value.options.active_sites = tab.options.active_sites ? [...tab.options.active_sites] : []
   }
   nextTick(() => {
     renderHistogram(tid); renderScatter(tid)
@@ -658,12 +676,11 @@ function chartSites(tab: Tab | null | undefined) {
     return tab.data.sites.filter((s: any) => s.site === 0)
   }
   if (v === 'site') {
-    const a = tab.options?.active_site ?? 0
-    return tab.data.sites.filter((s: any) => s.site > 0 && s.site === a)
+    const active = tab.options?.active_sites ?? []
+    return tab.data.sites.filter((s: any) => s.site > 0 && active.includes(s.site))
   }
-  // 默认 all：显示所有单个 site(>0)
-  const selected = tab.options?.selected_sites ?? tab.data.sites.map((s: any) => s.site)
-  return tab.data.sites.filter((s: any) => s.site > 0 && selected.includes(s.site))
+  // 默认 all：仅显示所有单个 site(>0)，不显示ALL聚合
+  return tab.data.sites.filter((s: any) => s.site > 0)
 }
 
 function toggleSiteDisplay(tabId: string) {
@@ -1630,10 +1647,11 @@ function renderScatter(tabId: string) {
     yMax = allSiteStats.mean + n * allSiteStats.stdev
     if (yMin === yMax) { yMin -= 1; yMax += 1 }
   } else {
-    // Auto mode (default): data min/max + 5% padding, ensure LL/UL visible
+    // Auto mode：按当前数据范围（global min/max）±5% padding，不强制包含LL/UL
     const padding = (globalMax - globalMin) * 0.05 || 0.1
-    yMin = Math.min(globalMin, ll ?? globalMin) - padding
-    yMax = Math.max(globalMax, ul ?? globalMax) + padding
+    yMin = globalMin - padding
+    yMax = globalMax + padding
+    if (yMin === yMax) { yMin -= 1; yMax += 1 }
   }
 
   chart.setOption({
@@ -1672,7 +1690,7 @@ function renderWaferMap(tabId: string, canvas: HTMLCanvasElement) {
   const tab = getTabById(tabId)
   if (!tab?.data) return
 
-  // 与 histogram/scatter 一致：按 site_view/active_site 过滤(由顶部 Site chip 控制)
+  // 与 histogram/scatter 一致：按 site_view/active_sites 过滤(由顶部 Site chip 控制)
   // all_only(ALL聚合)时，wafer map 仍展示全部 site dies（site0 无独立 wafer_map）
   const v = tab.options?.site_view ?? 'all'
   const visibleSites = v === 'all_only'
