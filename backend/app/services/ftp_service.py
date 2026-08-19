@@ -2403,12 +2403,30 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
     4. Fetch the next batch of pending and retryable failed files from DB.
     5. Download up to max_batch_size files concurrently using _DOWNLOAD_WORKERS and parse them.
     """
-    # Prevent concurrent runs of the same OSAT
-    with _osat_in_progress_lock:
-        if osat_id in _osat_in_progress:
-            print(f"[ftp_fetch] OSAT id={osat_id} is already running, skipping concurrent run")
-            return
-        _osat_in_progress.add(osat_id)
+    # Prevent concurrent runs of the same OSAT, with Force Priority for manual save_snapshot
+    import time
+    acquired_lock = False
+    if save_snapshot:
+        start_wait = time.time()
+        while time.time() - start_wait < 5.0:
+            with _osat_in_progress_lock:
+                if osat_id not in _osat_in_progress:
+                    _osat_in_progress.add(osat_id)
+                    acquired_lock = True
+                    break
+            time.sleep(0.3)
+        if not acquired_lock:
+            print(f"[ftp_fetch] OSAT id={osat_id} lock busy during manual snapshot request, forcing execution priority...")
+            with _osat_in_progress_lock:
+                _osat_in_progress.add(osat_id)
+            acquired_lock = True
+    else:
+        with _osat_in_progress_lock:
+            if osat_id in _osat_in_progress:
+                print(f"[ftp_fetch] OSAT id={osat_id} is already running, skipping concurrent run")
+                return
+            _osat_in_progress.add(osat_id)
+            acquired_lock = True
 
     db = SessionLocal()
     # Check disk safety (Giant file check under /tmp)
@@ -2791,6 +2809,17 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
         else:
             print(f"[ftp_fetch] Data FTP directory scan skipped (already scanned today)")
 
+        # Save scan snapshot immediately after FTP directory probe completes
+        if need_scan:
+            combined_paths = all_summary_paths + all_data_paths
+            _save_scan_snapshot(db, osat_id, combined_paths)
+            print(f"[ftp_fetch] Fast snapshot probe completed for OSAT id={osat_id}, saved snapshot immediately!")
+
+        # If save_snapshot was explicitly requested (manual fast snapshot scan), return immediately after directory probe!
+        if save_snapshot:
+            print(f"[ftp_fetch] Fast snapshot probe finished for OSAT id={osat_id}, returning immediately without waiting for download/parse loop!")
+            return
+
         # Data loop: process until there are no scanned/pending/processing Data files left
         max_data_iters = 50
         data_iter = 0
@@ -2828,10 +2857,7 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
         except Exception:
             pass
 
-        # Save/update daily scan snapshot at the very end of a full scan
-        if need_scan:
-            combined_paths = all_summary_paths + all_data_paths
-            _save_scan_snapshot(db, osat_id, combined_paths)
+        # Fast snapshot probe already saved earlier
 
         processed_count = len(summary_to_process) + len(data_to_process)
         print(f"[ftp_fetch] OSAT={osat.name} run completed, processed {processed_count} files (Summary={len(summary_to_process)}, Data={len(data_to_process)})")

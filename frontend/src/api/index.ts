@@ -25,7 +25,9 @@ api.interceptors.response.use(
   },
   async (error) => {
     const originalRequest = error.config
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    const isLoginReq = originalRequest?.url?.includes('/auth/login')
+
+    if (!isLoginReq && error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true
       const refreshToken = localStorage.getItem('refresh_token')
       if (!refreshToken) {

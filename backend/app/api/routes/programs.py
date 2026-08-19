@@ -2209,3 +2209,98 @@ def update_all_program_changes_snapshot(db: Session, force_product_name: Optiona
             print(f"[scheduler] Refreshed program changes snapshot for product {pname}: {len(new_rows)} rows")
         except Exception as e:
             print(f"[scheduler] Exception updating snapshot for product {pname}: {e}")
+
+
+# Helper to get/set program update progress in Redis (English comments)
+def _get_program_update_progress():
+    try:
+        from app.core.redis_client import get_redis
+        import json
+        r = get_redis()
+        data = r.get("program_changes:update_progress")
+        if data:
+            return json.loads(data)
+    except Exception:
+        pass
+    return {"status": "completed", "progress_pct": 100}
+
+def _set_program_update_progress(prog_dict):
+    try:
+        from app.core.redis_client import get_redis
+        import json
+        r = get_redis()
+        r.set("program_changes:update_progress", json.dumps(prog_dict), ex=3600*6)
+    except Exception:
+        pass
+
+
+@router.post("/snapshot/refresh")
+def refresh_program_snapshots_endpoint(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Manually trigger full program snapshot update for all products with progress tracking in Redis."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    from app.models.lot import Lot
+    from sqlalchemy import func
+    import threading
+
+    curr = _get_program_update_progress()
+    if curr.get("status") == "running":
+        return {"message": "Program snapshot update is already running", "status": "running", "progress_pct": curr.get("progress_pct", 5)}
+
+    product_names = [
+        r[0] for r in db.query(func.distinct(Lot.product_name))
+        .filter(Lot.status != "deleted")
+        .all() if r[0]
+    ]
+
+    _set_program_update_progress({"status": "running", "progress_pct": 5, "total_products": len(product_names)})
+
+    def run_async_program_update():
+        from app.core.database import SessionLocal
+        bg_db = SessionLocal()
+        try:
+            invalidate_program_list_cache()
+            refresh_program_list_snapshot(bg_db)
+            
+            tot = len(product_names)
+            for idx, pname in enumerate(product_names):
+                pct = 5 + int(((idx + 1) / max(1, tot)) * 90)
+                _set_program_update_progress({
+                    "status": "running",
+                    "progress_pct": min(95, pct),
+                    "total_products": tot,
+                    "current_product": pname,
+                })
+                try:
+                    update_all_program_changes_snapshot(bg_db, force_product_name=pname)
+                except Exception as ex:
+                    print(f"[program_changes] Error updating snapshot for {pname}: {ex}")
+
+            refresh_program_list_snapshot(bg_db)
+            _set_program_update_progress({"status": "completed", "progress_pct": 100, "total_products": tot})
+        except Exception as e:
+            print(f"[program_changes] Async update error: {e}")
+            _set_program_update_progress({"status": "error", "progress_pct": 100})
+        finally:
+            bg_db.close()
+
+    t = threading.Thread(target=run_async_program_update)
+    t.daemon = True
+    t.start()
+
+    return {"message": "Program snapshot update triggered successfully", "status": "running", "progress_pct": 5}
+
+
+@router.get("/snapshot/refresh-status")
+def get_program_snapshot_refresh_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get the current progress status of program snapshot update."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Permission denied")
+    return _get_program_update_progress()

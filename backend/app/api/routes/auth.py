@@ -74,23 +74,16 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
 # ──────────────────────────────────────────
 @router.post("/login", response_model=Token)
 def login(user_in: UserLogin, request: Request, db: Session = Depends(get_db)):
-    if is_login_locked(user_in.username):
-        raise HTTPException(
-            status_code=429,
-            detail="登录失败次数过多，请15分钟后再试"
-        )
-
+    # Authenticate user credentials without attempt locking (allow unlimited retries on failure)
     user = db.query(User).filter(User.username == user_in.username).first()
     if not user or not verify_password(user_in.password, user.hashed_password):
-        count = record_login_fail(user_in.username)
-        remaining = max(0, 5 - count)
-        detail = f"用户名或密码错误" + (f"，还可尝试 {remaining} 次" if remaining > 0 else "，账号已被临时锁定")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户名或密码错误，请重试"
+        )
 
     if not user.is_active:
         raise HTTPException(status_code=400, detail="账号已被禁用，请联系管理员")
-
-    clear_login_fail(user_in.username)
 
     # Extract client IP address
     client_ip = request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP") or (request.client.host if request.client else None)
@@ -161,16 +154,28 @@ def logout(body: RefreshRequest):
 # ──────────────────────────────────────────
 @router.post("/forgot-password")
 def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    # 无论邮箱是否存在，均返回相同提示（防枚举攻击）
     user = db.query(User).filter(User.email == body.email).first()
-    if user and user.is_active:
-        token = generate_reset_token()
-        store_reset_token(token, user.id)
-        try:
-            send_reset_link(body.email, token)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"邮件发送失败: {e}")
-    return {"message": "如果该邮箱已注册，重置链接将发送至您的邮箱"}
+    if not user:
+        raise HTTPException(status_code=400, detail="无此邮箱，请注册")
+
+    if not user.is_active:
+        raise HTTPException(status_code=400, detail="账号已被禁用，请联系管理员")
+
+    import random, string
+    chars = string.ascii_letters + string.digits
+    new_password = "".join(random.choices(chars, k=12))
+
+    user.hashed_password = get_password_hash(new_password)
+    db.commit()
+
+    try:
+        from app.services.email import send_username_and_password_email
+        send_username_and_password_email(body.email, user.username, new_password)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"邮件发送失败: {e}")
+
+    return {"message": "账号与新随机密码已发送至您的邮箱，请查收"}
 
 
 # ──────────────────────────────────────────

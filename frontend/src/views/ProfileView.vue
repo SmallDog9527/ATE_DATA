@@ -384,7 +384,7 @@
             <button :class="['preset-btn', activeLogSubTab === 'summary' ? 'active' : '']" @click="activeLogSubTab = 'summary'">
               📊 FTP 日志汇总
             </button>
-            <button :class="['preset-btn', activeLogSubTab === 'search' ? 'active' : '']" @click="activeLogSubTab = 'search'">
+            <button :class="['preset-btn', activeLogSubTab === 'search' ? 'active' : '']" @click="activeLogSubTab = 'search'; loadSnapshot48hSummary()">
               🔍 FTP 全量快照检索
             </button>
           </div>
@@ -675,14 +675,64 @@
                 style="width:350px;padding:5px 10px;border-radius:6px;border:1px solid #cbd5e1;outline:none;font-size:13px;" 
               />
               <button class="btn-sm" @click="resetSnapshotSearch">🔄 重置</button>
+              <button 
+                type="button" 
+                class="btn-sm" 
+                :style="{
+                  marginTop: '0 !important',
+                  marginLeft: '5em',
+                  background: snapshotScanning ? '#dc2626' : '#3b82f6',
+                  color: 'white',
+                  border: '1px solid ' + (snapshotScanning ? '#dc2626' : '#3b82f6'),
+                  fontSize: '13px',
+                  padding: '5px 12px',
+                  height: '31px',
+                  lineHeight: '1',
+                  boxSizing: 'border-box',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  borderRadius: '6px',
+                  cursor: snapshotScanning ? 'not-allowed' : 'pointer',
+                  fontWeight: '600'
+                }" 
+                @click="triggerSnapshotScan" 
+                :disabled="snapshotScanning"
+              >
+                {{ snapshotScanning ? `⏳ 扫描中 (${currentScanProgress}%)...` : '📡 快照扫描' }}
+              </button>
             </div>
 
             <div class="log-table-wrapper" style="margin-top: 12px;">
+              <!-- 1. 加载中状态 -->
               <div v-if="snapshotLoading" class="loading-state" style="padding:24px;text-align:center;color:#64748b;">⏳ 正在检索全量 FTP 扫描快照...</div>
+
+              <!-- 2. 默认视图（无搜索/筛选条件）：显示近48小时快照扫描记录摘要 -->
+              <div v-else-if="!snapshotSearchQuery.trim() && !snapshotFilterOsat && !snapshotFilterStatus" class="snapshot-summary-box" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:18px 22px; margin-top:12px;">
+                <div v-if="snapshot48hLoading" class="loading-state" style="padding:12px 0;text-align:center;color:#64748b;">⏳ 正在加载近48小时快照记录...</div>
+                <div v-else-if="snapshot48hSummary" style="display:flex; flex-direction:column; gap:10px;">
+                  <div v-for="(sess, idx) in (snapshot48hSummary.sessions || [snapshot48hSummary])" :key="idx" style="font-size:14px; line-height:1.8; color:#1e293b; font-family:sans-serif; word-break:break-all; padding:4px 0;">
+                    <span :class="['badge', sess.status === 'running' ? 'red' : (sess.mode === '手动' ? 'gold' : 'purple')]" style="margin-right:8px; font-size:12px; font-weight:600; padding:3px 10px;">
+                      [{{ sess.mode || '自动' }}]
+                    </span>
+                    <span style="font-weight:500;">{{ sess.start_time || '-' }}</span>
+                    <span style="color:#94a3b8; margin:0 6px;">----</span>
+                    <template v-if="sess.status === 'running'">
+                      <span style="font-weight:600; color:#dc2626;">进行中 (进度: {{ sess.progress_pct || 10 }}%)</span>
+                    </template>
+                    <template v-else>
+                      <span style="font-weight:500;">{{ sess.end_time || '-' }}</span>
+                      <span style="margin-left:10px; color:#2563eb; font-weight:600;">历时{{ sess.duration_minutes || 0 }}分钟</span>，
+                      <span style="font-weight:600;">一共新增{{ sess.total_new_files || 0 }}个文件。</span>
+                      <span style="color:#475569;">{{ sess.osat_text }}</span>
+                    </template>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 3. 无匹配搜索结果 -->
               <div v-else-if="!snapshotItems.length" class="empty-tip" style="padding:40px 24px;text-align:center;color:#64748b;background:#fff;border-radius:8px;margin-top:12px;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
                 <div style="font-size:32px;margin-bottom:8px;">🔍</div>
-                <div style="font-size:14px;font-weight:500;color:#334155;">请输入 LOT 号 (例: A0E0365)、文件名或选择筛选条件进行检索</div>
-                <div style="font-size:12px;color:#94a3b8;margin-top:4px;">系统将全量检索数据库中已扫描保存的全部 FTP 快照与历史记录 (包括已移入 Del 或跳过的数据)</div>
+                <div style="font-size:14px;font-weight:500;color:#334155;">未找到匹配的 FTP 搜索记录</div>
               </div>
               <table v-else class="log-table" style="width:100%;table-layout:fixed;">
                 <colgroup>
@@ -757,6 +807,12 @@
             <span class="settings-icon">👥</span>
             <span>用户管理</span>
           </div>
+          <div class="header-actions" @click.stop v-if="userMgmtExpanded">
+            <button type="button" class="mgmt-btn mgmt-btn-primary" @click="openCreateUserModal">➕ 新增用户</button>
+            <button type="button" class="mgmt-btn mgmt-btn-import" @click="triggerImportFile">📥 导入用户</button>
+            <button type="button" class="mgmt-btn mgmt-btn-export" @click="exportUsers">📤 导出用户</button>
+            <input type="file" ref="importFileInput" accept=".json" @change="handleImportFile" style="display:none" />
+          </div>
           <span class="collapse-arrow">{{ userMgmtExpanded ? '▲' : '▼' }}</span>
         </div>
         <div v-if="userMgmtExpanded" class="settings-card-body">
@@ -764,6 +820,7 @@
           <table v-else class="user-table">
             <thead>
               <tr>
+                <th>ID</th>
                 <th>用户名</th>
                 <th>邮箱</th>
                 <th>接收告警</th>
@@ -777,6 +834,7 @@
             </thead>
             <tbody>
               <tr v-for="u in userList" :key="u.id">
+                <td><span class="badge blue" style="font-family:monospace;">ID: {{ u.id }}</span></td>
                 <td>{{ u.username }}</td>
                 <td class="email-cell">{{ u.email }}</td>
                 <td>
@@ -815,7 +873,7 @@
                     <option value="eng">ENG</option>
                     <option value="admin">Admin</option>
                   </select>
-                  <button class="btn-sm btn-warn" @click="openResetPw(u)">重置密码</button>
+                  <button class="btn-sm btn-warn" @click="openResetPw(u)">重置帐号</button>
                 </td>
               </tr>
             </tbody>
@@ -823,18 +881,89 @@
         </div>
       </div>
 
-      <!-- 重置密码弹窗 -->
+      <!-- 重置帐号弹窗 -->
       <div v-if="resetTarget" class="modal-overlay" @click.self="resetTarget = null">
         <div class="modal">
-          <h3>重置用户密码</h3>
-          <p>为 <strong>{{ resetTarget.username }}</strong> 设置新密码</p>
-          <input v-model="newPwForUser" type="password" placeholder="至少8位" class="modal-input" />
-          <div v-if="adminPwError" class="msg error">{{ adminPwError }}</div>
-          <div class="modal-actions">
-            <button class="btn-primary" @click="doAdminResetPw" :disabled="adminPwLoading">
-              {{ adminPwLoading ? '保存中...' : '确认重置' }}
+          <h3>重置帐号</h3>
+          <p style="font-size:13px; color:#666; margin-bottom:12px;">
+            正在编辑用户（数据库 ID: <strong style="color: #2563eb;">{{ resetTarget.id }}</strong>，原邮箱: <strong style="color: #059669;">{{ resetTarget.email }}</strong>）
+          </p>
+          <div class="form-field" style="margin-bottom: 12px;">
+            <label style="display:block; font-size:13px; margin-bottom:4px; color:#555;">绑定电子邮箱 *</label>
+            <input v-model="resetAccountForm.email" type="email" placeholder="user@example.com" class="modal-input" />
+          </div>
+          <div class="form-field" style="margin-bottom: 12px;">
+            <label style="display:block; font-size:13px; margin-bottom:4px; color:#555;">新用户名 *</label>
+            <input v-model="resetAccountForm.username" type="text" placeholder="请输入新用户名" class="modal-input" />
+          </div>
+          <div class="form-field" style="margin-bottom: 12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+              <label style="font-size:13px; color:#555;">新密码</label>
+              <button type="button" class="btn-text-sm" style="background:none; border:none; color:#2563eb; cursor:pointer; font-size:12px;" @click="resetAccountForm.password = generateRandomPw()">🎲 随机生成密码</button>
+            </div>
+            <input v-model="resetAccountForm.password" type="text" placeholder="留空则不修改密码 (至少8位)" class="modal-input" />
+          </div>
+          <div v-if="adminPwError" class="msg error" style="margin-bottom:12px; color:#dc2626; font-size:13px;">{{ adminPwError }}</div>
+          <div class="modal-actions" style="margin-top: 16px;">
+            <button class="btn-primary" @click="doAdminResetAccountPw" :disabled="adminPwLoading">
+              {{ adminPwLoading ? '保存中...' : '确认保存' }}
             </button>
             <button class="btn-cancel" @click="resetTarget = null">取消</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 新增用户弹窗 -->
+      <div v-if="showCreateUserModal" class="modal-overlay" @click.self="showCreateUserModal = false">
+        <div class="modal">
+          <h3>新增用户</h3>
+          <div class="form-field" style="margin-bottom: 12px;">
+            <label style="display:block; font-size:13px; margin-bottom:4px; color:#555;">用户名 *</label>
+            <input v-model="createUserForm.username" type="text" placeholder="请输入用户名" class="modal-input" />
+          </div>
+          <div class="form-field" style="margin-bottom: 12px;">
+            <label style="display:block; font-size:13px; margin-bottom:4px; color:#555;">电子邮箱 *</label>
+            <input v-model="createUserForm.email" type="email" placeholder="user@example.com" class="modal-input" />
+          </div>
+          <div class="form-field" style="margin-bottom: 12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+              <label style="font-size:13px; color:#555;">密码 *</label>
+              <button type="button" class="btn-text-sm" style="background:none; border:none; color:#2563eb; cursor:pointer; font-size:12px;" @click="createUserForm.password = generateRandomPw()">🎲 随机生成密码</button>
+            </div>
+            <input v-model="createUserForm.password" type="text" placeholder="密码至少8位" class="modal-input" />
+          </div>
+          <div class="form-field" style="margin-bottom: 12px;">
+            <label style="display:block; font-size:13px; margin-bottom:4px; color:#555;">角色权限</label>
+            <select v-model="createUserForm.role" class="modal-input" style="background:white;">
+              <option value="user">User (普通用户)</option>
+              <option value="eng">ENG (工程师)</option>
+              <option value="admin">Admin (管理员)</option>
+            </select>
+          </div>
+          <div v-if="createUserError" class="msg error" style="margin-bottom:12px; color:#dc2626; font-size:13px;">{{ createUserError }}</div>
+          <div class="modal-actions" style="margin-top: 16px;">
+            <button class="btn-primary" @click="doCreateUser" :disabled="createUserLoading">
+              {{ createUserLoading ? '创建中...' : '确认创建' }}
+            </button>
+            <button class="btn-cancel" @click="showCreateUserModal = false">取消</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 账号凭据信息结果弹窗 -->
+      <div v-if="accountResultModal" class="modal-overlay" @click.self="accountResultModal = null">
+        <div class="modal">
+          <h3 style="color: #16a34a;">✅ {{ accountResultModal.title }}</h3>
+          <p style="font-size:13px; color:#666; margin-bottom:12px;">{{ accountResultModal.desc }}</p>
+          <div class="result-box" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:14px; margin-bottom:16px; font-family:monospace; font-size:14px; line-height:2.0; color:#334155;">
+            <div><strong>数据库 ID：</strong> <span style="color:#2563eb; font-weight:bold;">{{ accountResultModal.id }}</span></div>
+            <div><strong>电子邮箱：</strong> {{ accountResultModal.email || '-' }}</div>
+            <div><strong>用户名：</strong> {{ accountResultModal.username }}</div>
+            <div><strong>密码：</strong> {{ accountResultModal.password || '(未变更)' }}</div>
+          </div>
+          <div class="modal-actions">
+            <button class="btn-primary" @click="copyAccountInfo(accountResultModal)">📋 一键复制账号与密码</button>
+            <button class="btn-cancel" @click="accountResultModal = null">关闭</button>
           </div>
         </div>
       </div>
@@ -1545,12 +1674,64 @@ async function loadSnapshotSearch() {
   }
 }
 
+const snapshot48hSummary = ref<any>(null)
+const snapshot48hLoading = ref(false)
+
+async function loadSnapshot48hSummary() {
+  snapshot48hLoading.value = true
+  try {
+    const data: any = await api.get('/settings/ftp-logs/snapshot-summary-48h')
+    snapshot48hSummary.value = data
+  } catch (e) {
+    console.error('Failed to load 48h snapshot summary:', e)
+  } finally {
+    snapshot48hLoading.value = false
+  }
+}
+
+
+const snapshotScanning = ref(false)
+const currentScanProgress = ref(10)
+let scanPollTimer: any = null
+
+async function triggerSnapshotScan() {
+  if (snapshotScanning.value) return
+  snapshotScanning.value = true
+  currentScanProgress.value = 10
+
+  try {
+    const res: any = await api.post('/settings/ftp-logs/trigger-snapshot-scan')
+    await loadSnapshot48hSummary()
+
+    if (scanPollTimer) clearInterval(scanPollTimer)
+    scanPollTimer = setInterval(async () => {
+      await loadSnapshot48hSummary()
+      if (snapshot48hSummary.value) {
+        if (snapshot48hSummary.value.status === 'running') {
+          currentScanProgress.value = snapshot48hSummary.value.progress_pct || 10
+        } else {
+          clearInterval(scanPollTimer)
+          scanPollTimer = null
+          snapshotScanning.value = false
+          currentScanProgress.value = 100
+        }
+      }
+    }, 10000)
+  } catch (e: any) {
+    snapshotScanning.value = false
+    if (scanPollTimer) clearInterval(scanPollTimer)
+    alert('❌ 触发快照扫描失败: ' + (e.response?.data?.detail || e.message || e))
+  }
+}
+
 function resetSnapshotSearch() {
   snapshotSearchQuery.value = ''
   snapshotFilterOsat.value = ''
   snapshotFilterStatus.value = ''
   snapshotPage.value = 1
-  loadSnapshotSearch()
+  snapshotItems.value = []
+  snapshotTotal.value = 0
+  loadSnapshot48hSummary()
 }
 const logPageSize    = ref(20)
 const logTotal       = ref(0)
@@ -1610,6 +1791,13 @@ const manualLogPage     = ref(1)
 const manualLogPageSize = ref(20)
 const manualLogTotal    = ref(0)
 const activeLogSubTab   = ref('manual')
+
+watch(activeLogSubTab, (newSubTab) => {
+  if (newSubTab === 'search') {
+    loadSnapshot48hSummary()
+  }
+}, { immediate: true })
+
 
 const manualLogFilterType = ref('')
 const manualLogFilterStatus = ref('')
@@ -1725,6 +1913,156 @@ const newPwForUser  = ref('')
 const adminPwError  = ref('')
 const adminPwLoading = ref(false)
 
+const resetAccountForm = ref({ username: '', email: '', password: '' })
+const showCreateUserModal = ref(false)
+const createUserForm = ref({ username: '', email: '', password: '', role: 'user' })
+const createUserLoading = ref(false)
+const createUserError = ref('')
+const accountResultModal = ref<{ title: string; desc: string; id: number; username: string; email?: string; password?: string } | null>(null)
+const importFileInput = ref<HTMLInputElement | null>(null)
+
+function generateRandomPw() {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
+  let pw = '';
+  for (let i = 0; i < 10; i++) {
+    pw += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return pw;
+}
+
+function openCreateUserModal() {
+  createUserForm.value = { username: '', email: '', password: generateRandomPw(), role: 'user' }
+  createUserError.value = ''
+  showCreateUserModal.value = true
+}
+
+async function doCreateUser() {
+  if (!createUserForm.value.username || !createUserForm.value.email || !createUserForm.value.password) {
+    createUserError.value = '请填写完整的用户名、邮箱和密码'
+    return
+  }
+  if (createUserForm.value.password.length < 8) {
+    createUserError.value = '密码至少8位'
+    return
+  }
+  createUserLoading.value = true
+  try {
+    const res: any = await api.post('/users/create', createUserForm.value)
+    showCreateUserModal.value = false
+    accountResultModal.value = {
+      title: '成功创建新用户',
+      desc: '请保存并交付以下用户凭据信息：',
+      id: res.id,
+      username: res.username,
+      email: res.email,
+      password: createUserForm.value.password,
+    }
+    await loadUsers()
+  } catch (e: any) {
+    createUserError.value = typeof e === 'string' ? e : (e.message || '创建用户失败')
+  } finally {
+    createUserLoading.value = false
+  }
+}
+
+function openResetPw(u: UserItem) {
+  resetTarget.value = u
+  resetAccountForm.value = { username: u.username, email: u.email, password: '' }
+  adminPwError.value = ''
+}
+
+async function doAdminResetAccountPw() {
+  if (!resetAccountForm.value.username) {
+    adminPwError.value = '用户名不能为空'
+    return
+  }
+  if (resetAccountForm.value.password && resetAccountForm.value.password.length < 8) {
+    adminPwError.value = '新密码至少8位'
+    return
+  }
+  adminPwLoading.value = true
+  try {
+    const res: any = await api.put(`/users/${resetTarget.value!.id}/reset-account-password`, {
+      username: resetAccountForm.value.username,
+      email: resetAccountForm.value.email || undefined,
+      new_password: resetAccountForm.value.password || undefined,
+    })
+    const pw = resetAccountForm.value.password
+    resetTarget.value = null
+    accountResultModal.value = {
+      title: '帐号重置成功',
+      desc: '用户的底层数据库 ID 关联未改变，历史关联数据已完整保留：',
+      id: res.id,
+      username: res.username,
+      email: res.email,
+      password: pw || '(未修改密码)',
+    }
+    await loadUsers()
+  } catch (e: any) {
+    adminPwError.value = typeof e === 'string' ? e : (e.message || '重置失败')
+  } finally {
+    adminPwLoading.value = false
+  }
+}
+
+function copyAccountInfo(info: any) {
+  const text = `【ATE 用户账号凭据信息】\n数据库 ID: ${info.id}\n电子邮箱: ${info.email || '-'}\n用户名: ${info.username}\n密码: ${info.password || '(未修改)'}`
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      alert('账号凭据信息已成功复制到剪贴板！')
+    }).catch(() => {
+      alert('复制失败，请手动选择文本复制')
+    })
+  } else {
+    alert(text)
+  }
+}
+
+async function exportUsers() {
+  try {
+    const data: any = await api.get('/users/export')
+    const jsonStr = JSON.stringify(data, null, 2)
+    const blob = new Blob([jsonStr], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `users_backup_${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    alert('导出用户列表失败: ' + e)
+  }
+}
+
+function triggerImportFile() {
+  if (importFileInput.value) {
+    importFileInput.value.value = ''
+    importFileInput.value.click()
+  }
+}
+
+async function handleImportFile(e: Event) {
+  const target = e.target as HTMLInputElement
+  if (!target.files || !target.files[0]) return
+  const file = target.files[0]
+  const reader = new FileReader()
+  reader.onload = async (evt) => {
+    try {
+      const items = JSON.parse(evt.target?.result as string)
+      if (!Array.isArray(items)) {
+        alert('导入失败：文件格式不符合要求，必须为 JSON 数组')
+        return
+      }
+      const res: any = await api.post('/users/import', items)
+      alert(`导入完成！\n共处理: ${res.imported_count} 条\n成功新增: ${res.created_count} 条\n成功更新: ${res.updated_count} 条` + (res.errors && res.errors.length ? `\n错误失败: ${res.errors.length} 条` : ''))
+      await loadUsers()
+    } catch (err: any) {
+      alert('解析或导入文件过程失败: ' + err)
+    }
+  }
+  reader.readAsText(file)
+}
+
 async function loadUsers() {
   adminLoading.value = true
   try {
@@ -1759,28 +2097,7 @@ async function setRole(u: UserItem) {
   }
 }
 
-function openResetPw(u: UserItem) {
-  resetTarget.value  = u
-  newPwForUser.value = ''
-  adminPwError.value = ''
-}
 
-async function doAdminResetPw() {
-  if (newPwForUser.value.length < 8) {
-    adminPwError.value = '密码至少8位'; return
-  }
-  adminPwLoading.value = true
-  try {
-    await api.put(`/users/${resetTarget.value!.id}/reset-password`, {
-      new_password: newPwForUser.value,
-    })
-    resetTarget.value = null
-  } catch (e: any) {
-    adminPwError.value = e || '重置失败'
-  } finally {
-    adminPwLoading.value = false
-  }
-}
 
 const summaryOsats = ref<any[]>([])
 const summaryRows = ref<any[]>([])
@@ -2091,4 +2408,31 @@ onMounted(async () => {
   border-top: 1px solid #f3f4f6;
 }
 .ip-text { font-size: 0.85em; color: #64748b; margin-left: 3px; }
+
+/* 用户管理顶部统一按钮 */
+.header-actions { display: flex; align-items: center; gap: 8px; margin-right: 12px; }
+.mgmt-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  box-sizing: border-box;
+  line-height: 1;
+  margin: 0 !important;
+  transition: all 0.2s ease;
+}
+.mgmt-btn-primary { background: #3b82f6; color: white; border: 1px solid #3b82f6; }
+.mgmt-btn-primary:hover { background: #2563eb; border-color: #2563eb; }
+.mgmt-btn-import { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
+.mgmt-btn-import:hover { background: #dbeafe; border-color: #93c5fd; }
+.mgmt-btn-export { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+.mgmt-btn-export:hover { background: #dcfce7; border-color: #86efac; }
+
 </style>

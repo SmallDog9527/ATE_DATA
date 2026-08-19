@@ -11,6 +11,29 @@
         />
         <span v-if="loading" class="loading-text">⏳ 加载中...</span>
       </div>
+      <div class="toolbar-right" style="margin-left: auto;">
+        <button 
+          v-if="authStore.user?.role === 'admin'"
+          type="button"
+          class="btn" 
+          :style="{
+            padding: '5px 14px',
+            fontSize: '13px',
+            background: updating ? '#dc2626' : '#3b82f6',
+            color: 'white',
+            border: '1px solid ' + (updating ? '#dc2626' : '#3b82f6'),
+            borderRadius: '6px',
+            cursor: updating ? 'not-allowed' : 'pointer',
+            fontWeight: '600',
+            display: 'inline-flex',
+            alignItems: 'center'
+          }" 
+          @click="triggerGlobalUpdate" 
+          :disabled="updating"
+        >
+          {{ updating ? `⏳ 更新中 (${updateProgress}%)...` : 'Update' }}
+        </button>
+      </div>
     </div>
 
     <!-- 主表格 -->
@@ -191,10 +214,12 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 import api from '@/api'
 import { fmtDateOnlyTz } from '@/utils/dateUtils'
 
 const router = useRouter()
+const authStore = useAuthStore()
 const listData = ref<any[]>([])
 const loading = ref(false)
 const pgsInput = ref<HTMLInputElement>()
@@ -466,7 +491,54 @@ async function submitPgs() {
   finally { pgsDialog.uploading = false }
 }
 
-onMounted(() => { fetchList(); fetchSuggestions() })
+const updating = ref(false)
+const updateProgress = ref(5)
+let updatePollTimer: any = null
+
+async function checkUpdateStatus() {
+  try {
+    const data: any = await api.get('/programs/snapshot/refresh-status')
+    if (data && data.status === 'running') {
+      updating.value = true
+      updateProgress.value = data.progress_pct || 5
+    } else {
+      if (updating.value) {
+        updating.value = false
+        updateProgress.value = 100
+        if (updatePollTimer) {
+          clearInterval(updatePollTimer)
+          updatePollTimer = null
+        }
+        await fetchList()
+      }
+    }
+  } catch (e) {
+    console.error('Failed to check update status:', e)
+  }
+}
+
+async function triggerGlobalUpdate() {
+  if (updating.value) return
+  updating.value = true
+  updateProgress.value = 5
+
+  try {
+    await api.post('/programs/snapshot/refresh')
+    
+    if (updatePollTimer) clearInterval(updatePollTimer)
+    updatePollTimer = setInterval(async () => {
+      await checkUpdateStatus()
+    }, 30000)
+
+    await checkUpdateStatus()
+  } catch (e: any) {
+    updating.value = false
+    if (updatePollTimer) clearInterval(updatePollTimer)
+    alert('❌ 触发全量程序变更更新失败: ' + (e.response?.data?.detail || e.message || e))
+  }
+}
+
+onMounted(() => { fetchList(); fetchSuggestions(); checkUpdateStatus() })
 </script>
 
 <style scoped>

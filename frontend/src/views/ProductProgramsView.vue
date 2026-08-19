@@ -10,18 +10,7 @@
         <button v-if="activeTab === 'pgm'" class="btn btn-primary" @click="triggerPgsUpload">⬆ 上传程序</button>
         <input ref="pgsInput" type="file" accept=".zip,.rar,.7z" multiple hidden @change="onPgsSelected" />
         <input ref="rowDsInput" type="file" accept=".docx,.doc" style="display: none" @change="onRowDsFileChange" />
-        <label v-if="activeTab === 'data'" class="months-filter">
-          <span>近</span>
-          <input
-            v-model="dataMonthsInput"
-            type="number"
-            min="0.25"
-            step="0.25"
-            class="months-input"
-          />
-          <span>月</span>
-        </label>
-        <button v-if="activeTab === 'data'" class="btn" @click="fetchData(true)" :disabled="loading">🔄 Update</button>
+
       </div>
     </div>
 

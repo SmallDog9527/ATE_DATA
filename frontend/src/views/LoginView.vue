@@ -197,7 +197,8 @@ async function handleLogin() {
     await authStore.login(loginForm.value.username, loginForm.value.password)
     router.push('/')
   } catch (e: any) {
-    error.value = e || '登录失败'
+    error.value = e || '用户名或密码错误，请重试'
+    loginForm.value.password = ''
   } finally {
     loading.value = false
   }
@@ -233,12 +234,9 @@ async function handleRegister() {
       regForm.value.password,
       regForm.value.code,
     )
-    successMsg.value = '注册成功！'
-    setTimeout(() => {
-      mode.value = 'login'
-      successMsg.value = ''
-      regStep.value = 1
-    }, 1500)
+    successMsg.value = '注册成功，正在为您自动登录...'
+    await authStore.login(regForm.value.username, regForm.value.password)
+    router.push('/')
   } catch (e: any) {
     error.value = e || '注册失败'
   } finally {
