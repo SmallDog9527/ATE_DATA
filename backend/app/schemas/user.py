@@ -146,3 +146,67 @@ class UserListItem(BaseModel):
 
     class Config:
         from_attributes = True
+
+# ──────────────────────────────────────────────
+# Admin User Management Extensions (English comments)
+# ──────────────────────────────────────────────
+
+class AdminCreateUserRequest(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+    role: Optional[str] = 'user'
+
+    @field_validator('password')
+    @classmethod
+    def password_strength(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters long')
+        return v
+
+
+class AdminResetAccountPasswordRequest(BaseModel):
+    username: Optional[str] = None
+    email: Optional[EmailStr] = None
+    new_password: Optional[str] = None
+
+    @field_validator('new_password')
+    @classmethod
+    def password_strength(cls, v):
+        if v is not None and len(v) < 8:
+            raise ValueError('Password must be at least 8 characters long')
+        return v
+
+
+class UserExportItem(BaseModel):
+    id: int
+    username: str
+    email: str
+    hashed_password: str
+    role: str = 'user'
+    is_active: bool = True
+    email_verified: bool = True
+    receive_alerts: bool = False
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class UserImportItem(BaseModel):
+    id: Optional[int] = None
+    username: str
+    email: EmailStr
+    password: Optional[str] = None
+    hashed_password: Optional[str] = None
+    role: Optional[str] = 'user'
+    is_active: Optional[bool] = True
+    email_verified: Optional[bool] = True
+    receive_alerts: Optional[bool] = False
+
+
+class UserImportResponse(BaseModel):
+    imported_count: int
+    created_count: int
+    updated_count: int
+    errors: list[str] = []

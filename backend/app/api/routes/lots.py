@@ -345,15 +345,32 @@ async def _process_csv_paths(
         if is_zip:
             if not is_summary_file(csv_name):
                 physical_zip_path = os.path.join(DATA_DIR, f"{csv_name}.zip")
-                if os.path.exists(physical_zip_path) or os.path.exists(os.path.join(DATA_DIR, csv_name)):
-                    raise HTTPException(status_code=400, detail=f"数据文件 '{csv_name}' 已存在，无需重复上传解析")
+                # 当前上传的原始 zip 刚被保存到 DATA_DIR，排除自身，避免误判"已存在"
+                is_self = (zip_save_path is not None and os.path.abspath(physical_zip_path) == os.path.abspath(zip_save_path))
+                if not is_self:
+                    for p in (physical_zip_path, os.path.join(DATA_DIR, csv_name)):
+                        if os.path.exists(p):
+                            # 物理文件已存在：DB 有引用 → 真重复；无引用 → 上次失败的孤儿残留，清理后继续
+                            ref = db.query(Lot).filter(
+                                Lot.storage_path == p,
+                                Lot.status != 'deleted'
+                            ).first()
+                            if ref:
+                                raise HTTPException(status_code=400, detail=f"数据文件 '{csv_name}' 已存在，无需重复上传解析")
+                            try:
+                                os.remove(p)
+                                print(f"[cleanup] Removed orphan upload artifact: {p}")
+                            except Exception as e:
+                                print(f"[cleanup] Failed to remove orphan artifact {p}: {e}")
             else:
                 physical_sum_path = os.path.join(SUMMARY_DIR, csv_name)
                 if os.path.exists(physical_sum_path):
                     raise HTTPException(status_code=400, detail=f"汇总文件 '{csv_name}' 已存在，无需重复上传解析")
 
+        # zip 上传入库的 filename 为 {csv_base}[_n].csv.zip，需按 base 前缀匹配防重复
+        csv_base = os.path.splitext(csv_name)[0]
         existing_lot = db.query(Lot).filter(
-            Lot.filename == csv_name,
+            Lot.filename.like(f"{csv_base}%"),
             Lot.status != 'deleted'
         ).first()
         if existing_lot:

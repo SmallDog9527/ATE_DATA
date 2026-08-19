@@ -166,3 +166,20 @@ def is_login_locked(username: str) -> bool:
 
 def clear_login_fail(username: str):
     get_redis().delete(f"login:fail:{username}")
+
+
+def send_username_and_password_email(email: str, username: str, new_pass: str):
+    """Send username and newly generated 12-character password via email (English comments)."""
+    html = f"""
+    <div style="font-family:sans-serif;max-width:480px;margin:auto">
+      <h2 style="color:#1a1a2e">ATE 数据分析系统</h2>
+      <p>已为您生成新的登录密码，您的账号登录信息如下：</p>
+      <div style="background:#f8fafc;padding:16px;border-radius:8px;border:1px solid #cbd5e1;margin:16px 0">
+        <p style="margin:6px 0;font-size:15px"><strong>用户名：</strong> <span style="color:#2563eb;font-weight:bold">{username}</span></p>
+        <p style="margin:6px 0;font-size:15px"><strong>新随机密码：</strong> <span style="font-family:monospace;font-size:18px;font-weight:bold;color:#dc2626">{new_pass}</span></p>
+      </div>
+      <p style="color:#64748b;font-size:13px">该随机密码长期有效。登录后建议您在【修改密码】中更换为便于记忆的自定义密码。</p>
+    </div>
+    """
+    text = f"ATE 数据分析系统\n用户名: {username}\n新密码: {new_pass}\n该随机密码长期有效，请使用新密码登录系统。"
+    _send_smtp_dynamic(email, "【ATE系统】账号与新随机密码通知", html, text_body=text)

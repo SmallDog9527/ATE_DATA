@@ -1189,3 +1189,281 @@ def get_ftp_extracted_logs(
         ))
 
     return FtpExtractedLogPage(total=total, page=page, page_size=page_size, items=items)
+
+
+# Helper to manage immutable permanent scan sessions list in Redis (English comments)
+def _get_permanent_scan_sessions():
+    try:
+        from app.core.redis_client import get_redis
+        import json
+        r = get_redis()
+        data_list = r.lrange("ftp_scan:permanent_sessions_list", 0, 100)
+        sessions = []
+        for item in data_list:
+            try:
+                if isinstance(item, bytes):
+                    item = item.decode('utf-8')
+                sess_obj = json.loads(item)
+                if isinstance(sess_obj, dict):
+                    sessions.append(sess_obj)
+            except Exception as ex:
+                print(f"[ftp_scan] Error decoding session item: {ex}")
+        return sessions
+    except Exception as e:
+        print(f"[ftp_scan] Error reading Redis permanent sessions: {e}")
+    return []
+
+def _add_or_update_permanent_session(sess_dict):
+    try:
+        from app.core.redis_client import get_redis
+        import json
+        r = get_redis()
+        sessions = _get_permanent_scan_sessions()
+        
+        sess_id = sess_dict.get("session_id")
+        updated = False
+        for idx, s in enumerate(sessions):
+            if s.get("session_id") == sess_id:
+                sessions[idx] = sess_dict
+                updated = True
+                break
+        
+        if not updated:
+            sessions.insert(0, sess_dict)
+
+        sessions = sessions[:100]
+        r.delete("ftp_scan:permanent_sessions_list")
+        for s in reversed(sessions):
+            r.lpush("ftp_scan:permanent_sessions_list", json.dumps(s))
+    except Exception as e:
+        print(f"[ftp_scan] Error updating Redis permanent sessions list: {e}")
+
+
+@router.post("/ftp-logs/trigger-snapshot-scan")
+def trigger_snapshot_scan(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Manually trigger a full FTP scan creating a new immutable manual session."""
+    if current_user.role not in ("admin", "eng"):
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    from app.models.osat_config import OsatConfig
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    import threading, time
+
+    osats = db.query(OsatConfig).filter(OsatConfig.enabled == True).all()
+    if not osats:
+        raise HTTPException(status_code=400, detail="No enabled OSAT configurations found")
+
+    shanghai_tz = ZoneInfo("Asia/Shanghai")
+    start_time_str = datetime.now(shanghai_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+    session_id = f"manual_{int(time.time() * 1000)}"
+    sess_info = {
+        "session_id": session_id,
+        "mode": "手动",
+        "status": "running",
+        "progress_pct": 10,
+        "start_time": start_time_str,
+        "end_time": "进行中",
+        "duration_minutes": 0,
+        "total_new_files": 0,
+        "osats": [o.name for o in osats],
+        "formatted_text": f"手动 {start_time_str} ---- 进行中 (进度: 10%)",
+    }
+    _add_or_update_permanent_session(sess_info)
+
+    def run_async_scan(sess_id, osat_ids):
+        from app.core.database import SessionLocal
+        from app.services.ftp_service import run_osat_fetch
+        from app.models.ftp_upload_log import FtpUploadLog
+        from sqlalchemy import func
+        from datetime import datetime
+
+        sess_db = SessionLocal()
+        start_ts = datetime.now(shanghai_tz)
+        max_id_before = sess_db.query(func.max(FtpUploadLog.id)).scalar() or 0
+
+        try:
+            total_osats = len(osat_ids)
+            for idx, o_id in enumerate(osat_ids):
+                pct = 10 + int(((idx + 1) / max(1, total_osats)) * 75)
+                
+                perm_list = _get_permanent_scan_sessions()
+                for s in perm_list:
+                    if s.get("session_id") == sess_id:
+                        s["progress_pct"] = min(90, pct)
+                        s["formatted_text"] = f"手动 {start_time_str} ---- 进行中 (进度: {min(90, pct)}%)"
+                        _add_or_update_permanent_session(s)
+                        break
+
+                run_osat_fetch(o_id, True)
+
+            end_ts = datetime.now(shanghai_tz)
+            end_time_str = end_ts.strftime("%Y-%m-%d %H:%M:%S")
+            diff_sec = (end_ts - start_ts).total_seconds()
+            duration_mins = max(1, round(diff_sec / 60.0))
+
+            osat_configs = sess_db.query(OsatConfig).order_by(OsatConfig.id.asc()).all()
+            
+            osat_counts_list = []
+            tot_new = 0
+            for o in osat_configs:
+                cnt = sess_db.query(FtpUploadLog).filter(
+                    FtpUploadLog.osat_id == o.id,
+                    FtpUploadLog.id > max_id_before
+                ).count()
+                osat_counts_list.append(f"{o.name}:{cnt}")
+                tot_new += cnt
+
+            osat_text = ", ".join(osat_counts_list)
+            formatted_text = f"手动 {start_time_str} ---- {end_time_str} 历时{duration_mins}分钟，一共新增{tot_new}个文件。{osat_text}"
+
+            final_sess = {
+                "session_id": sess_id,
+                "mode": "手动",
+                "status": "completed",
+                "progress_pct": 100,
+                "start_time": start_time_str,
+                "end_time": end_time_str,
+                "duration_minutes": duration_mins,
+                "total_new_files": tot_new,
+                "osat_text": osat_text,
+                "formatted_text": formatted_text,
+            }
+            _add_or_update_permanent_session(final_sess)
+        except Exception as e:
+            print(f"[ftp_scan] Error running async manual scan: {e}")
+            perm_list = _get_permanent_scan_sessions()
+            for s in perm_list:
+                if s.get("session_id") == sess_id:
+                    s["status"] = "error"
+                    s["progress_pct"] = 100
+                    _add_or_update_permanent_session(s)
+                    break
+        finally:
+            sess_db.close()
+
+    t = threading.Thread(target=run_async_scan, args=(session_id, [o.id for o in osats]))
+    t.daemon = True
+    t.start()
+
+    return {
+        "message": f"Successfully triggered manual FTP scan for {len(osats)} OSATs",
+        "session_id": session_id,
+        "osats": [o.name for o in osats],
+    }
+
+
+@router.get("/ftp-logs/snapshot-summary-48h")
+def get_snapshot_summary_48h(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin_or_eng),
+):
+    """Get FTP scan snapshot sessions summary for recent 48 hours returning permanent immutable sessions."""
+    from app.models.ftp_scan_snapshot import FtpScanSnapshot
+    from app.models.ftp_upload_log import FtpUploadLog
+    from app.models.osat_config import OsatConfig
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+
+    def to_sh_dt(dt):
+        if not dt:
+            return None
+        sh_tz = timezone(timedelta(hours=8))
+        if dt.tzinfo is not None:
+            return dt.astimezone(sh_tz).replace(tzinfo=None)
+        return dt + timedelta(hours=8)
+
+    osat_list = db.query(OsatConfig).order_by(OsatConfig.id.asc()).all()
+
+    shanghai_tz = ZoneInfo("Asia/Shanghai")
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    threshold_48h_utc = now_utc - timedelta(hours=48)
+
+    # 1. Retrieve all existing permanent sessions from Redis
+    sessions = _get_permanent_scan_sessions()
+
+    # 2. If no permanent sessions exist in Redis yet, populate initial clusters from DB and save permanently
+    if not sessions:
+        recent_logs = (
+            db.query(FtpUploadLog)
+            .filter(FtpUploadLog.uploaded_at >= threshold_48h_utc)
+            .order_by(FtpUploadLog.uploaded_at.desc())
+            .all()
+        )
+
+        if recent_logs:
+            clusters = []
+            curr_cluster = []
+            for log in recent_logs:
+                if not curr_cluster:
+                    curr_cluster.append(log)
+                else:
+                    prev_log = curr_cluster[-1]
+                    gap = (prev_log.uploaded_at - log.uploaded_at).total_seconds()
+                    if gap <= 1800:
+                        curr_cluster.append(log)
+                    else:
+                        clusters.append(curr_cluster)
+                        curr_cluster = [log]
+            if curr_cluster:
+                clusters.append(curr_cluster)
+
+            for cl in clusters:
+                start_dt = to_sh_dt(cl[-1].uploaded_at)
+                end_dt = to_sh_dt(cl[0].uploaded_at)
+                
+                start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S") if start_dt else "-"
+                end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S") if end_dt else "-"
+                
+                diff_sec = (end_dt - start_dt).total_seconds() if (start_dt and end_dt) else 0
+                dur_mins = max(1, round(diff_sec / 60.0))
+
+                counts_per_osat = {}
+                for l in cl:
+                    counts_per_osat[l.osat_id] = counts_per_osat.get(l.osat_id, 0) + 1
+
+                osat_text_parts = []
+                for o in osat_list:
+                    cnt = counts_per_osat.get(o.id, 0)
+                    osat_text_parts.append(f"{o.name}:{cnt}")
+                
+                osat_text = ", ".join(osat_text_parts)
+                tot_cnt = len(cl)
+
+                sess_item = {
+                    "session_id": f"auto_{start_str}",
+                    "mode": "自动",
+                    "status": "completed",
+                    "progress_pct": 100,
+                    "start_time": start_str,
+                    "end_time": end_str,
+                    "duration_minutes": dur_mins,
+                    "total_new_files": tot_cnt,
+                    "osat_text": osat_text,
+                    "formatted_text": f"自动 {start_str} ---- {end_str} 历时{dur_mins}分钟，一共新增{tot_cnt}个文件。{osat_text}",
+                }
+                _add_or_update_permanent_session(sess_item)
+            
+            sessions = _get_permanent_scan_sessions()
+
+    # Sort all sessions by start_time DESC
+    sessions.sort(key=lambda x: x.get("start_time") or "", reverse=True)
+
+    latest = dict(sessions[0]) if sessions else {
+        "mode": "自动",
+        "status": "completed",
+        "progress_pct": 100,
+        "start_time": "-",
+        "end_time": "-",
+        "duration_minutes": 0,
+        "total_new_files": 0,
+        "osat_text": "",
+        "formatted_text": "近48小时内暂无扫描记录",
+    }
+    latest["sessions"] = sessions
+
+    return latest
