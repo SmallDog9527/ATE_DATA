@@ -549,17 +549,69 @@ def daily_program_changes_snapshot_job():
         db.close()
 
 def daily_ftp_scan_snapshot_job():
-    """Run daily scan snapshot at 08:00 for all enabled OSATs."""
+    """Run daily scan snapshot for all enabled OSATs and save to Redis permanent sessions."""
     from app.core.database import SessionLocal
     from app.models.osat_config import OsatConfig
     from app.services.ftp_service import run_osat_fetch
-    
-    print("[scheduler] ⏰ Starting daily FTP scan snapshot job (00:00 & 12:00)...")
+    from app.models.ftp_upload_log import FtpUploadLog
+    from app.api.routes.settings import _add_or_update_permanent_session
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    from sqlalchemy import func
+
+    print("[scheduler] ? Starting daily FTP scan snapshot job (00:00 & 12:00)...")
     db = SessionLocal()
+    shanghai_tz = ZoneInfo("Asia/Shanghai")
+    start_ts = datetime.now(shanghai_tz)
+    start_time_str = start_ts.strftime("%Y-%m-%d %H:%M:%S")
+
+    session_id = f"auto_{start_time_str}"
+    max_id_before = db.query(func.max(FtpUploadLog.id)).scalar() or 0
+
     try:
         configs = db.query(OsatConfig).filter(OsatConfig.enabled == True).all()
+        futures = []
         for o in configs:
-            _executor.submit(run_osat_fetch, o.id, True)
+            futures.append(_executor.submit(run_osat_fetch, o.id, True))
+        
+        for f in futures:
+            try:
+                f.result()
+            except Exception as fe:
+                print(f"[scheduler] OSAT fetch exception: {fe}")
+
+        end_ts = datetime.now(shanghai_tz)
+        end_time_str = end_ts.strftime("%Y-%m-%d %H:%M:%S")
+        diff_sec = (end_ts - start_ts).total_seconds()
+        duration_mins = max(1, round(diff_sec / 60.0))
+
+        osat_counts_list = []
+        tot_new = 0
+        for o in configs:
+            cnt = db.query(FtpUploadLog).filter(
+                FtpUploadLog.osat_id == o.id,
+                FtpUploadLog.id > max_id_before
+            ).count()
+            osat_counts_list.append(f"{o.name}:{cnt}")
+            tot_new += cnt
+
+        osat_text = ", ".join(osat_counts_list)
+        formatted_text = f"?? {start_time_str} ---- {end_time_str} ??{duration_mins}???????{tot_new}????{osat_text}"
+
+        final_sess = {
+            "session_id": session_id,
+            "mode": "??",
+            "status": "completed",
+            "progress_pct": 100,
+            "start_time": start_time_str,
+            "end_time": end_time_str,
+            "duration_minutes": duration_mins,
+            "total_new_files": tot_new,
+            "osat_text": osat_text,
+            "formatted_text": formatted_text,
+        }
+        _add_or_update_permanent_session(final_sess)
+        print(f"[scheduler] Saved auto scan snapshot session to Redis: {session_id}")
     except Exception as e:
         print(f"[scheduler] daily_ftp_scan_snapshot_job exception: {e}")
     finally:

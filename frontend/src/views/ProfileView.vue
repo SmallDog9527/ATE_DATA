@@ -615,33 +615,37 @@
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="row in summaryRows" :key="row.date">
+                <!-- 置顶全量 Total 行 -->
+                <tr v-if="totalSummaryRow" style="background-color: #f8fafc; font-weight: 600;">
+                  <td style="font-weight: 700; color: #0f172a;">历史总计</td>
+                  <td v-for="o in summaryOsats" :key="o.id">
+                    <span v-if="totalSummaryRow.stats[o.id]">
+                      <span style="color: #16a34a; font-weight: 600;" title="data_pass">{{ totalSummaryRow.stats[o.id].data_pass ?? totalSummaryRow.stats[o.id].success ?? 0 }}</span>
+                      <span style="color: #64748b;">/</span>
+                      <span style="color: #059669; font-weight: 600;" title="summary_pass">{{ totalSummaryRow.stats[o.id].summary_pass ?? 0 }}</span>
+                      <span style="color: #64748b;">/</span>
+                      <span :style="{ color: totalSummaryRow.stats[o.id].failed > 0 ? '#dc2626' : '#64748b', fontWeight: totalSummaryRow.stats[o.id].failed > 0 ? '600' : 'normal' }" title="fail">
+                        {{ totalSummaryRow.stats[o.id].failed }}
+                      </span>
+                    </span>
+                    <span v-else style="color: #cbd5e1;">—</span>
+                  </td>
+                </tr>
+                <!-- 分页渲染每日更新行（每页 14 行，即 2 周历史记录） -->
+                <tr v-for="row in paginatedDailySummaryRows" :key="row.date">
                   <td style="font-weight: 500;">{{ row.date }}</td>
                   <td v-for="o in summaryOsats" :key="o.id">
                     <span v-if="row.stats[o.id]">
-                      <!-- Total Row (data_pass / summary_pass / fail) -->
-                      <template v-if="row.date === 'total'">
-                        <span style="color: #16a34a; font-weight: 600;" title="data_pass">{{ row.stats[o.id].data_pass ?? row.stats[o.id].success ?? 0 }}</span>
+                      <span style="color: #16a34a; font-weight: 600;" title="data_pass">{{ row.stats[o.id].data_pass ?? row.stats[o.id].success ?? 0 }}</span>
+                      <span style="color: #64748b;">/</span>
+                      <span style="color: #059669; font-weight: 600;" title="summary_pass">{{ row.stats[o.id].summary_pass ?? 0 }}</span>
+                      <span style="color: #64748b;">/</span>
+                      <span :style="{ color: row.stats[o.id].failed > 0 ? '#dc2626' : '#64748b', fontWeight: row.stats[o.id].failed > 0 ? '600' : 'normal' }" title="fail">
+                        {{ row.stats[o.id].failed }}
+                      </span>
+                      <template v-if="row.stats[o.id].total !== undefined">
                         <span style="color: #64748b;">/</span>
-                        <span style="color: #059669; font-weight: 600;" title="summary_pass">{{ row.stats[o.id].summary_pass ?? 0 }}</span>
-                        <span style="color: #64748b;">/</span>
-                        <span :style="{ color: row.stats[o.id].failed > 0 ? '#dc2626' : '#64748b', fontWeight: row.stats[o.id].failed > 0 ? '600' : 'normal' }" title="fail">
-                          {{ row.stats[o.id].failed }}
-                        </span>
-                      </template>
-                      <!-- Daily Update Row (data_pass / summary_pass / fail / total) -->
-                      <template v-else>
-                        <span style="color: #16a34a; font-weight: 600;" title="data_pass">{{ row.stats[o.id].data_pass ?? row.stats[o.id].success ?? 0 }}</span>
-                        <span style="color: #64748b;">/</span>
-                        <span style="color: #059669; font-weight: 600;" title="summary_pass">{{ row.stats[o.id].summary_pass ?? 0 }}</span>
-                        <span style="color: #64748b;">/</span>
-                        <span :style="{ color: row.stats[o.id].failed > 0 ? '#dc2626' : '#64748b', fontWeight: row.stats[o.id].failed > 0 ? '600' : 'normal' }" title="fail">
-                          {{ row.stats[o.id].failed }}
-                        </span>
-                        <template v-if="row.stats[o.id].total !== undefined">
-                          <span style="color: #64748b;">/</span>
-                          <span style="color: #0284c7; font-weight: 600;" title="total">{{ row.stats[o.id].total }}</span>
-                        </template>
+                        <span style="color: #0284c7; font-weight: 600;" title="total">{{ row.stats[o.id].total }}</span>
                       </template>
                     </span>
                     <span v-else style="color: #cbd5e1;">—</span>
@@ -649,6 +653,13 @@
                 </tr>
               </tbody>
             </table>
+
+            <!-- Summary 分页工具栏 (每页 14 行) -->
+            <div v-if="dailySummaryRows.length > summaryPageSize" class="log-pagination" style="margin-top: 16px;">
+              <button :disabled="summaryPage === 1" @click="summaryPage--" class="btn-sm">上一页</button>
+              <span>第 {{ summaryPage }} 页 / 共 {{ Math.ceil(dailySummaryRows.length / summaryPageSize) }} 页 (共 {{ dailySummaryRows.length }} 天记录)</span>
+              <button :disabled="summaryPage * summaryPageSize >= dailySummaryRows.length" @click="summaryPage++" class="btn-sm">下一页</button>
+            </div>
           </template>
 
           <!-- 🔍 FTP 全量快照检索 content (位于 FTP 日志汇总右侧) -->
@@ -706,24 +717,43 @@
               <!-- 1. 加载中状态 -->
               <div v-if="snapshotLoading" class="loading-state" style="padding:24px;text-align:center;color:#64748b;">⏳ 正在检索全量 FTP 扫描快照...</div>
 
-              <!-- 2. 默认视图（无搜索/筛选条件）：显示近48小时快照扫描记录摘要 -->
-              <div v-else-if="!snapshotSearchQuery.trim() && !snapshotFilterOsat && !snapshotFilterStatus" class="snapshot-summary-box" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:18px 22px; margin-top:12px;">
+              <!-- 2. 默认视图（无搜索/筛选条件）：显示近48小时快照扫描记录摘要 (无边框精简排版) -->
+              <div v-else-if="!snapshotSearchQuery.trim() && !snapshotFilterOsat && !snapshotFilterStatus" class="snapshot-summary-box" style="background:transparent; border:none; padding:8px 0; margin-top:8px;">
                 <div v-if="snapshot48hLoading" class="loading-state" style="padding:12px 0;text-align:center;color:#64748b;">⏳ 正在加载近48小时快照记录...</div>
-                <div v-else-if="snapshot48hSummary" style="display:flex; flex-direction:column; gap:10px;">
-                  <div v-for="(sess, idx) in (snapshot48hSummary.sessions || [snapshot48hSummary])" :key="idx" style="font-size:14px; line-height:1.8; color:#1e293b; font-family:sans-serif; word-break:break-all; padding:4px 0;">
-                    <span :class="['badge', sess.status === 'running' ? 'red' : (sess.mode === '手动' ? 'gold' : 'purple')]" style="margin-right:8px; font-size:12px; font-weight:600; padding:3px 10px;">
-                      [{{ sess.mode || '自动' }}]
-                    </span>
-                    <span style="font-weight:500;">{{ sess.start_time || '-' }}</span>
-                    <span style="color:#94a3b8; margin:0 6px;">----</span>
+                <div v-else-if="snapshot48hSummary" style="display:flex; flex-direction:column; gap:4px;">
+                  <div v-for="(sess, idx) in (snapshot48hSummary.sessions || [snapshot48hSummary])" :key="idx" class="snapshot-session-row">
+                    <div class="sess-col sess-mode">
+                      <span :class="['badge', sess.status === 'running' ? 'red' : (sess.mode === '手动' ? 'gold' : 'purple')]">
+                        [{{ sess.mode || '自动' }}]
+                      </span>
+                    </div>
+
+                    <div class="sess-col sess-time">
+                      <span>{{ sess.start_time || '-' }}</span>
+                    </div>
+
                     <template v-if="sess.status === 'running'">
-                      <span style="font-weight:600; color:#dc2626;">进行中 (进度: {{ sess.progress_pct || 10 }}%)</span>
+                      <div class="sess-col sess-running">
+                        进行中 (进度: {{ sess.progress_pct || 10 }}%)
+                      </div>
                     </template>
                     <template v-else>
-                      <span style="font-weight:500;">{{ sess.end_time || '-' }}</span>
-                      <span style="margin-left:10px; color:#2563eb; font-weight:600;">历时{{ sess.duration_minutes || 0 }}分钟</span>，
-                      <span style="font-weight:600;">一共新增{{ sess.total_new_files || 0 }}个文件。</span>
-                      <span style="color:#475569;">{{ sess.osat_text }}</span>
+                      <div class="sess-col sess-duration">
+                        历时<b>{{ sess.duration_minutes || 0 }}</b>分钟
+                      </div>
+                      <div class="sess-col sess-count">
+                        增<b>{{ sess.total_new_files || 0 }}</b>
+                      </div>
+                      <div class="sess-col sess-osats">
+                        <div 
+                          v-for="item in parseOsatText(sess.osat_text)" 
+                          :key="item.name" 
+                          :class="['osat-chip', { active: item.count > 0 }]"
+                        >
+                          <span class="chip-name">{{ item.name }}:</span>
+                          <span class="chip-count">{{ item.count }}</span>
+                        </div>
+                      </div>
                     </template>
                   </div>
                 </div>
@@ -2102,6 +2132,31 @@ async function setRole(u: UserItem) {
 const summaryOsats = ref<any[]>([])
 const summaryRows = ref<any[]>([])
 const summaryLoading = ref(false)
+const summaryPage = ref(1)
+const summaryPageSize = ref(14)
+
+const totalSummaryRow = computed(() => {
+  return summaryRows.value.find((r: any) => r.date === 'total')
+})
+
+const dailySummaryRows = computed(() => {
+  return summaryRows.value.filter((r: any) => r.date !== 'total')
+})
+
+const paginatedDailySummaryRows = computed(() => {
+  const start = (summaryPage.value - 1) * summaryPageSize.value
+  return dailySummaryRows.value.slice(start, start + summaryPageSize.value)
+})
+
+function parseOsatText(text?: string) {
+  if (!text) return []
+  return text.split(',').map(item => {
+    const parts = item.split(':')
+    const name = (parts[0] || '').trim()
+    const count = parseInt((parts[1] || '0').trim(), 10) || 0
+    return { name, count }
+  }).filter(x => x.name)
+}
 
 async function loadDailySummary() {
   summaryLoading.value = true
@@ -2435,4 +2490,86 @@ onMounted(async () => {
 .mgmt-btn-export { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
 .mgmt-btn-export:hover { background: #dcfce7; border-color: #86efac; }
 
+
+/* 48h 快照扫描记录分栏网格 (无外框 精简紧凑版 + 极简行分隔线) */
+.snapshot-session-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  background: transparent;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.snapshot-session-row:last-child {
+  border-bottom: none;
+}
+.sess-col {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.sess-col.sess-mode {
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+.sess-col.sess-mode .badge {
+  font-size: 11.5px;
+  padding: 1px 6px;
+}
+.sess-col.sess-time {
+  min-width: 145px;
+  flex-shrink: 0;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  color: #334155;
+}
+.sess-col.sess-duration {
+  min-width: 75px;
+  flex-shrink: 0;
+  color: #2563eb;
+  font-weight: 500;
+}
+.sess-col.sess-duration b {
+  margin: 0 1px;
+  font-weight: 700;
+}
+.sess-col.sess-count {
+  min-width: 65px;
+  flex-shrink: 0;
+  color: #0f172a;
+  font-weight: 500;
+}
+.sess-col.sess-count b {
+  margin: 0 1px;
+  color: #0284c7;
+  font-weight: 700;
+}
+.sess-col.sess-running {
+  color: #dc2626;
+  font-weight: 600;
+}
+.sess-col.sess-osats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.osat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: #94a3b8;
+  font-size: 11.5px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+.osat-chip.active {
+  color: #1d4ed8;
+  font-weight: 600;
+}
+.osat-chip .chip-count {
+  display: inline-block;
+  min-width: 20px;
+  text-align: right;
+}
 </style>
