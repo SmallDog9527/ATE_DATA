@@ -133,7 +133,7 @@ def _extract_rar_archive(archive_path: str, extract_dir: str) -> None:
             return
 
         msg = (result.stderr or result.stdout or str(rar_exc)).strip()
-        raise Exception(f"RAR 解压失败: {msg or 'unknown error'}")
+        raise Exception(f"RAR extraction failed: {msg or 'unknown error'}")
 
 
 class ImplicitFTP_TLS(ftplib.FTP_TLS):
@@ -747,13 +747,13 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                         has_log_files = True
             if not csv_files_to_process:
                 if has_log_files:
-                    print(f"[ftp_fetch] ZIP/RAR 仅包含 .log 文件，放弃并标记成功")
+                    print(f"[ftp_fetch] Archive only contains .log files, marking as success")
                     log.status = 'success'
                     log.uploaded_at = datetime.now(timezone.utc)
                     db.commit()
                     return {"ok": True, "lot_id": None}
                 else:
-                    raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt (含ets), .xls 或 .xlsx 文件")
+                    raise Exception("Archive does not contain any valid .csv, .txt, .xls or .xlsx files")
 
         elif ext == '.gz':
             # GZ 文件：解压，仅当内部文件是 CSV 或 TXT 时才处理
@@ -1217,14 +1217,14 @@ def _do_download_with_ftp(ftp, osat_id: int, remote_path: str, admin_user_id: in
                         has_log_files = True
             if not csv_files_to_process:
                 if has_log_files:
-                    print(f"[ftp_dl] ZIP/RAR 仅包含 .log 文件，放弃并标记成功")
+                    print(f"[ftp_dl] Archive only contains .log files, marking as success")
                     log.status = 'success'
                     log.uploaded_at = datetime.now(timezone.utc)
                     db.commit()
                     shutil.rmtree(tmp_dir, ignore_errors=True)
                     return None
                 else:
-                    raise Exception("ZIP/RAR 压缩包中未找到任何 .csv, .txt (含ets), .xls 或 .xlsx 文件")
+                    raise Exception("Archive does not contain any valid .csv, .txt, .xls or .xlsx files")
 
         elif ext == '.gz':
             inner_name = os.path.splitext(filename)[0]
@@ -1420,6 +1420,16 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
         if log:
             log.file_size = file_size
             db.commit()
+
+        # Check for empty remote / downloaded file (0 bytes)
+        actual_size = os.path.getsize(local_file) if os.path.exists(local_file) else 0
+        if actual_size == 0 or file_size == 0:
+            if os.path.exists(local_file):
+                try:
+                    os.remove(local_file)
+                except Exception:
+                    pass
+            raise Exception("Remote file is empty (0 bytes), download/unpacking skipped")
 
         # Helper functions to check if file already exists/processed
         def file_exists_in_db(fname: str) -> bool:
@@ -1696,7 +1706,6 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
         effective_osat_name = osat.name.split('_')[0] if osat and osat.name and '_' in osat.name else (osat.name if osat else "Unknown")
         log_rec = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
         if log_rec:
-            from datetime import timezone
             log_rec.status = 'processing'
             log_rec.uploaded_at = datetime.now(timezone.utc)
             db.commit()
