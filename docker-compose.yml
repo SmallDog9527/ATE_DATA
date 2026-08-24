@@ -63,6 +63,7 @@ services:
       SECRET_KEY: ${SECRET_KEY:-chip-ate-analysis-system-secret-key-2026}
       APP_ENV: ${APP_ENV:-production}
       DEBUG: ${DEBUG:-false}
+      SQLALCHEMY_DISABLE_C_EXTENSIONS: "1"
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
       MAX_USER_STORAGE_GB: ${MAX_USER_STORAGE_GB:-10}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

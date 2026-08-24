@@ -569,7 +569,7 @@ def daily_ftp_scan_snapshot_job():
     max_id_before = db.query(func.max(FtpUploadLog.id)).scalar() or 0
 
     try:
-        configs = db.query(OsatConfig).filter(OsatConfig.enabled == True).all()
+        configs = db.query(OsatConfig).all()  # Scan ALL OSATs (including disabled) for daily directory sync
         futures = []
         for o in configs:
             futures.append(_executor.submit(run_osat_fetch, o.id, True))

@@ -71,8 +71,11 @@ class DynamicConcurrencyController:
         self.running_count = 0
         self.cond = threading.Condition()
 
-    def acquire(self):
+    def acquire(self, timeout: int = 300) -> bool:
+        """Acquire a concurrency slot. Returns True if acquired, False if timed out."""
+        import time as _time
         with self.cond:
+            start_ts = _time.time()
             while True:
                 percent = get_memory_usage_percent()
                 if percent >= 80.0:
@@ -86,7 +89,10 @@ class DynamicConcurrencyController:
 
                 if self.running_count < self.current_limit:
                     self.running_count += 1
-                    break
+                    return True
+                if _time.time() - start_ts >= timeout:
+                    print(f"[concurrency] Acquire timeout after {timeout}s, giving up to avoid blocking other OSATs.")
+                    return False
                 self.cond.wait(timeout=1.0)
 
     def release(self):
@@ -561,7 +567,47 @@ def _reset_stuck_processing_logs(db) -> int:
         print(f"[ftp_fetch] ⏰ Timeout reset: {log.filename} "
               f"(id={log.id}, started={log.uploaded_at})")
     if stuck:
-        db.commit()
+        try:
+            db.commit()
+        except Exception as commit_ex:
+            print(f"[ftp_fetch] Error committing stuck processing logs reset: {commit_ex}")
+            db.rollback()
+            try:
+                db.commit()
+            except Exception as retry_ex:
+                print(f"[ftp_fetch] Retry commit also failed: {retry_ex}")
+                db.rollback()
+    return count
+
+
+def _reset_all_unfinished_logs(db) -> int:
+    """
+    Reset ALL unfinished logs (processing/downing/pending) across ALL OSATs to failed.
+    Called before FTP scan to ensure clean state for re-processing after scan completes.
+    Returns the count of reset records.
+    """
+    from app.models.ftp_upload_log import FtpUploadLog
+
+    unfinished = db.query(FtpUploadLog).filter(
+        FtpUploadLog.status.in_(['processing', 'downing', 'pending'])
+    ).all()
+
+    count = len(unfinished)
+    for log in unfinished:
+        prev_status = log.status
+        log.status = 'failed'
+        log.error_msg = 'Reset to failed before FTP scan (all unfinished logs cleared for re-processing)'
+        print(f"[ftp_fetch] Reset unfinished log: {log.filename} (id={log.id}, osat_id={log.osat_id}, prev_status={prev_status})")
+    if unfinished:
+        try:
+            db.commit()
+        except Exception as commit_ex:
+            print(f"[ftp_fetch] Error committing reset all unfinished logs: {commit_ex}")
+            db.rollback()
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
     return count
 
 
@@ -1584,7 +1630,8 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
 def _do_parse(log_id: int, osat_id: int, remote_path: str,
               tmp_dir: str, csv_files_to_process: list, admin_user_id: int) -> dict:
     from app.models.ftp_upload_log import FtpUploadLog
-    concurrency_controller.acquire()
+    if not concurrency_controller.acquire(timeout=300):
+        raise Exception("Concurrency controller acquire timeout (300s), skipping parse to avoid blocking other OSATs")
     try:
         import multiprocessing
         p = multiprocessing.Process(
@@ -2468,6 +2515,13 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
         reset_count = _reset_stuck_processing_logs(db)
         if reset_count:
             print(f"[ftp_fetch] Reset {reset_count} stuck processing logs to failed")
+
+        # If this is a scan snapshot run (auto or manual), reset ALL unfinished logs across ALL OSATs
+        # to ensure clean state. After scan completes, the normal fetch cycle will re-process them.
+        if save_snapshot:
+            all_reset_count = _reset_all_unfinished_logs(db)
+            if all_reset_count:
+                print(f"[ftp_fetch] Reset {all_reset_count} unfinished logs across all OSATs before scan")
 
         # Mark existing scanned/pending logs that match ignore rules as ignored
         existing_unprocessed = db.query(FtpUploadLog).filter(
