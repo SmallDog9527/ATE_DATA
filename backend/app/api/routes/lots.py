@@ -754,14 +754,21 @@ def _parse_and_save(lot_id: int, csv_path: str, db: Session):
                 cleanup_temp_dir(csv_path)
 
         db.commit()
-        print(f"[parse] 全部完成 lot_id={lot_id}")
+        print(f"[parse] Parse completed successfully for lot_id={lot_id}")
 
     except Exception as e:
         import traceback
-        print(f"[parse] 错误: {e}")
+        print(f"[parse] Error: {e}")
         traceback.print_exc()
-        lot.status = 'failed'
-        db.commit()
+        try:
+            db.rollback()
+            lot = db.query(Lot).filter(Lot.id == lot_id).first()
+            if lot:
+                lot.status = 'failed'
+                db.commit()
+        except Exception:
+            pass
+        raise e
 
 
 

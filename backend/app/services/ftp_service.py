@@ -160,8 +160,10 @@ _file_in_progress: set = set()
 _file_in_progress_lock = threading.Lock()
 
 # Concurrent execution lock for OSAT fetch jobs
-_osat_in_progress: set = set()
+# Concurrent execution lock for OSAT fetch jobs with start timestamp tracking
+_osat_in_progress: dict = {}
 _osat_in_progress_lock = threading.Lock()
+_OSAT_FETCH_TIMEOUT_SECONDS = 1800.0  # 30 minutes maximum lock duration
 
 
 class SftpAdapter:
@@ -1684,12 +1686,19 @@ def _do_parse(log_id: int, osat_id: int, remote_path: str,
 def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                        tmp_dir: str, csv_files_to_process: list, admin_user_id: int) -> dict:
     """
-    [Parse Stage] Run in a separate thread:
+    [Parse Stage] Run in a separate process:
     1. Parse files in csv_files_to_process from EXTRACTED_DIR
     2. If filename already exists in DB: delete file from EXTRACTED_DIR and skip
     3. On success: copy to UPLOAD_DIR, compress it, delete from EXTRACTED_DIR
     4. On failure: keep in EXTRACTED_DIR, mark log status as 'failed' with '[Parse Failed]' error prefix
     """
+    # Reset SQLAlchemy database connection pool in child process to isolate sockets
+    from app.core.database import engine, SessionLocal
+    try:
+        engine.dispose(close=False)
+    except Exception as eng_ex:
+        print(f"[ftp_parse] Warning resetting engine pool in child process: {eng_ex}")
+
     from app.models.ftp_upload_log import FtpUploadLog
     from app.models.lot import Lot
     from app.models.osat_config import OsatConfig
@@ -2459,29 +2468,26 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
     4. Fetch the next batch of pending and retryable failed files from DB.
     5. Download up to max_batch_size files concurrently using _DOWNLOAD_WORKERS and parse them.
     """
-    # Prevent concurrent runs of the same OSAT, with Force Priority for manual save_snapshot
+    # Prevent concurrent runs of the same OSAT, with automatic stale lock expiration (30 min)
     import time
+    now_ts = time.time()
     acquired_lock = False
-    if save_snapshot:
-        start_wait = time.time()
-        while time.time() - start_wait < 5.0:
-            with _osat_in_progress_lock:
-                if osat_id not in _osat_in_progress:
-                    _osat_in_progress.add(osat_id)
-                    acquired_lock = True
-                    break
-            time.sleep(0.3)
-        if not acquired_lock:
-            print(f"[ftp_fetch] OSAT id={osat_id} lock busy during manual snapshot request, forcing execution priority...")
-            with _osat_in_progress_lock:
-                _osat_in_progress.add(osat_id)
-            acquired_lock = True
-    else:
-        with _osat_in_progress_lock:
-            if osat_id in _osat_in_progress:
-                print(f"[ftp_fetch] OSAT id={osat_id} is already running, skipping concurrent run")
+    with _osat_in_progress_lock:
+        if osat_id in _osat_in_progress:
+            elapsed = now_ts - _osat_in_progress[osat_id]
+            if elapsed > _OSAT_FETCH_TIMEOUT_SECONDS:
+                print(f"[ftp_fetch] OSAT id={osat_id} previous fetch exceeded timeout ({elapsed:.0f}s > {_OSAT_FETCH_TIMEOUT_SECONDS}s), breaking stale lock.")
+                _osat_in_progress[osat_id] = now_ts
+                acquired_lock = True
+            elif save_snapshot:
+                print(f"[ftp_fetch] OSAT id={osat_id} lock busy during manual snapshot request, overriding lock for priority probe...")
+                _osat_in_progress[osat_id] = now_ts
+                acquired_lock = True
+            else:
+                print(f"[ftp_fetch] OSAT id={osat_id} is already running (running for {elapsed:.0f}s), skipping concurrent run")
                 return
-            _osat_in_progress.add(osat_id)
+        else:
+            _osat_in_progress[osat_id] = now_ts
             acquired_lock = True
 
     db = SessionLocal()
@@ -2489,7 +2495,7 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
     if has_giant_file_in_tmp():
         print(f"[ftp_fetch] OSAT id={osat_id} fetch aborted: Giant file (>50GB) exists under /tmp")
         with _osat_in_progress_lock:
-            _osat_in_progress.discard(osat_id)
+            _osat_in_progress.pop(osat_id, None)
         db.close()
         return
 
@@ -2930,5 +2936,5 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
         print(f"[ftp_fetch] OSAT id={osat_id} exception: {e}")
     finally:
         with _osat_in_progress_lock:
-            _osat_in_progress.discard(osat_id)
+            _osat_in_progress.pop(osat_id, None)
         db.close()
