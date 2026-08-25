@@ -61,7 +61,7 @@
       </div>
       <!-- 内容区 -->
       <div class="content-row">
-        <div class="charts-area">
+        <div class="charts-area" :style="{ width: (currentTab?.options.scatter_zoom_2x && currentTab?.options.show_scatter ? '1640px' : '840px') }">
           <!-- 顶部Options (移入此处以对齐) -->
           <div class="options-bar">
             <div class="options-left">
@@ -127,6 +127,7 @@
                   <th>Limit_H</th>
                   <th>Min</th>
                   <th>Max</th>
+                  <th>Delta</th>
                   <th>Mean</th>
                   <th>Stdev</th>
                   <th>CPK</th>
@@ -143,6 +144,7 @@
                   <td>{{ currentTab.data.upper_limit?.toFixed(4) ?? '-' }}</td>
                   <td>{{ s.stats.min_val?.toFixed(4) ?? '-' }}</td>
                   <td>{{ s.stats.max_val?.toFixed(4) ?? '-' }}</td>
+                  <td>{{ s.stats.max_val != null && s.stats.min_val != null ? (s.stats.max_val - s.stats.min_val).toFixed(4) : '-' }}</td>
                   <td>{{ s.stats.mean?.toFixed(4) ?? '-' }}</td>
                   <td>{{ s.stats.stdev?.toFixed(4) ?? '-' }}</td>
                   <td :style="cpkColor(s.stats.cpk)">{{ s.stats.cpk?.toFixed(4) ?? '-' }}</td>
@@ -193,8 +195,23 @@
                 :disabled="currentTab?.options.scatter_y_mode !== 'sigma'"
                 @change="applyScatterSigmaN"
               />
+              <button
+                :class="['axis-mode-btn', { active: currentTab?.options.scatter_x_mode === 'each' }]"
+                style="margin-left: 12px;"
+                @click="toggleScatterXMode"
+                title="按Site顺序连续排列X轴点（例如1-100为Site1，101-200为Site2...），再点一次返回默认"
+              >Each</button>
+              <button
+                :class="['axis-mode-btn', { active: currentTab?.options.scatter_zoom_2x }]"
+                style="margin-left: auto;"
+                @click="toggleScatterZoom"
+                :title="currentTab?.options.scatter_zoom_2x ? '点击恢复原尺寸 (1X)' : '点击放大为2倍尺寸 (2X)'"
+              >{{ currentTab?.options.scatter_zoom_2x ? '🔍 恢复 (1X)' : '🔍 放大 (2X)' }}</button>
             </div>
-            <div :ref="el => setChartRef(currentTab?.id, 'scatter', el)" style="width:800px;height:260px"></div>
+            <div
+              :ref="el => setChartRef(currentTab?.id, 'scatter', el)"
+              :style="{ width: (currentTab?.options.scatter_zoom_2x ? '1600px' : '800px'), height: (currentTab?.options.scatter_zoom_2x ? '800px' : '400px') }"
+            ></div>
             <div class="chart-legend">
               <span
                 v-for="s in chartSites(currentTab)"
@@ -207,6 +224,9 @@
 
           <!-- Wafer Map -->
           <div v-if="currentTab.options.show_map && currentTab.data && lotInfo?.data_type === 'CP'" class="chart-container" style="flex-direction:column;align-items:center">
+            <div class="map-title-box" style="text-align:center;margin-bottom:8px">
+              <div style="font-size:13px;font-weight:bold;color:#333">{{ currentTab.item_number }}.{{ currentTab.data.param_name }}</div>
+            </div>
             <div style="position:relative">
               <canvas
                 :ref="el => setChartRef(currentTab?.id, 'wafer', el)"
@@ -223,7 +243,7 @@
         <!-- VS Right Panel -->
         <template v-if="vsMode && vsTab">
           <div class="vs-separator"><span>VS</span></div>
-          <div class="vs-right-panel">
+          <div class="vs-right-panel" :style="{ width: (vsTab?.options.scatter_zoom_2x && currentTab?.options.show_scatter ? '1640px' : '840px') }">
             <!-- VS mini options bar -->
             <div class="vs-opts-bar">
               <div class="nav-group">
@@ -275,7 +295,7 @@
                 <thead>
                   <tr>
                     <th>SITE</th><th>Passes</th><th>Failures</th><th>Exec Qty</th><th>Yield</th>
-                    <th>Limit_L</th><th>Limit_H</th><th>Min</th><th>Max</th><th>Mean</th><th>Stdev</th><th>CPK</th>
+                    <th>Limit_L</th><th>Limit_H</th><th>Min</th><th>Max</th><th>Delta</th><th>Mean</th><th>Stdev</th><th>CPK</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -289,6 +309,7 @@
                     <td>{{ vsTab.data.upper_limit?.toFixed(4) ?? '-' }}</td>
                     <td>{{ s.stats.min_val?.toFixed(4) ?? '-' }}</td>
                     <td>{{ s.stats.max_val?.toFixed(4) ?? '-' }}</td>
+                    <td>{{ s.stats.max_val != null && s.stats.min_val != null ? (s.stats.max_val - s.stats.min_val).toFixed(4) : '-' }}</td>
                     <td>{{ s.stats.mean?.toFixed(4) ?? '-' }}</td>
                     <td>{{ s.stats.stdev?.toFixed(4) ?? '-' }}</td>
                     <td :style="cpkColor(s.stats.cpk)">{{ s.stats.cpk?.toFixed(4) ?? '-' }}</td>
@@ -337,8 +358,23 @@
                   :disabled="vsTab?.options.scatter_y_mode !== 'sigma'"
                   @change="applyVsScatterSigmaN"
                 />
+                <button
+                  :class="['axis-mode-btn', { active: vsTab?.options.scatter_x_mode === 'each' }]"
+                  style="margin-left: 12px;"
+                  @click="toggleVsScatterXMode"
+                  title="按Site顺序连续排列X轴点（例如1-100为Site1，101-200为Site2...），再点一次返回默认"
+                >Each</button>
+                <button
+                  :class="['axis-mode-btn', { active: vsTab?.options.scatter_zoom_2x }]"
+                  style="margin-left: auto;"
+                  @click="toggleVsScatterZoom"
+                  :title="vsTab?.options.scatter_zoom_2x ? '点击恢复原尺寸 (1X)' : '点击放大为2倍尺寸 (2X)'"
+                >{{ vsTab?.options.scatter_zoom_2x ? '🔍 恢复 (1X)' : '🔍 放大 (2X)' }}</button>
               </div>
-              <div :ref="el => setChartRef(VS_TAB_ID, 'scatter', el)" style="width:800px;height:260px"></div>
+              <div
+                :ref="el => setChartRef(VS_TAB_ID, 'scatter', el)"
+                :style="{ width: (vsTab?.options.scatter_zoom_2x ? '1600px' : '800px'), height: (vsTab?.options.scatter_zoom_2x ? '800px' : '400px') }"
+              ></div>
               <div class="chart-legend">
                 <span
                   v-for="s in chartSites(vsTab)"
@@ -350,6 +386,9 @@
             </div>
             <!-- VS Wafer Map -->
             <div v-if="currentTab.options.show_map && vsTab.data && lotInfo?.data_type === 'CP'" class="chart-container" style="flex-direction:column;align-items:center">
+              <div class="map-title-box" style="text-align:center;margin-bottom:8px">
+                <div style="font-size:13px;font-weight:bold;color:#333">{{ vsTab.item_number }}.{{ vsTab.data.param_name }}</div>
+              </div>
               <div style="position:relative">
                 <canvas
                   :ref="el => setChartRef(VS_TAB_ID, 'wafer', el)"
@@ -438,6 +477,8 @@ const draftOptions = ref({
   show_map: true,
   scatter_y_mode: 'auto',   // scatter Y-axis range mode: 'auto' | 'limit' | 'sigma'
   scatter_sigma_n: 6,        // N value for sigma mode (default 6, matches IdleCheck)
+  scatter_x_mode: 'normal' as 'normal' | 'each', // scatter X-axis mode: 'normal' (chronological) | 'each' (grouped by site)
+  scatter_zoom_2x: false,    // scatter 2x zoom mode
   site_display_mode: 'site',
   site_view: 'all',       // 'all'(默认: 所有Site，不含ALL聚合) | 'all_only'(仅ALL聚合) | 'site'(多选Site)
   active_sites: [] as number[],  // site_view==='site' 时生效（可多选）
@@ -464,6 +505,20 @@ function applyScatterSigmaN() {
   renderScatter(currentTab.value.id)
 }
 
+function toggleScatterXMode() {
+  if (!currentTab.value) return
+  currentTab.value.options.scatter_x_mode = currentTab.value.options.scatter_x_mode === 'each' ? 'normal' : 'each'
+  renderScatter(currentTab.value.id)
+}
+
+function toggleScatterZoom() {
+  if (!currentTab.value) return
+  currentTab.value.options.scatter_zoom_2x = !currentTab.value.options.scatter_zoom_2x
+  nextTick(() => {
+    chartInstances[`${currentTab.value!.id}_scatter`]?.resize()
+  })
+}
+
 // VS 侧 Scatter Y轴：独立控制
 const vsScatterSigmaNInput = ref<number>(6)
 
@@ -477,6 +532,20 @@ function applyVsScatterSigmaN() {
   if (!vsTab.value) return
   vsTab.value.options.scatter_sigma_n = vsScatterSigmaNInput.value
   renderScatter(VS_TAB_ID)
+}
+
+function toggleVsScatterXMode() {
+  if (!vsTab.value) return
+  vsTab.value.options.scatter_x_mode = vsTab.value.options.scatter_x_mode === 'each' ? 'normal' : 'each'
+  renderScatter(VS_TAB_ID)
+}
+
+function toggleVsScatterZoom() {
+  if (!vsTab.value) return
+  vsTab.value.options.scatter_zoom_2x = !vsTab.value.options.scatter_zoom_2x
+  nextTick(() => {
+    chartInstances[`${VS_TAB_ID}_scatter`]?.resize()
+  })
 }
 
 watch(currentTab, (newTab) => {
@@ -1399,6 +1468,7 @@ function renderHistogram(tabId: string) {
         },
       },
       legend: { show: false },
+      grid: { top: 48, bottom: 35, left: 55, right: 25 },
       xAxis: {
         type: 'category',
         data: binLabels,
@@ -1539,6 +1609,7 @@ function renderHistogram(tabId: string) {
       },
       tooltip: { trigger: 'axis' },
       legend: { show: false },
+      grid: { top: 48, bottom: 35, left: 55, right: 25 },
       xAxis: {
         type: 'value',
         name: unit,
@@ -1608,6 +1679,8 @@ function renderScatter(tabId: string) {
 
   const { sites, unit, lower_limit: ll, upper_limit: ul } = tab.data
   const allSites = chartSites(tab)
+  const isEachMode = tab.options?.scatter_x_mode === 'each'
+  let currentXOffset = 0
 
   const series: any[] = allSites.map((s: any, idx: number) => {
     let validData = []
@@ -1621,10 +1694,18 @@ function renderScatter(tabId: string) {
       }
     }
 
+    let plotData: [number, number][]
+    if (isEachMode) {
+      plotData = validData.map((p: any, i: number) => [currentXOffset + i + 1, p.val])
+      currentXOffset += validData.length
+    } else {
+      plotData = validData.map((p: any) => [p.idx, p.val])
+    }
+
     return {
       type: 'scatter',
       name: legendLabel(s.site),
-      data: validData.map((p: any) => [p.idx, p.val]),
+      data: plotData,
       symbolSize: 3,
       itemStyle: { color: siteColor(s.site), opacity: 0.6 },
     }
@@ -1675,7 +1756,6 @@ function renderScatter(tabId: string) {
     },
   })
 
-  const { min: globalMin, max: globalMax } = getGlobalRange(tab)
   const mode = tab.options.scatter_y_mode ?? 'auto'
 
   let yMin: number
@@ -1693,16 +1773,42 @@ function renderScatter(tabId: string) {
     yMax = allSiteStats.mean + n * allSiteStats.stdev
     if (yMin === yMax) { yMin -= 1; yMax += 1 }
   } else {
-    // Auto mode：按当前数据范围（global min/max）±5% padding，不强制包含LL/UL
-    const padding = (globalMax - globalMin) * 0.05 || 0.1
-    yMin = globalMin - padding
-    yMax = globalMax + padding
+    // Auto mode: Y axis min is stats min_val, max is stats max_val
+    let statMin = allSiteStats?.min_val
+    let statMax = allSiteStats?.max_val
+
+    if (tab.options?.site_view === 'site' && allSites.length > 0) {
+      const mins = allSites.map((s: any) => s.stats?.min_val).filter((v: any) => v != null)
+      const maxs = allSites.map((s: any) => s.stats?.max_val).filter((v: any) => v != null)
+      if (mins.length > 0) statMin = Math.min(...mins)
+      if (maxs.length > 0) statMax = Math.max(...maxs)
+    }
+
+    if (statMin != null && statMax != null) {
+      yMin = statMin
+      yMax = statMax
+    } else {
+      const { min: globalMin, max: globalMax } = getGlobalRange(tab)
+      yMin = globalMin
+      yMax = globalMax
+    }
     if (yMin === yMax) { yMin -= 1; yMax += 1 }
   }
 
+  const param_name = tab.data.param_name
   chart.setOption({
+    title: {
+      text: `${tab.item_number}.${param_name}`,
+      subtext: allSiteStats
+        ? `Min=${allSiteStats.min_val?.toFixed(4)} Max=${allSiteStats.max_val?.toFixed(4)} Mean=${allSiteStats.mean?.toFixed(4)} Stdev=${allSiteStats.stdev?.toFixed(4)} CPK=${allSiteStats.cpk?.toFixed(4)}`
+        : '',
+      left: 'center',
+      textStyle: { fontSize: 13 },
+      subtextStyle: { fontSize: 11, color: '#666' },
+    },
     tooltip: { trigger: 'item' },
     legend: { show: false },
+    grid: { top: 48, bottom: 35, left: 55, right: 25 },
     xAxis: { type: 'value', name: 'Index' },
     yAxis: {
       type: 'value',
@@ -2134,7 +2240,10 @@ onMounted(async () => {
   justify-content: center;
   align-items: center;
   gap: 6px;
-  padding: 6px 4px 2px;
+  padding: 2px 4px;
+  margin-top: -12px;
+  position: relative;
+  z-index: 2;
 }
 .chart-legend-item {
   display: inline-flex;
@@ -2164,7 +2273,7 @@ onMounted(async () => {
 }
 
 /* Scatter Y-axis range mode controls (Auto / Limit / N sigma) */
-.scatter-axis-mode-box { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.scatter-axis-mode-box { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; width: 100%; box-sizing: border-box; }
 .scatter-axis-mode-box .label { font-size: 12px; font-weight: 500; color: #4b5563; }
 .axis-mode-btn { border: 1px solid #d9d9d9; background: #fff; padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; color: #374151; }
 .axis-mode-btn:hover { border-color: #1890ff; color: #1890ff; }
@@ -2194,7 +2303,7 @@ onMounted(async () => {
   display: flex;
   gap: 12px;
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: auto;
 }
 
 .charts-area {

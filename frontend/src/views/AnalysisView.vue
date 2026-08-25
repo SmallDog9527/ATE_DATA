@@ -65,6 +65,13 @@
             <template v-if="!exporting">📁 导出 Excel</template>
             <template v-else>导出中 {{ exportProgress }}%</template>
           </button>
+          <button 
+            class="btn-bin save-report-btn" 
+            :class="{ saved: isSavedReport }" 
+            @click="handleSaveToReport"
+          >
+            {{ isSavedReport ? '💾 已保存到报表' : '💾 保存到报表中心' }}
+          </button>
           
           <template v-if="options.mean_limit === 'hide'">
             <button class="btn-bin" style="margin-left: 120px;" @click="triggerExportLimit">📤 导出 Limit</button>
@@ -415,6 +422,20 @@ const columnDefs = computed(() => {
     );
   }
 
+  // Rightmost Comment column (default width: 200px, editable)
+  baseDefs.push({
+    headerName: 'Comment',
+    field: 'comment',
+    width: 200,
+    editable: true,
+    cellClass: 'editable-cell',
+    filter: true,
+    floatingFilter: true,
+    suppressHeaderMenuButton: false,
+    suppressHeaderFilterButton: false,
+    floatingFilterComponentParams: { suppressFilterButton: true }
+  });
+
   return baseDefs;
 });
 
@@ -580,11 +601,124 @@ function toggleFilterEdited() {
   }
 }
 
+const isSavedReport = computed(() => !!route.query.report_id)
+const currentReportConfig = ref<any>({})
+
+async function saveItemCommentsToBackend() {
+  const commentsMap: Record<string, string> = {}
+  testItems.value.forEach(row => {
+    if (row.comment && row.comment.trim()) {
+      commentsMap[row.item_name] = row.comment.trim()
+    }
+  })
+  try {
+    await api.post(`/analysis/lot/${lotId.value}/item_comments`, commentsMap)
+  } catch (e) {
+    console.error('Failed to save item comments:', e)
+  }
+}
+
+let autoSaveReportTimeout: any = null
+
+async function saveReportImmediately() {
+  const reportId = route.query.report_id
+  if (!reportId) return
+
+  if (autoSaveReportTimeout) {
+    clearTimeout(autoSaveReportTimeout)
+    autoSaveReportTimeout = null
+  }
+
+  const commentsMap: Record<string, string> = {}
+  testItems.value.forEach(row => {
+    if (row.comment && row.comment.trim()) {
+      commentsMap[row.item_name] = row.comment.trim()
+    }
+  })
+
+  const configData = {
+    ...currentReportConfig.value,
+    comments: commentsMap,
+    options: options.value,
+    lot_id: lotId.value,
+  }
+
+  const commentSummary = Object.entries(commentsMap).map(([k, v]) => `${k}: ${v}`).join('\n')
+
+  try {
+    await api.put(`/reports/${reportId}`, {
+      product_name: (lotInfo.value?.product_name || '').trim() || undefined,
+      comment: commentSummary || undefined,
+      config_data: configData
+    })
+    currentReportConfig.value = configData
+    console.log('Param analysis report auto-saved to DB')
+  } catch (err: any) {
+    console.error('Failed to save report comments:', err)
+  }
+}
+
+async function handleSaveToReport() {
+  const name = lotInfo.value ? (lotInfo.value.filename || `Lot_${lotId.value}`) : `Lot_${lotId.value}`
+  const prod = (lotInfo.value?.product_name || '').trim()
+  
+  const commentsMap: Record<string, string> = {}
+  testItems.value.forEach(row => {
+    if (row.comment && row.comment.trim()) {
+      commentsMap[row.item_name] = row.comment.trim()
+    }
+  })
+
+  const commentSummary = Object.entries(commentsMap).map(([k, v]) => `${k}: ${v}`).join('\n')
+
+  const configData = {
+    comments: commentsMap,
+    options: options.value,
+    lot_id: lotId.value,
+  }
+
+  const currentUrl = new URL(window.location.href)
+
+  try {
+    const res: any = await api.post('/reports', {
+      name: `${name}_ParamAnalysis`,
+      product_name: prod,
+      url: currentUrl.toString(),
+      type: 'Param Analysis',
+      source: 'eng',
+      comment: commentSummary || undefined,
+      config_data: configData
+    })
+
+    const dbReportId = res.id
+    currentUrl.searchParams.set('report_id', String(dbReportId))
+
+    await api.put(`/reports/${dbReportId}`, {
+      url: currentUrl.toString()
+    })
+
+    currentReportConfig.value = configData
+
+    router.replace({
+      query: { ...route.query, report_id: String(dbReportId) }
+    })
+    alert('成功保存到报表中心！')
+  } catch (err: any) {
+    alert(err?.response?.data?.detail || err?.message || '保存到报表中心失败')
+  }
+}
+
 function onCellValueChanged(event: any) {
-  if (event.column.getColId() === 'll_new' || event.column.getColId() === 'ul_new') {
+  const colId = event.column.getColId()
+  if (colId === 'll_new' || colId === 'ul_new') {
     saveCustomLimitsToBackend()
     if (gridApi.value) {
       gridApi.value.onFilterChanged()
+    }
+  } else if (colId === 'comment') {
+    saveItemCommentsToBackend()
+    if (route.query.report_id) {
+      saveReportImmediately()
     }
   }
 }
@@ -665,7 +799,32 @@ async function fetchItems() {
     console.error('Failed to fetch custom limits:', e)
   }
 
-  testItems.value = data
+  // Load report snapshot comments if opened from report center
+  if (route.query.report_id) {
+    try {
+      const report: any = await api.get(`/reports/${route.query.report_id}`)
+      if (report) {
+        currentReportConfig.value = report.config_data || {}
+        const reportComments = report.config_data?.comments || {}
+        data.forEach(item => {
+          if (reportComments[item.item_name] !== undefined) {
+            item.comment = reportComments[item.item_name]
+          }
+        })
+        if (!report.product_name && lotInfo.value?.product_name) {
+          try {
+            await api.put(`/reports/${route.query.report_id}`, {
+              product_name: lotInfo.value.product_name
+            })
+          } catch (e) {}
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch report detail:', e)
+    }
+  }
+
+  testItems.value = [...data]
   itemCount.value = data.length
 
   // Auto-set site_mode: >8 sites -> LOT, <=8 sites -> SITE
@@ -1010,5 +1169,19 @@ onMounted(async () => {
 :deep(.editable-cell) {
   background-color: #f6ffed !important;
   cursor: pointer;
+}
+
+.save-report-btn {
+  background: #1890ff !important;
+  color: white !important;
+}
+.save-report-btn:hover {
+  background: #40a9ff !important;
+}
+.save-report-btn.saved {
+  background: #52c41a !important;
+}
+.save-report-btn.saved:hover {
+  background: #73d13d !important;
 }
 </style>

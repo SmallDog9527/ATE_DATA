@@ -2304,3 +2304,179 @@ def get_program_snapshot_refresh_status(
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Permission denied")
     return _get_program_update_progress()
+
+
+def reparse_pgs_upload(rec_id: int):
+    """
+    Re-parse an existing PgsUpload record using its saved storage_path file.
+    """
+    from app.core.database import SessionLocal
+    import json
+    import tempfile
+    import zipfile
+    import shutil
+
+    db = SessionLocal()
+    try:
+        rec = db.query(PgsUpload).filter(PgsUpload.id == rec_id).first()
+        if not rec or not rec.storage_path or not os.path.exists(rec.storage_path):
+            print(f"[reparse_pgs] Record {rec_id} or file not found")
+            return
+
+        save_path = rec.storage_path
+        saved_filename = rec.filename or os.path.basename(save_path)
+        ext = os.path.splitext(saved_filename)[1].lower()
+        product_name = rec.product_name
+
+        is_t2k = False
+        if ext == ".zip":
+            try:
+                with zipfile.ZipFile(save_path, "r") as zf:
+                    names = [info.filename.lower() for info in zf.infolist() if not info.is_dir()]
+                    has_pgs = any(name.endswith(".pgs") for name in names)
+                    has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
+                    if not has_pgs and has_t2k:
+                        is_t2k = True
+            except Exception:
+                pass
+        elif ext == ".rar":
+            try:
+                import rarfile
+                with rarfile.RarFile(save_path, "r") as rf:
+                    names = [info.filename.lower() for info in rf.infolist() if not info.isdir()]
+                    has_pgs = any(name.endswith(".pgs") for name in names)
+                    has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
+                    if not has_pgs and has_t2k:
+                        is_t2k = True
+            except Exception:
+                try:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        _extract_with_unar(save_path, tmpdir, ext)
+                        files = _walk_extracted_files(tmpdir)
+                        names = [item[0].lower() for item in files]
+                        has_pgs = any(name.endswith(".pgs") for name in names)
+                        has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
+                        if not has_pgs and has_t2k:
+                            is_t2k = True
+                except Exception:
+                    pass
+        elif ext == ".7z":
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    _extract_with_unar(save_path, tmpdir, ext)
+                    files = _walk_extracted_files(tmpdir)
+                    names = [item[0].lower() for item in files]
+                    has_pgs = any(name.endswith(".pgs") for name in names)
+                    has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
+                    if not has_pgs and has_t2k:
+                        is_t2k = True
+            except Exception:
+                pass
+
+        if is_t2k:
+            from app.services.parsers.t2k_parser import parse_t2k_folder
+            dest_dir = _extract_cache_dir(saved_filename)
+            if os.path.exists(dest_dir):
+                shutil.rmtree(dest_dir)
+            os.makedirs(dest_dir, exist_ok=True)
+
+            if ext == ".zip":
+                with zipfile.ZipFile(save_path, "r") as zf:
+                    zf.extractall(dest_dir)
+            elif ext == ".rar":
+                try:
+                    import rarfile
+                    with rarfile.RarFile(save_path, "r") as rf:
+                        rf.extractall(dest_dir)
+                except Exception:
+                    res = _extract_with_unar(save_path, dest_dir, ext)
+                    if res.returncode != 0:
+                        raise ValueError("Failed to extract RAR archive")
+            elif ext == ".7z":
+                res = _extract_with_unar(save_path, dest_dir, ext)
+                if res.returncode != 0:
+                    raise ValueError("Failed to extract 7Z archive")
+            else:
+                raise ValueError(f"Unsupported archive extension: {ext}")
+
+            result = parse_t2k_folder(dest_dir)
+            program_version = result.get("program_version")
+            pgs_version = None
+
+            from app.services.parsers.t2k_parser import find_t2k_main_cpp, _collect_program_files
+            _, _, all_cpps = _collect_program_files(dest_dir)
+            picked_cpp = find_t2k_main_cpp(all_cpps)
+            if picked_cpp and os.path.exists(picked_cpp):
+                cpp_dest_path = _cached_cpp_path(saved_filename)
+                os.makedirs(os.path.dirname(cpp_dest_path), exist_ok=True)
+                shutil.copy2(picked_cpp, cpp_dest_path)
+        else:
+            cached = _cache_program_files(save_path, saved_filename)
+            with open(cached["pgs_path"], "rb") as fp:
+                text = _decode_pgs_bytes(fp.read())
+            result = parse_pgs(text, cached["pgs_filename"])
+            pgs_version = result.get("pgs_version")
+            program_version = result.get("program_version")
+
+        # Inherit bin names if summary is empty
+        summary_list = result.get("summary", [])
+        if not summary_list and result.get("params"):
+            distinct_bins = {}
+            for p in result["params"]:
+                sb = p.get("sw_bin")
+                hb = p.get("hw_bin")
+                if sb is not None and hb is not None:
+                    distinct_bins[sb] = hb
+
+            if distinct_bins and product_name:
+                prev_upload = db.query(PgsUpload).filter(
+                    PgsUpload.product_name == product_name,
+                    PgsUpload.id != rec.id,
+                    PgsUpload.parse_status == "ok",
+                    PgsUpload.parsed_summary.isnot(None),
+                    PgsUpload.parsed_summary != "[]"
+                ).order_by(PgsUpload.upload_date.desc()).first()
+
+                if prev_upload:
+                    try:
+                        prev_summary = json.loads(prev_upload.parsed_summary)
+                        prev_map = {row["sw_bin"]: row.get("bin_name") for row in prev_summary if row.get("bin_name")}
+
+                        inherited_summary = []
+                        for sb, hb in sorted(distinct_bins.items()):
+                            bin_name = prev_map.get(sb, "")
+                            inherited_summary.append({
+                                "sw_bin": sb,
+                                "hw_bin": hb,
+                                "bin_name": bin_name
+                            })
+
+                        if inherited_summary:
+                            result["summary"] = inherited_summary
+                    except Exception as e:
+                        print(f"[reparse_pgs] Failed to inherit bin names: {e}")
+
+        rec.program_version = program_version
+        rec.pgs_version = pgs_version
+        rec.parsed_params = json.dumps(result["params"], ensure_ascii=False)
+        rec.parsed_summary = json.dumps(result["summary"], ensure_ascii=False)
+        rec.parse_status = "ok"
+        rec.parse_error = None
+        db.commit()
+        invalidate_program_list_cache()
+        print(f"[reparse_pgs] Successfully re-parsed PgsUpload id={rec_id}")
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        try:
+            db.rollback()
+            rec = db.query(PgsUpload).filter(PgsUpload.id == rec_id).first()
+            if rec:
+                rec.parse_status = "error"
+                rec.parse_error = str(exc)
+                db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
+

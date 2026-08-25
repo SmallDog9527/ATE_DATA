@@ -35,6 +35,7 @@ const router = createRouter({
                 { path: 'program-changes/:productName', name: 'product-programs', component: () => import('@/views/ProductProgramsView.vue'), meta: { title: 'Vite Pgm Product' } },
                 { path: 'program-changes/:productName/pgs/:id', name: 'pgs-param', component: () => import('@/views/PgsParamView.vue'), meta: { title: 'Vite Pgm Param' } },
                 { path: 'program-changes/:productName/data/:id', name: 'data-program-param', component: () => import('@/views/PgsParamView.vue'), meta: { title: 'Vite Pgm Param' } },
+                { path: 'tools', name: 'tools', component: () => import('@/views/ToolsView.vue'), meta: { title: 'Vite Tools' } },
             ],
         },
     ],

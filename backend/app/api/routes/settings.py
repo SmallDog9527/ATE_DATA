@@ -1090,6 +1090,282 @@ def get_manual_operators(
     return usernames
 
 
+def _resolve_manual_file_path(path: Optional[str]) -> Optional[str]:
+    """Resolve file storage path across container, host mounts, and auto-zipped archives."""
+    if not path:
+        return None
+
+    def _try_paths(p: str) -> Optional[str]:
+        for candidate in [p, p + '.zip', p.replace('.zip', '')]:
+            if candidate and os.path.exists(candidate):
+                return candidate
+        return None
+
+    resolved = _try_paths(path)
+    if resolved:
+        return resolved
+
+    if path.startswith('/app/uploads/'):
+        alt = path.replace('/app/uploads/', '/data/ATE_DATA/uploads/')
+        resolved = _try_paths(alt)
+        if resolved:
+            return resolved
+
+    if path.startswith('/data/ATE_DATA/uploads/'):
+        alt = path.replace('/data/ATE_DATA/uploads/', '/app/uploads/')
+        resolved = _try_paths(alt)
+        if resolved:
+            return resolved
+
+    from app.api.routes.lots import DATA_DIR, SUMMARY_DIR
+    base = os.path.basename(path)
+    for d in [DATA_DIR, SUMMARY_DIR]:
+        cand = os.path.join(d, base)
+        resolved = _try_paths(cand)
+        if resolved:
+            return resolved
+
+    return None
+
+
+def _do_manual_lot_reparse(lot_id: int, file_path: str):
+    """
+    Background worker to re-parse a manual lot.
+    Handles zip extraction, csv parsing, or summary parsing.
+    """
+    from app.core.database import SessionLocal
+    from app.api.routes.lots import _parse_and_save
+    import zipfile
+    import tempfile
+    import shutil
+
+    db = SessionLocal()
+    try:
+        lot = db.query(Lot).filter(Lot.id == lot_id).first()
+        if not lot:
+            return
+
+        lot.status = 'processing'
+        db.commit()
+
+        lower_path = file_path.lower()
+        if lower_path.endswith('.zip'):
+            temp_dir = tempfile.mkdtemp(prefix=f"retry_lot_{lot_id}_")
+            try:
+                with zipfile.ZipFile(file_path, 'r') as zf:
+                    zf.extractall(temp_dir)
+
+                extracted_files = [
+                    os.path.join(temp_dir, f) for f in os.listdir(temp_dir)
+                    if os.path.isfile(os.path.join(temp_dir, f)) and not f.startswith('.')
+                ]
+                if not extracted_files:
+                    raise ValueError("No valid files found inside zip archive")
+
+                csv_files = [f for f in extracted_files if f.lower().endswith('.csv')]
+                xls_files = [f for f in extracted_files if f.lower().endswith(('.xls', '.xlsx'))]
+                txt_files = [f for f in extracted_files if f.lower().endswith('.txt')]
+
+                if csv_files:
+                    target_file = csv_files[0]
+                    _parse_and_save(lot.id, target_file, db)
+                elif xls_files:
+                    from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
+                    parse_and_save_xls_summary(xls_files[0], db, lot.user_id, osat_name="chipmore")
+                    lot.status = 'processed'
+                    lot.finish_date = datetime.now(timezone.utc)
+                    db.commit()
+                elif txt_files:
+                    from app.services.parsers.summary_parser import parse_summary_txt
+                    sum_data = parse_summary_txt(txt_files[0])
+                    if sum_data.get('beginning_time'):
+                        lot.beginning_time = sum_data['beginning_time']
+                        lot.test_date = sum_data['beginning_time']
+                    if sum_data.get('ending_time'):
+                        lot.ending_time = sum_data['ending_time']
+                    if sum_data.get('program'):
+                        lot.program = sum_data['program']
+                    lot.status = 'processed'
+                    lot.finish_date = datetime.now(timezone.utc)
+                    db.commit()
+                else:
+                    target_file = extracted_files[0]
+                    _parse_and_save(lot.id, target_file, db)
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+        elif lower_path.endswith(('.xls', '.xlsx')):
+            from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
+            parse_and_save_xls_summary(file_path, db, lot.user_id, osat_name="chipmore")
+            lot.status = 'processed'
+            lot.finish_date = datetime.now(timezone.utc)
+            db.commit()
+
+        elif lower_path.endswith('.txt'):
+            from app.services.parsers.summary_parser import parse_summary_txt
+            sum_data = parse_summary_txt(file_path)
+            if sum_data.get('beginning_time'):
+                lot.beginning_time = sum_data['beginning_time']
+                lot.test_date = sum_data['beginning_time']
+            if sum_data.get('ending_time'):
+                lot.ending_time = sum_data['ending_time']
+            if sum_data.get('program'):
+                lot.program = sum_data['program']
+            lot.status = 'processed'
+            lot.finish_date = datetime.now(timezone.utc)
+            db.commit()
+
+        else:
+            _parse_and_save(lot.id, file_path, db)
+
+        print(f"[_do_manual_lot_reparse] Finished re-parsing for lot_id={lot_id}")
+    except Exception as e:
+        import traceback
+        print(f"[_do_manual_lot_reparse] Failed to re-parse lot {lot_id}: {e}")
+        traceback.print_exc()
+        try:
+            db.rollback()
+            lot = db.query(Lot).filter(Lot.id == lot_id).first()
+            if lot:
+                lot.status = 'failed'
+                db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+@router.post("/manual-logs/{upload_type}/{log_id}/retry")
+def retry_manual_upload_log(
+    upload_type: str,
+    log_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Retry re-parsing a failed manual upload log (data lot or program upload).
+    """
+    from app.tasks.ftp_scheduler import _executor
+
+    if upload_type == "data":
+        lot = db.query(Lot).filter(Lot.id == log_id, Lot.data_source == 'manual').first()
+        if not lot:
+            raise HTTPException(status_code=404, detail="Manual lot record not found")
+        if not (current_user.role in ('admin', 'eng') or lot.user_id == current_user.id):
+            raise HTTPException(status_code=403, detail="Permission denied")
+        if lot.status not in ('failed', 'error'):
+            raise HTTPException(status_code=400, detail="Only failed lots can be retried")
+
+        real_path = _resolve_manual_file_path(lot.storage_path)
+        if not real_path or not os.path.exists(real_path):
+            raise HTTPException(status_code=404, detail="Original data file not found on disk")
+
+        lot.status = 'pending'
+        db.commit()
+
+        _executor.submit(_do_manual_lot_reparse, lot.id, real_path)
+        return {"message": "Manual data lot re-parsing task submitted in background"}
+
+    elif upload_type == "program":
+        rec = db.query(PgsUpload).filter(PgsUpload.id == log_id).first()
+        if not rec:
+            raise HTTPException(status_code=404, detail="Program upload record not found")
+        if not (current_user.role in ('admin', 'eng') or rec.uploader_id == current_user.id):
+            raise HTTPException(status_code=403, detail="Permission denied")
+        if rec.parse_status not in ('failed', 'error'):
+            raise HTTPException(status_code=400, detail="Only failed program uploads can be retried")
+
+        real_path = _resolve_manual_file_path(rec.storage_path)
+        if not real_path or not os.path.exists(real_path):
+            raise HTTPException(status_code=404, detail="Original program package file not found on disk")
+
+        rec.parse_status = 'pending'
+        rec.parse_error = None
+        db.commit()
+
+        from app.api.routes.programs import reparse_pgs_upload
+        _executor.submit(reparse_pgs_upload, rec.id)
+        return {"message": "Program re-parsing task submitted in background"}
+
+    else:
+        raise HTTPException(status_code=400, detail="Invalid upload_type. Must be 'data' or 'program'")
+
+
+@router.get("/manual-logs/{upload_type}/{log_id}/download")
+def download_manual_upload_log(
+    upload_type: str,
+    log_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Download original raw file for a manual upload log record.
+    """
+    from fastapi.responses import FileResponse, StreamingResponse
+    from urllib.parse import quote
+    import io
+    import zipfile
+
+    if upload_type == "data":
+        lot = db.query(Lot).filter(Lot.id == log_id, Lot.data_source == 'manual').first()
+        if not lot:
+            raise HTTPException(status_code=404, detail="Manual lot record not found")
+        if not (current_user.role in ('admin', 'eng') or lot.user_id == current_user.id):
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+        real_path = _resolve_manual_file_path(lot.storage_path)
+        if not real_path or not os.path.exists(real_path):
+            raise HTTPException(status_code=404, detail="Original data file not found on disk")
+
+        download_name = lot.filename or os.path.basename(real_path)
+        encoded_name = quote(download_name)
+        disposition = f"attachment; filename=\"{download_name}\"; filename*=UTF-8''{encoded_name}"
+
+        return FileResponse(
+            real_path,
+            filename=download_name,
+            headers={"Content-Disposition": disposition}
+        )
+
+    elif upload_type == "program":
+        rec = db.query(PgsUpload).filter(PgsUpload.id == log_id).first()
+        if not rec or rec.parse_status == "deleted":
+            raise HTTPException(status_code=404, detail="Program upload record not found or deleted")
+        if not (current_user.role in ('admin', 'eng') or rec.uploader_id == current_user.id):
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+        real_path = _resolve_manual_file_path(rec.storage_path)
+        if not real_path or not os.path.exists(real_path):
+            raise HTTPException(status_code=404, detail="Original program package file not found on disk")
+
+        download_name = rec.filename or os.path.basename(real_path)
+        ext = os.path.splitext(download_name)[1].lower()
+        if ext in {".zip", ".rar", ".7z"}:
+            encoded_name = quote(download_name)
+            disposition = f"attachment; filename=\"{download_name}\"; filename*=UTF-8''{encoded_name}"
+            return FileResponse(
+                real_path,
+                filename=download_name,
+                headers={"Content-Disposition": disposition}
+            )
+
+        zip_name = os.path.splitext(download_name)[0] + ".zip"
+        encoded_zip_name = quote(zip_name)
+        disposition = f"attachment; filename=\"{zip_name}\"; filename*=UTF-8''{encoded_zip_name}"
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(real_path, arcname=download_name)
+        buffer.seek(0)
+        return StreamingResponse(
+            buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": disposition}
+        )
+
+    else:
+        raise HTTPException(status_code=400, detail="Invalid upload_type. Must be 'data' or 'program'")
+
+
 def get_project_version() -> str:
     import os
     import subprocess

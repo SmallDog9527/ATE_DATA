@@ -553,7 +553,7 @@
               <colgroup>
                 <col style="width:70px" />
                 <col />
-                <col style="width:120px" />
+                <col style="width:195px" />
                 <col style="width:120px" />
                 <col style="width:150px" />
                 <col v-if="authStore.isAdmin || authStore.isEng" style="width:120px" />
@@ -578,7 +578,11 @@
                   <td class="log-path" :title="log.filename">{{ log.filename }}</td>
                   <td>
                     <span v-if="log.status === 'success'" class="badge green">✅ 成功</span>
-                    <span v-else-if="log.status === 'failed'" class="badge red" :title="log.error_msg">❌ 失败</span>
+                    <div v-else-if="log.status === 'failed'" style="display: inline-flex; align-items: center; gap: 6px; flex-wrap: nowrap; white-space: nowrap;">
+                      <span class="badge red" :title="log.error_msg">❌ 失败</span>
+                      <button @click="retryManualLog(log)" :disabled="log._retrying" class="btn-sm btn-retry" style="padding: 2px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; border: 1px solid #dcdfe6; background: #fff;">{{ log._retrying ? '重试中...' : '重试' }}</button>
+                      <button @click="downloadManualLog(log)" :disabled="log._downloading" class="btn-sm btn-down" style="padding: 2px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; border: 1px solid #3b82f6; background: #fff; color: #3b82f6;">{{ log._downloading ? 'downing...' : '下载' }}</button>
+                    </div>
                     <span v-else-if="log.status === 'deleted'" class="badge gray">🗑 已删除</span>
                     <span v-else class="badge blue">⏳ 处理中</span>
                     <div v-if="log.status === 'failed' && log.error_msg" class="log-error" :title="log.error_msg" style="margin-top:4px">
@@ -1859,6 +1863,8 @@ interface ManualLog {
   file_size?: number
   uploader_name?: string
   uploader_id?: number
+  _retrying?: boolean
+  _downloading?: boolean
 }
 const manualLogs        = ref<ManualLog[]>([])
 const manualLogsLoading = ref(false)
@@ -1895,10 +1901,67 @@ async function loadManualLogs() {
     if (manualLogFilterOperator.value) params.operator = manualLogFilterOperator.value
 
     const data: any = await api.get('/settings/manual-logs', { params })
-    manualLogs.value = data.items || []
+    manualLogs.value = (data.items || []).map((item: any) => ({
+      ...item,
+      _retrying: false,
+      _downloading: false,
+    }))
     manualLogTotal.value = data.total || 0
   } catch {} finally {
     manualLogsLoading.value = false
+  }
+}
+
+async function retryManualLog(log: any) {
+  if (!log || !log.id) return
+  log._retrying = true
+  try {
+    const res: any = await api.post(`/settings/manual-logs/${log.upload_type}/${log.id}/retry`)
+    alert(res.message || '重试任务已提交')
+    await loadManualLogs()
+  } catch (err: any) {
+    alert(err.response?.data?.detail || '重试失败')
+  } finally {
+    log._retrying = false
+  }
+}
+
+async function downloadManualLog(log: any) {
+  if (!log || !log.id) return
+  log._downloading = true
+  try {
+    const res: any = await api.get(`/settings/manual-logs/${log.upload_type}/${log.id}/download`, {
+      responseType: 'blob',
+    })
+    const blobData = res.data instanceof Blob ? res.data : new Blob([res.data])
+    let filename = log.filename || `manual_${log.upload_type}_${log.id}.dat`
+
+    // Extract filename from Content-Disposition header if available
+    const disposition = res.headers?.['content-disposition'] || ''
+    if (disposition.includes('filename*=')) {
+      const match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+      if (match && match[1]) {
+        filename = decodeURIComponent(match[1])
+      }
+    } else if (disposition.includes('filename=')) {
+      const match = disposition.match(/filename="?([^";]+)"?/i)
+      if (match && match[1]) {
+        filename = decodeURIComponent(match[1])
+      }
+    }
+
+    const url = window.URL.createObjectURL(blobData)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+  } catch (err: any) {
+    alert(err.response?.data?.detail || '下载原文件失败')
+  } finally {
+    log._downloading = false
   }
 }
 

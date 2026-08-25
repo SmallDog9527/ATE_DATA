@@ -324,6 +324,8 @@ def update_report(
         
     if report_in.name is not None:
         report.name = report_in.name
+    if report_in.product_name is not None:
+        report.product_name = report_in.product_name
     if report_in.url is not None:
         report.url = report_in.url
     if report_in.comment is not None:

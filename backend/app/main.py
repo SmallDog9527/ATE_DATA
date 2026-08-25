@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes import auth, lots, products, analysis, users, shares, reports, programs, specs
+from app.api.routes import auth, lots, products, analysis, users, shares, reports, programs, specs, tools
 from app.api.routes import settings as settings_router
 
 app = FastAPI(
@@ -26,6 +26,7 @@ app.include_router(reports.router,          prefix="/api")
 app.include_router(settings_router.router,  prefix="/api")
 app.include_router(programs.router,         prefix="/api")
 app.include_router(specs.router,            prefix="/api")
+app.include_router(tools.router,            prefix="/api")
 
 
 

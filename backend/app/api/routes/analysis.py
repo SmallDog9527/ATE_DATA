@@ -32,14 +32,18 @@ from app.models.user import User
 
 UPLOAD_DIR = os.path.expanduser(settings.UPLOAD_DIR)
 PERSIST_EXPORT_DIR = os.path.join(os.path.dirname(UPLOAD_DIR), "export_results")
+CUSTOM_LIMITS_DIR = os.path.join(os.path.dirname(UPLOAD_DIR), "custom_limits")
+ITEM_COMMENTS_DIR = os.path.join(os.path.dirname(UPLOAD_DIR), "item_comments")
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
-# 全局存储导出任务状态 (生产环境建议使用 Redis)
+# Global storage for export task status
 export_tasks = {}
 EXPORT_RESULT_DIR = PERSIST_EXPORT_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(EXPORT_RESULT_DIR, exist_ok=True)
+os.makedirs(CUSTOM_LIMITS_DIR, exist_ok=True)
+os.makedirs(ITEM_COMMENTS_DIR, exist_ok=True)
 
 @router.get("/lot/{lot_id}/items_summary")
 def get_test_items_summary(
@@ -133,6 +137,16 @@ def get_test_items_summary(
                 first_idx = fail_mask.idxmax()
                 first_fail_bin = int(df.loc[first_idx, 'SOFT_BIN'])
 
+        # Load saved item comments if available
+        saved_comments = {}
+        comments_filepath = os.path.join(ITEM_COMMENTS_DIR, f"lot_{lot_id}.json")
+        if os.path.exists(comments_filepath):
+            try:
+                with open(comments_filepath, "r", encoding="utf-8") as f:
+                    saved_comments = json.load(f) or {}
+            except Exception:
+                saved_comments = {}
+
         result.append({
             "id": item.id,
             "item_number": item.item_number,
@@ -141,6 +155,7 @@ def get_test_items_summary(
             "unit": item.unit,
             "lower_limit": ll,
             "upper_limit": ul,
+            "comment": saved_comments.get(item.item_name, "") if isinstance(saved_comments, dict) else "",
             **stats,
             **site_means
         })
@@ -529,6 +544,89 @@ def get_multi_lot_custom_limits(
     return []
 
 
+@router.post("/lot/{lot_id}/item_comments")
+def save_lot_item_comments(
+    lot_id: int,
+    req_data: dict = Body(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Save parameter item comments for a single lot persistently to disk."""
+    filepath = os.path.join(ITEM_COMMENTS_DIR, f"lot_{lot_id}.json")
+    # If a list was passed, convert to dict
+    comments_map = {}
+    if isinstance(req_data, list):
+        for item in req_data:
+            if isinstance(item, dict) and "item_name" in item:
+                comments_map[item["item_name"]] = item.get("comment", "")
+    elif isinstance(req_data, dict):
+        comments_map = req_data
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(comments_map, f, ensure_ascii=False, indent=2)
+    return {"status": "success"}
+
+
+@router.get("/lot/{lot_id}/item_comments")
+def get_lot_item_comments(
+    lot_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Retrieve saved parameter item comments for a single lot."""
+    filepath = os.path.join(ITEM_COMMENTS_DIR, f"lot_{lot_id}.json")
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+@router.post("/multi_lot/item_comments")
+def save_multi_lot_item_comments(
+    lot_ids: str = Query(...),
+    req_data: dict = Body(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Save parameter item comments for multiple lots persistently to disk."""
+    sorted_ids = "_".join(sorted(x.strip() for x in lot_ids.split(",") if x.strip()))
+    filepath = os.path.join(ITEM_COMMENTS_DIR, f"multilot_{sorted_ids}.json")
+    comments_map = {}
+    if isinstance(req_data, list):
+        for item in req_data:
+            if isinstance(item, dict) and "item_name" in item:
+                comments_map[item["item_name"]] = item.get("comment", "")
+    elif isinstance(req_data, dict):
+        comments_map = req_data
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(comments_map, f, ensure_ascii=False, indent=2)
+    return {"status": "success"}
+
+
+@router.get("/multi_lot/item_comments")
+def get_multi_lot_item_comments(
+    lot_ids: str = Query(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Retrieve saved parameter item comments for multiple lots."""
+    sorted_ids = "_".join(sorted(x.strip() for x in lot_ids.split(",") if x.strip()))
+    filepath = os.path.join(ITEM_COMMENTS_DIR, f"multilot_{sorted_ids}.json")
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
 @router.post("/lot/{lot_id}/export_items/start")
 def start_export_test_items(
     lot_id: int,
@@ -741,6 +839,9 @@ def run_export_task(
                     column_mapping['mean_delta'] = 'Mean Delta'
                     column_mapping['mean_pct'] = 'Mean_%'
 
+                if 'comment' in df_stats.columns:
+                    column_mapping['comment'] = 'Comment'
+
                 existing_cols = [c for c in column_mapping.keys() if c in df_stats.columns]
                 df_stats = df_stats[existing_cols].rename(columns=column_mapping)
                 if 'Fail Rate' in df_stats.columns:
@@ -759,6 +860,7 @@ def run_export_task(
                         is_header = (r_idx == 0)
                         col_name = df_stats.columns[c_idx]
                         is_test_item = (col_name == 'TestItem')
+                        is_comment = (col_name == 'Comment')
                         
                         fmt_props = {'border': 1, 'valign': 'vcenter'}
                         
@@ -772,13 +874,13 @@ def run_export_task(
                             fmt_props.update({'bold': True, 'align': 'center', 'bg_color': '#D9D9D9'})
                             val = col_name
                         else:
-                            fmt_props['align'] = 'left' if is_test_item else 'center'
+                            fmt_props['align'] = 'left' if (is_test_item or is_comment) else 'center'
                             val = df_stats.iloc[r_idx - 1, c_idx]
                             if pd.isna(val): val = ""
                             if isinstance(val, (int, float)):
                                 if col_name in ['Fail Rate', 'Yield', 'Mean_%']:
                                     fmt_props['num_format'] = '0.00%'
-                                elif col_name not in ['#', 'Bin', 'Exec Qty', 'Failures', 'TestItem', 'Units']:
+                                elif col_name not in ['#', 'Bin', 'Exec Qty', 'Failures', 'TestItem', 'Units', 'Comment']:
                                     # 其余数据保留原样，但超过4位时保留4位 (Excel 0.#### 格式)
                                     fmt_props['num_format'] = '0.####'
                             
@@ -791,10 +893,6 @@ def run_export_task(
                             
                             # Mean Delta 染色逻辑
                             if col_name == 'Mean Delta' and isinstance(val, (int, float)):
-                                # 获取这一行的 Mean (All Site)
-                                # 注意此时 val 是 Mean Delta。我们需要找到这一行的 Mean。
-                                # 我们可以从 df_stats 中通过索引查找。
-                                # r_idx - 1 是当前行在 df_stats 中的索引。
                                 current_mean = df_stats.iloc[r_idx - 1]['Mean']
                                 threshold = abs(current_mean * (delta_site / 100))
                                 if val > threshold:
@@ -806,11 +904,13 @@ def run_export_task(
 
                 
                 # 设置列宽
-                stats_sheet.set_column(0, 0, 8)   # #
-                stats_sheet.set_column(1, 1, 8)   # Bin
-                stats_sheet.set_column(2, 2, 40)  # TestItem 40宽
-                if num_cols > 3:
-                    stats_sheet.set_column(3, num_cols - 1, 12) # 其余居中
+                for c_idx in range(num_cols):
+                    col_name = df_stats.columns[c_idx]
+                    if col_name == '#': stats_sheet.set_column(c_idx, c_idx, 8)
+                    elif col_name == 'Bin': stats_sheet.set_column(c_idx, c_idx, 8)
+                    elif col_name == 'TestItem': stats_sheet.set_column(c_idx, c_idx, 40)
+                    elif col_name == 'Comment': stats_sheet.set_column(c_idx, c_idx, 25)
+                    else: stats_sheet.set_column(c_idx, c_idx, 12)
 
 
             export_tasks[task_id]["progress"] = 15
@@ -1168,6 +1268,8 @@ def export_test_items(
                 'fail_rate': 'Fail Rate', 'yield_rate': 'Yield', 'mean': 'Mean',
                 'stdev': 'Stdev', 'cpu': 'CPU', 'cpl': 'CPL', 'cpk': 'CPK'
             }
+            if 'comment' in df_stats.columns:
+                column_mapping['comment'] = 'Comment'
             existing_cols = [c for c in column_mapping.keys() if c in df_stats.columns]
             df_stats = df_stats[existing_cols].rename(columns=column_mapping)
             # 格式化百分比
@@ -1187,6 +1289,7 @@ def export_test_items(
                     is_header = (r_idx == 0)
                     col_name = df_stats.columns[c_idx]
                     is_test_item = (col_name == 'TestItem')
+                    is_comment = (col_name == 'Comment')
                     
                     fmt_props = {'border': 1, 'valign': 'vcenter'}
                     
@@ -1200,7 +1303,7 @@ def export_test_items(
                         fmt_props.update({'bold': True, 'align': 'center', 'bg_color': '#D9D9D9'})
                         val = col_name
                     else:
-                        fmt_props['align'] = 'left' if is_test_item else 'center'
+                        fmt_props['align'] = 'left' if (is_test_item or is_comment) else 'center'
                         val = df_stats.iloc[r_idx - 1, c_idx]
                         if pd.isna(val): val = ""
                         if col_name in ['Fail Rate', 'Yield'] and isinstance(val, (int, float)):
@@ -1219,11 +1322,13 @@ def export_test_items(
 
             
             # 设置列宽
-            stats_sheet.set_column(0, 0, 8)   # #
-            stats_sheet.set_column(1, 1, 8)   # Bin
-            stats_sheet.set_column(2, 2, 40)  # TestItem 40宽
-            if num_cols > 3:
-                stats_sheet.set_column(3, num_cols - 1, 12) # 其余居中
+            for c_idx in range(num_cols):
+                col_name = df_stats.columns[c_idx]
+                if col_name == '#': stats_sheet.set_column(c_idx, c_idx, 8)
+                elif col_name == 'Bin': stats_sheet.set_column(c_idx, c_idx, 8)
+                elif col_name == 'TestItem': stats_sheet.set_column(c_idx, c_idx, 40)
+                elif col_name == 'Comment': stats_sheet.set_column(c_idx, c_idx, 25)
+                else: stats_sheet.set_column(c_idx, c_idx, 12)
 
 
         # ─── Sheet 2: Histograms ───
@@ -1673,13 +1778,14 @@ def export_test_items(
 
 @router.get("/lot/{lot_id}/info")
 def get_lot_info(lot_id: int, db: Session = Depends(get_db)):
-    """获取LOT基本信息"""
+    """Retrieve lot basic information."""
     lot = db.query(Lot).filter(Lot.id == lot_id).first()
     if not lot:
-        raise HTTPException(status_code=404, detail="LOT不存在")
+        raise HTTPException(status_code=404, detail="LOT not found")
     return {
         "id": lot.id,
         "filename": lot.filename,
+        "product_name": lot.product_name,
         "program": lot.program,
         "lot_id": lot.lot_id,
         "wafer_id": lot.wafer_id,
@@ -2505,6 +2611,17 @@ def get_multi_lot_items(
             TestItem.site == 0
         ).order_by(TestItem.item_number).all()
 
+        # Load multi-lot comments if available
+        saved_comments = {}
+        sorted_ids = "_".join(sorted(x.strip() for x in lot_ids.split(",") if x.strip()))
+        comments_filepath = os.path.join(ITEM_COMMENTS_DIR, f"multilot_{sorted_ids}.json")
+        if os.path.exists(comments_filepath):
+            try:
+                with open(comments_filepath, "r", encoding="utf-8") as f:
+                    saved_comments = json.load(f) or {}
+            except Exception:
+                saved_comments = {}
+
         params = []
         for ref in ref_items:
             row = {
@@ -2513,6 +2630,7 @@ def get_multi_lot_items(
                 "unit": ref.unit,
                 "lower_limit": ref.lower_limit,
                 "upper_limit": ref.upper_limit,
+                "comment": saved_comments.get(ref.item_name, "") if isinstance(saved_comments, dict) else "",
                 "lots": {},
                 "overall_stats": {}
             }
@@ -2570,7 +2688,7 @@ def get_multi_lot_items(
             params.append(row)
 
         return {
-            "lots": [{"id": l.id, "filename": l.filename, "lot_id": l.lot_id, "wafer_id": l.wafer_id} for l in ordered_lots],
+            "lots": [{"id": l.id, "filename": l.filename, "lot_id": l.lot_id, "wafer_id": l.wafer_id, "product_name": l.product_name} for l in ordered_lots],
             "params": params,
         }
     except Exception as e:
@@ -2713,7 +2831,8 @@ def run_multi_export_task(
                     'yield_rate': s.get('yield_rate'),
                     'mean': s.get('mean'),
                     'stdev': s.get('stdev'),
-                    'cpk': s.get('cpk')
+                    'cpk': s.get('cpk'),
+                    'comment': it.get('comment', '')
                 }
                 if export_mode == 'lot':
                     lot_stats = it.get('lots', {})
@@ -2754,6 +2873,8 @@ def run_multi_export_task(
                     column_mapping['mean'] = 'Mean'
                     column_mapping['stdev'] = 'Stdev'
                 column_mapping['cpk'] = 'CPK'
+                if 'comment' in df_stats.columns:
+                    column_mapping['comment'] = 'Comment'
                 existing_cols = [c for c in column_mapping.keys() if c in df_stats.columns]
                 mean_delta_alerts = df_stats['mean_delta_alert'] if 'mean_delta_alert' in df_stats.columns else None
                 lot_color_by_col_index = {}
@@ -2792,7 +2913,7 @@ def run_multi_export_task(
                             if c_idx in lot_color_by_col_index:
                                 fmt_props.update({'font_color': lot_color_by_col_index[c_idx]})
                         else:
-                            fmt_props['align'] = 'left' if col_name == 'TestItem' else 'center'
+                            fmt_props['align'] = 'left' if col_name in ['TestItem', 'Comment'] else 'center'
                             val = df_stats.iloc[r_idx - 1, c_idx]
                             if pd.isna(val): val = ""
                             if col_name in ['Fail Rate', 'Yield', 'Mean_%'] and isinstance(val, (int, float)):
@@ -2809,10 +2930,13 @@ def run_multi_export_task(
                         cell_fmt = workbook.add_format(fmt_props)
                         stats_sheet.write(start_stats_row + r_idx, c_idx, val, cell_fmt)
                 
-                stats_sheet.set_column(0, 0, 8)
-                stats_sheet.set_column(1, 1, 40)
-                if num_cols > 2:
-                    stats_sheet.set_column(2, num_cols - 1, 12)
+                # 设置列宽
+                for c_idx in range(num_cols):
+                    col_name = df_stats.columns[c_idx]
+                    if col_name == '#': stats_sheet.set_column(c_idx, c_idx, 8)
+                    elif col_name == 'TestItem': stats_sheet.set_column(c_idx, c_idx, 40)
+                    elif col_name == 'Comment': stats_sheet.set_column(c_idx, c_idx, 25)
+                    else: stats_sheet.set_column(c_idx, c_idx, 12)
 
             export_tasks[task_id]["progress"] = 30
 

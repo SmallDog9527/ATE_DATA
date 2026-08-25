@@ -13,6 +13,7 @@ class ReportCreate(BaseModel):
 
 class ReportUpdate(BaseModel):
     name: Optional[str] = None
+    product_name: Optional[str] = None
     url: Optional[str] = None
     comment: Optional[str] = None
     config_data: Optional[Any] = None

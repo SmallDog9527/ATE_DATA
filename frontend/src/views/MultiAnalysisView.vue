@@ -49,6 +49,13 @@
             <template v-if="!exporting">📁 导出 Excel</template>
             <template v-else>导出中 {{ exportProgress }}%</template>
           </button>
+          <button 
+            class="btn-export save-report-btn" 
+            :class="{ saved: isSavedReport }" 
+            @click="handleSaveToReport"
+          >
+            {{ isSavedReport ? '💾 已保存到报表' : '💾 保存到报表中心' }}
+          </button>
           
           <template v-if="options.mode === 'single' && options.mean_limit === 'hide'">
             <button class="btn-export" style="margin-left: 120px;" @click="triggerExportLimit">📤 导出 Limit</button>
@@ -304,6 +311,7 @@ const gridData = computed(() => {
     unit: p.unit,
     lower_limit: p.lower_limit,
     upper_limit: p.upper_limit,
+    comment: p.comment || '',
     lots: p.lots || {},
     ...(p.overall_stats || {})
   }))
@@ -523,6 +531,16 @@ const columnDefs = computed(() => {
     }
   })
 
+  // Rightmost Comment column (default width: 200px, editable)
+  baseDefs.push({
+    headerName: 'Comment',
+    field: 'comment',
+    width: 200,
+    editable: true,
+    cellClass: 'editable-cell',
+    ...floatingFilterCol
+  })
+
   return baseDefs
 })
 
@@ -564,7 +582,35 @@ async function fetchData() {
       console.error('Failed to fetch custom limits:', e)
     }
 
-    params.value = itemsData
+    // Load report snapshot comments if opened from report center
+    if (route.query.report_id) {
+      try {
+        const report: any = await api.get(`/reports/${route.query.report_id}`)
+        if (report) {
+          currentReportConfig.value = report.config_data || {}
+          const reportComments = report.config_data?.comments || {}
+          itemsData.forEach((item: any) => {
+            if (reportComments[item.item_name] !== undefined) {
+              item.comment = reportComments[item.item_name]
+            }
+          })
+          if (report.config_data?.lot_display_names) {
+            lotDisplayNames.value = { ...lotDisplayNames.value, ...report.config_data.lot_display_names }
+          }
+          if (!report.product_name && resolvedProductName.value) {
+            try {
+              await api.put(`/reports/${route.query.report_id}`, {
+                product_name: resolvedProductName.value
+              })
+            } catch (e) {}
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch report detail:', e)
+      }
+    }
+
+    params.value = [...itemsData]
 
     // Auto-calculate yield if custom limits are loaded
     const hasCustom = itemsData.some((row: any) => (row.ll_new !== null && row.ll_new !== undefined && row.ll_new !== '') || (row.ul_new !== null && row.ul_new !== undefined && row.ul_new !== ''))
@@ -586,6 +632,110 @@ async function fetchData() {
     alert('获取数据失败: ' + (err.response?.data?.detail || err.message))
   } finally {
     loading.value = false
+  }
+}
+
+const isSavedReport = computed(() => !!route.query.report_id)
+const currentReportConfig = ref<any>({})
+
+const resolvedProductName = computed(() => {
+  const prods = (lots.value || [])
+    .map(l => (l.product_name || '').trim())
+    .filter(Boolean)
+  if (!prods.length) return ''
+  const unique = Array.from(new Set(prods))
+  return unique.length === 1 ? unique[0] : unique.join(', ')
+})
+
+let autoSaveReportTimeout: any = null
+
+async function saveReportImmediately() {
+  const reportId = route.query.report_id
+  if (!reportId) return
+
+  if (autoSaveReportTimeout) {
+    clearTimeout(autoSaveReportTimeout)
+    autoSaveReportTimeout = null
+  }
+
+  const commentsMap: Record<string, string> = {}
+  params.value.forEach(row => {
+    if (row.comment && row.comment.trim()) {
+      commentsMap[row.item_name] = row.comment.trim()
+    }
+  })
+
+  const configData = {
+    ...currentReportConfig.value,
+    comments: commentsMap,
+    options: options.value,
+    lot_display_names: lotDisplayNames.value,
+    lot_ids: lotIdsStr,
+  }
+
+  const commentSummary = Object.entries(commentsMap).map(([k, v]) => `${k}: ${v}`).join('\n')
+
+  try {
+    await api.put(`/reports/${reportId}`, {
+      product_name: resolvedProductName.value || undefined,
+      comment: commentSummary || undefined,
+      config_data: configData
+    })
+    currentReportConfig.value = configData
+    console.log('Multi analysis report auto-saved to DB')
+  } catch (err: any) {
+    console.error('Failed to save report comments:', err)
+  }
+}
+
+async function handleSaveToReport() {
+  const prod = resolvedProductName.value || 'MultiLot'
+  const name = `${prod}_MultiAnalysis_${lots.value.length}Lots`
+
+  const commentsMap: Record<string, string> = {}
+  params.value.forEach(row => {
+    if (row.comment && row.comment.trim()) {
+      commentsMap[row.item_name] = row.comment.trim()
+    }
+  })
+
+  const commentSummary = Object.entries(commentsMap).map(([k, v]) => `${k}: ${v}`).join('\n')
+
+  const configData = {
+    comments: commentsMap,
+    options: options.value,
+    lot_display_names: lotDisplayNames.value,
+    lot_ids: lotIdsStr,
+  }
+
+  const currentUrl = new URL(window.location.href)
+
+  try {
+    const res: any = await api.post('/reports', {
+      name: name,
+      product_name: prod,
+      url: currentUrl.toString(),
+      type: 'Multi-Param Analysis',
+      source: 'eng',
+      comment: commentSummary || undefined,
+      config_data: configData
+    })
+
+    const dbReportId = res.id
+    currentUrl.searchParams.set('report_id', String(dbReportId))
+
+    await api.put(`/reports/${dbReportId}`, {
+      url: currentUrl.toString()
+    })
+
+    currentReportConfig.value = configData
+
+    router.replace({
+      query: { ...route.query, report_id: String(dbReportId) }
+    })
+    alert('成功保存到报表中心！')
+  } catch (err: any) {
+    alert(err?.response?.data?.detail || err?.message || '保存到报表中心失败')
   }
 }
 
@@ -961,10 +1111,23 @@ function toggleFilterEdited() {
 }
 
 function onCellValueChanged(event: any) {
-  if (event.column.getColId() === 'll_new' || event.column.getColId() === 'ul_new') {
+  const colId = event.column.getColId()
+  if (colId === 'll_new' || colId === 'ul_new') {
+    const item = params.value.find(p => p.item_name === event.data.item_name)
+    if (item) {
+      item[colId] = event.newValue
+    }
     saveCustomLimitsToBackend()
     if (gridApi.value) {
       gridApi.value.onFilterChanged()
+    }
+  } else if (colId === 'comment') {
+    const item = params.value.find(p => p.item_name === event.data.item_name)
+    if (item) {
+      item.comment = event.newValue
+    }
+    if (route.query.report_id) {
+      saveReportImmediately()
     }
   }
 }
@@ -1279,5 +1442,19 @@ onMounted(() => {
 :deep(.editable-cell) {
   background-color: #f6ffed !important;
   cursor: pointer;
+}
+
+.save-report-btn {
+  background: #1890ff !important;
+  color: white !important;
+}
+.save-report-btn:hover {
+  background: #40a9ff !important;
+}
+.save-report-btn.saved {
+  background: #52c41a !important;
+}
+.save-report-btn.saved:hover {
+  background: #73d13d !important;
 }
 </style>

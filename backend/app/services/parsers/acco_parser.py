@@ -47,13 +47,16 @@ from app.services.parsers.identity import resolve_lot_wafer
 META_KEYS: dict[str, list[str]] = {
     'program': [
         '[TestProgram]', 'Program:', 'Test program,', 'Test Name,',
+        'Program Name :', 'Program Name:', 'Program Name',
     ],
     'lot_id': [
         '[LotID]', 'LOT_ID:', 'Lot Id:', 'LotID:',
+        'Lot Number :', 'Lot Number:', 'Lot Number',
         'Datalog for Lot Number,',
     ],
     'wafer_id': [
         '[WaferNo]', 'WAFER_ID:', 'Wafer No:', 'WaferNo:',
+        'Wafer Number :', 'Wafer Number:',
         'Datalog for SubLot Number,',
     ],
     'handler': [
@@ -61,35 +64,37 @@ META_KEYS: dict[str, list[str]] = {
     ],
     'test_date_raw': [
         '[TestDate]', 'Date:', 'TestDate:', '测试日期:', '测试日期',
+        'Start DATE :', 'Start DATE:', 'Start Date:',
     ],
     'test_time_range': [
         'Test Time (start-end)',
     ],
     'beginning_time': [
-        '[Beginning Time]', 'Beginning Time:', 'BeginningTime:', 'Beginning:', 'Beginning', 'Beginning 测试日期', 'Beginning   测试日期'
+        '[Beginning Time]', 'Beginning Time:', 'BeginningTime:', 'Beginning:', 'Beginning', 'Beginning 测试日期', 'Beginning   测试日期',
+        'Start TIME :', 'Start TIME:', 'Start Time:',
     ],
     'ending_time': [
         '[Ending Time]', 'Ending Time:', 'EndingTime:',
     ],
     'tester_id': [
-        '[TesterID]', 'Tester ID:', 'Data collected on station,',
+        '[TesterID]', 'Tester ID:', 'Tester Name :', 'Tester Name:', 'Data collected on station,',
     ],
 }
 
 # 关键列的多名映射 → 标准列名
 COL_ALIASES: dict[str, list[str]] = {
-    'SITE_NUM': ['SITE_NUM', 'SITE', 'Site #', 'Site', 'SiteNum'],
-    'SOFT_BIN': ['SOFT_BIN', 'BIN', 'Bin', 'Soft Bin', 'SBin', 'HBin', 'S-Bin', 'H-Bin'],
-    'X_COORD':  ['X_COORD', 'X', 'XCoord', 'X_Coord', 'X-Coord', 'Coordinate X', 'X_POS'],
-    'Y_COORD':  ['Y_COORD', 'Y', 'YCoord', 'Y_Coord', 'Y-Coord', 'Coordinate Y', 'Y_POS'],
-    'SERIES':   ['PART_ID', 'Part ID', 'PART ID', 'SERIAL', 'Serial #', 'Serial#'],  # 序列号
+    'SITE_NUM': ['SITE_NUM', 'SITE', 'Site #', 'Site', 'SiteNum', 'Site_Num', 'SiteNo', 'Site_No'],
+    'SOFT_BIN': ['SOFT_BIN', 'BIN', 'Bin', 'Soft Bin', 'SBin', 'HBin', 'S-Bin', 'H-Bin', 'Soft_BIN', 'Soft_Bin', 'SoftBin'],
+    'X_COORD':  ['X_COORD', 'X', 'XCoord', 'X_Coord', 'X-Coord', 'Coordinate X', 'X_POS', 'X_AXIS', 'X_Coordinate', 'X-Coordinate', 'Die X', 'DieX'],
+    'Y_COORD':  ['Y_COORD', 'Y', 'YCoord', 'Y_Coord', 'Y-Coord', 'Coordinate Y', 'Y_POS', 'Y_AXIS', 'Y_Coordinate', 'Y-Coordinate', 'Die Y', 'DieY'],
+    'SERIES':   ['PART_ID', 'Part ID', 'PART ID', 'SERIAL', 'Serial #', 'Serial#', 'Part_ID', 'Part_No'],
 }
 
 # 限值行行首关键字 → 标准限值类型
 LIMIT_ROW_KEYS: dict[str, list[str]] = {
-    'upper': ['HLIMIT', 'LimitU', 'Upper Limit'],
-    'lower': ['LLIMIT', 'LimitL', 'Lower Limit'],
-    'unit':  ['UNITS',  'Unit',   'Units'],
+    'upper': ['HLIMIT', 'LimitU', 'Upper Limit', 'USL', 'High Limit', 'Hi Limit', 'UpperLimit'],
+    'lower': ['LLIMIT', 'LimitL', 'Lower Limit', 'LSL', 'Low Limit', 'Lo Limit', 'LowerLimit'],
+    'unit':  ['UNITS',  'Unit',   'Units', 'UNIT'],
 }
 
 # 文件名 token 中无意义的内容，排除后再做 lot/wafer 匹配
@@ -296,6 +301,7 @@ def _extract_meta(header_lines: list[str]) -> dict[str, Optional[str]]:
     for line in header_lines:
         stripped = line.strip().rstrip('\r\n')
         c0 = _col0(stripped)
+        c0_norm = re.sub(r'\s+', ' ', c0)
         c1 = _col1(stripped)
 
         # ── LBS 专属：sLotsetupinfo 行，lot 取第4列 ──────────────
@@ -310,11 +316,11 @@ def _extract_meta(header_lines: list[str]) -> dict[str, Optional[str]]:
             if result[field] is not None:
                 continue
             for kv in key_variants:
-                kv_clean = kv.rstrip(',')
+                kv_clean = re.sub(r'\s+', ' ', kv.rstrip(','))
                 
                 # Check if keyword is in c0
                 kv_upper = kv_clean.upper()
-                c0_upper = c0.upper()
+                c0_upper = c0_norm.upper()
                 if kv_upper not in c0_upper:
                     continue
 
@@ -322,7 +328,7 @@ def _extract_meta(header_lines: list[str]) -> dict[str, Optional[str]]:
                 if not value:
                     # Look for value right after the keyword in the same cell
                     idx = c0_upper.find(kv_upper)
-                    remainder = c0[idx + len(kv_clean):].strip()
+                    remainder = c0_norm[idx + len(kv_clean):].strip()
                     if remainder.startswith(':'):
                         remainder = remainder[1:].strip()
                     
@@ -373,14 +379,28 @@ def _extract_meta(header_lines: list[str]) -> dict[str, Optional[str]]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _find_col_header_row(header_lines: list[str]) -> Optional[int]:
-    """在表头区中找列头行（含 COL_ALIASES 关键字的行）"""
+    """在表头区中找列头行（综合匹配关键字与列密度加权择优）"""
     all_aliases = {a.upper() for aliases in COL_ALIASES.values()
                    for a in aliases}
-    for i, line in enumerate(header_lines):
-        cols_upper = [c.strip().upper() for c in line.strip().split(',')]
-        if any(c in all_aliases for c in cols_upper):
-            return i
-    return None
+    best_row_idx = None
+    best_score = -1
+
+    for i in range(len(header_lines) - 1, -1, -1):
+        line = header_lines[i]
+        cols = [c.strip() for c in line.strip().split(',')]
+        cols_upper = [c.upper() for c in cols]
+        matched_aliases = sum(1 for c in cols_upper if c in all_aliases)
+        non_empty = sum(1 for c in cols if c)
+
+        score = matched_aliases * 100 + (non_empty if non_empty > 5 else 0)
+        has_bin = any(c in ('SOFT_BIN', 'BIN', 'SOFT BIN', 'SBIN', 'HBIN', 'S-BIN', 'H-BIN', 'SOFTBIN') for c in cols_upper)
+        if has_bin:
+            score += 500
+        if score > best_score and matched_aliases >= 1:
+            best_score = score
+            best_row_idx = i
+
+    return best_row_idx
 
 
 def _normalize_columns(header_cols: list[str]) -> dict[str, str]:
@@ -408,13 +428,19 @@ def _extract_limit_rows(
         'upper': None, 'lower': None, 'unit': None
     }
     for line in lines_between:
-        c0_upper = _col0(line).upper().strip('"')
+        parts = [p.strip() for p in line.strip().split(',')]
+        kw_candidate = parts[0].upper().strip('"')
+        if not kw_candidate:
+            for p in parts[1:6]:
+                if p.upper().strip('"') in ('USL', 'LSL', 'HLIMIT', 'LLIMIT', 'UNIT', 'UNITS', 'LIMITU', 'LIMITL', 'UPPER LIMIT', 'LOWER LIMIT'):
+                    kw_candidate = p.upper().strip('"')
+                    break
         for limit_type, keywords in LIMIT_ROW_KEYS.items():
             if found[limit_type] is not None:
                 continue
             for kw in keywords:
-                if c0_upper == kw.upper():
-                    found[limit_type] = line.strip().split(',')
+                if kw_candidate == kw.upper():
+                    found[limit_type] = parts
                     break
     return found
 
@@ -597,6 +623,22 @@ def parse_acco(filepath: str, tester: str) -> ParsedData:
     col_header_clean = [c.strip()
                         for c in header_lines[col_header_idx].strip().split(',')]
 
+    # Check if row above has parameter names (like VG34 / split format)
+    unit_row_extracted = None
+    if col_header_idx > 0:
+        prev_cols = [c.strip() for c in header_lines[col_header_idx - 1].split(',')]
+        units = {'MV', 'V', 'UA', 'MA', 'A', 'MS', 'US', 'NS', 'S', 'HZ', 'KHZ', 'MHZ', 'OHM', 'KOHM', 'MOHM', 'P/F', 'CODE', 'INT', 'COORD'}
+        is_unit_row = sum(1 for c in col_header_clean[4:20] if c.upper() in units) >= 3
+        if is_unit_row and sum(1 for c in prev_cols[4:20] if c) >= 3:
+            unit_row_extracted = list(col_header_clean)
+            merged = list(col_header_clean)
+            for j in range(len(prev_cols)):
+                if prev_cols[j]:
+                    merged[j] = prev_cols[j]
+            col_header_clean = merged
+            if not col_header_clean[0] and len(col_header_clean) > 1 and col_header_clean[1].upper() in ('X_AXIS', 'X_COORD', 'X'):
+                col_header_clean[0] = 'SITE_NUM'
+
     # LBS 等格式：列头行只有前几列有名字，参数列为空
     # 需要从上方的 "Test Name" 行获取参数名
     if tester == 'LBS' or all(not c for c in col_header_clean[5:]):
@@ -625,6 +667,11 @@ def parse_acco(filepath: str, tester: str) -> ParsedData:
     x_col    = _find_std_col('X_COORD')
     y_col    = _find_std_col('Y_COORD')
 
+    # If site_col is missing but col 0 is empty and next cols are coordinates/bins, assign col 0 as SITE_NUM
+    if site_col is None and len(col_header_clean) > 0 and not col_header_clean[0]:
+        col_header_clean[0] = 'SITE_NUM'
+        site_col = 0
+
     if site_col is None or bin_col is None:
         result.error = "列头行中未找到 SITE 或 BIN 列"
         return result
@@ -637,7 +684,7 @@ def parse_acco(filepath: str, tester: str) -> ParsedData:
     col_header_raw_idx = raw_lines.index(header_lines[col_header_idx])
     between_lines = [
         ln for ln in raw_lines[col_header_raw_idx + 1: data_start_row]
-        if _col0(ln).strip().strip('"')   # 过滤空行和 "" 占位行
+        if any(c.strip() for c in ln.split(','))
     ]
     limit_rows = _extract_limit_rows(between_lines)
 
@@ -645,6 +692,9 @@ def parse_acco(filepath: str, tester: str) -> ParsedData:
     if not any(limit_rows.values()):
         above_lines = raw_lines[:col_header_raw_idx]
         limit_rows = _extract_limit_rows(above_lines)
+
+    if unit_row_extracted and not limit_rows['unit']:
+        limit_rows['unit'] = unit_row_extracted
 
     ul_line   = limit_rows['upper']
     ll_line   = limit_rows['lower']

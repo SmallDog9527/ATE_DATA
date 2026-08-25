@@ -23,6 +23,10 @@
           <span class="icon">📄</span>
           <span v-if="!collapsed" class="label">程序变更</span>
         </RouterLink>
+        <RouterLink to="/tools" target="_blank" class="menu-item" :class="{ 'router-link-active': $route.path.startsWith('/tools') }">
+          <span class="icon">🛠️</span>
+          <span v-if="!collapsed" class="label">小工具集</span>
+        </RouterLink>
         <RouterLink v-if="authStore.isAdmin || authStore.isEng" to="/settings" target="_blank" class="menu-item">
           <span class="icon">⚙</span>
           <span v-if="!collapsed" class="label">系统设置</span>
@@ -86,6 +90,8 @@ const pageTitles: Record<string, string> = {
   '/': '数据列表',
   '/analysis': '量产良率',
   '/reports': '报表中心',
+  '/program-changes': '程序变更',
+  '/tools': '小工具集',
   '/settings': '系统设置',
 }
 
