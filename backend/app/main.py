@@ -57,9 +57,26 @@ def on_startup():
             # Force mark any stuck processing logs as failed on service startup
             conn.execute(text("UPDATE ftp_upload_logs SET status = 'failed', error_msg = 'Service restarted unexpectedly, marked as failed' WHERE status IN ('processing', 'downing')"))
             conn.execute(text("UPDATE lots SET status = 'failed' WHERE status IN ('processing', 'pending')"))
+            # Auto-convert existing failed 0-byte logs to skipped
+            conn.execute(text("UPDATE ftp_upload_logs SET status = 'skipped', error_msg = 'Remote file is empty (0 bytes)' WHERE status = 'failed' AND (error_msg ILIKE '%0 bytes%' OR error_msg ILIKE '%Remote file is empty%')"))
             conn.commit()
         except Exception:
             conn.rollback()
+
+    # Record system startup timestamp to Redis
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        import json
+        from app.core.redis_client import get_redis
+        r = get_redis()
+        sh_now = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+        r.set("system:last_restart_time", sh_now)
+        restart_entry = json.dumps({"restart_time": sh_now, "message": "System backend service restarted"})
+        r.lpush("system:restart_history", restart_entry)
+        r.ltrim("system:restart_history", 0, 99)
+    except Exception as e:
+        print(f"[system_startup] Warning: Could not record restart time to Redis: {e}")
 
     from app.tasks.ftp_scheduler import start_scheduler
     start_scheduler()

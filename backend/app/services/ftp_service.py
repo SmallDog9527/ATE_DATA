@@ -1431,7 +1431,12 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
                     os.remove(local_file)
                 except Exception:
                     pass
-            raise Exception("Remote file is empty (0 bytes), download/unpacking skipped")
+            print(f"[ftp_dl] Remote file '{filename}' is empty (0 bytes), marking status as 'skipped'")
+            log.status = 'skipped'
+            log.error_msg = 'Remote file is empty (0 bytes)'
+            log.uploaded_at = datetime.now(timezone.utc)
+            db.commit()
+            return None
 
         # Helper functions to check if file already exists/processed
         def file_exists_in_db(fname: str) -> bool:
@@ -1618,6 +1623,9 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
                         # Auto fallback to scanned for missing cache files to re-download from FTP
                         log_rec.status = 'scanned'
                         log_rec.error_msg = None
+                    elif "0 bytes" in err_msg or "empty" in err_msg.lower():
+                        log_rec.status = 'skipped'
+                        log_rec.error_msg = 'Remote file is empty (0 bytes)'
                     else:
                         log_rec.status = 'failed'
                         log_rec.error_msg = err_msg
@@ -2647,8 +2655,12 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                         db_err = SessionLocal()
                         log_rec = db_err.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
                         if log_rec and log_rec.status != 'success':
-                            log_rec.status = 'failed'
-                            log_rec.error_msg = f"[Download Failed] {str(e)[:250]}"
+                            if "0 bytes" in str(e) or "empty" in str(e).lower():
+                                log_rec.status = 'skipped'
+                                log_rec.error_msg = 'Remote file is empty (0 bytes)'
+                            else:
+                                log_rec.status = 'failed'
+                                log_rec.error_msg = f"[Download Failed] {str(e)[:250]}"
                             db_err.commit()
                         db_err.close()
                     except Exception:

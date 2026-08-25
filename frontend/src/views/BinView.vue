@@ -41,11 +41,11 @@
 
         <div class="opt-group">
           <span class="opt-label">Site</span>
-          <label>
-            <input type="checkbox" :checked="isAllSiteSelected" @change="toggleAllSite" /> All
+          <label style="cursor: pointer;" @click.prevent="toggleAllSite">
+            <input type="checkbox" :checked="isAllSiteChecked" style="pointer-events: none;" /> All
           </label>
-          <label v-for="s in allSites" :key="s">
-            <input type="checkbox" :checked="options.selected_sites.includes(s)" @change="toggleSite(s)" />
+          <label v-for="s in allSites" :key="s" style="cursor: pointer;" @click.prevent="toggleSite(s)">
+            <input type="checkbox" :checked="isSiteChecked(s)" style="pointer-events: none;" />
             Site{{ s }}
           </label>
         </div>
@@ -68,31 +68,35 @@
           <tr>
             <th>Bin</th>
             <th>Name</th>
-            <th v-for="s in options.selected_sites" :key="s">Site{{ s }}</th>
-            <th class="sortable" @click="toggleBinSort">
-              All Site
-              <span v-if="binSortOrder === 'asc'">↑</span>
-              <span v-else-if="binSortOrder === 'desc'">↓</span>
-              <span v-else>⇅</span>
-            </th>
-            <th>% of total</th>
+            <th v-for="s in displayedSites" :key="s">Site{{ s }}</th>
+            <template v-if="showAllSiteColumn">
+              <th class="sortable" @click="toggleBinSort">
+                All Site
+                <span v-if="binSortOrder === 'asc'">↑</span>
+                <span v-else-if="binSortOrder === 'desc'">↓</span>
+                <span v-else>⇅</span>
+              </th>
+              <th>% of total</th>
+            </template>
             <th>Comment</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="options.selected_sites.length === 0">
-            <td :colspan="5 + options.selected_sites.length" style="text-align:center;color:#999;padding:20px">No sites selected</td>
+          <tr v-if="displayedSites.length === 0 && !showAllSiteColumn">
+            <td :colspan="3" style="text-align:center;color:#999;padding:20px">No sites selected</td>
           </tr>
           <tr v-else v-for="b in sortedBins" :key="b.bin_number" :class="{ 'pass-row': isPassBin(b.bin_number) }">
             <td>
               <span class="bin-link" @click="openBinDetail(b.bin_number, b.bin_name)">{{ b.bin_number }}</span>
             </td>
             <td>{{ b.bin_name }}</td>
-            <td v-for="s in options.selected_sites" :key="s">
+            <td v-for="s in displayedSites" :key="s">
               {{ b.sites[`site${s}`]?.count ?? 0 }}
             </td>
-            <td>{{ b.all_site_count }}</td>
-            <td>{{ b.all_site_pct?.toFixed(2) }}%</td>
+            <template v-if="showAllSiteColumn">
+              <td>{{ b.all_site_count }}</td>
+              <td>{{ b.all_site_pct?.toFixed(2) }}%</td>
+            </template>
             <td>
               <input type="text" v-model="b.comment" @blur="saveComment(b)" placeholder="" 
               style="width: 400px; padding: 2px 4px; border: none; outline: none; background: transparent; font-size: 12px;"/>
@@ -102,25 +106,31 @@
         <tfoot>
           <tr class="summary-row">
             <td colspan="2">Passes</td>
-            <td v-for="s in options.selected_sites" :key="s">
+            <td v-for="s in displayedSites" :key="s">
               {{ getSitePass(s) }} ({{ getSiteTotal(s) > 0 ? (getSitePass(s) / getSiteTotal(s) * 100).toFixed(2) + '%' : '-' }})
             </td>
-            <td>{{ getTotalPass() }}</td>
-            <td>{{ getTotalAll() > 0 ? (getTotalPass() / getTotalAll() * 100).toFixed(2) + '%' : '-' }}</td>
+            <template v-if="showAllSiteColumn">
+              <td>{{ getTotalPass() }}</td>
+              <td>{{ getTotalAll() > 0 ? (getTotalPass() / getTotalAll() * 100).toFixed(2) + '%' : '-' }}</td>
+            </template>
             <td></td>
           </tr>
           <tr class="summary-row">
             <td colspan="2">Fails</td>
-            <td v-for="s in options.selected_sites" :key="s">{{ getSiteFail(s) }}</td>
-            <td>{{ getTotalFail() }}</td>
-            <td>{{ getTotalAll() > 0 ? (getTotalFail() / getTotalAll() * 100).toFixed(2) + '%' : '-' }}</td>
+            <td v-for="s in displayedSites" :key="s">{{ getSiteFail(s) }}</td>
+            <template v-if="showAllSiteColumn">
+              <td>{{ getTotalFail() }}</td>
+              <td>{{ getTotalAll() > 0 ? (getTotalFail() / getTotalAll() * 100).toFixed(2) + '%' : '-' }}</td>
+            </template>
             <td></td>
           </tr>
           <tr class="summary-row">
             <td colspan="2">Sum</td>
-            <td v-for="s in options.selected_sites" :key="s">{{ getSiteTotal(s) }}</td>
-            <td>{{ getTotalAll() }}</td>
-            <td>100.00%</td>
+            <td v-for="s in displayedSites" :key="s">{{ getSiteTotal(s) }}</td>
+            <template v-if="showAllSiteColumn">
+              <td>{{ getTotalAll() }}</td>
+              <td>100.00%</td>
+            </template>
             <td></td>
           </tr>
         </tfoot>
@@ -338,6 +348,40 @@ const options = ref({
   show_fail_bin: false,
 })
 
+const siteDisplayMode = ref<'default' | 'only_all' | 'custom'>('default')
+const customSelectedSites = ref<number[]>([])
+
+const isAllSiteChecked = computed(() => {
+  return siteDisplayMode.value === 'default' || siteDisplayMode.value === 'only_all'
+})
+
+function isSiteChecked(s: number) {
+  if (siteDisplayMode.value === 'default') return true
+  if (siteDisplayMode.value === 'only_all') return false
+  return customSelectedSites.value.includes(s)
+}
+
+const displayedSites = computed(() => {
+  if (siteDisplayMode.value === 'default') {
+    return allSites.value
+  }
+  if (siteDisplayMode.value === 'only_all') {
+    return []
+  }
+  return customSelectedSites.value
+})
+
+const showAllSiteColumn = computed(() => {
+  return siteDisplayMode.value === 'default' || siteDisplayMode.value === 'only_all'
+})
+
+function getSitesParam(): string {
+  if (siteDisplayMode.value === 'custom' && customSelectedSites.value.length > 0) {
+    return customSelectedSites.value.join(',')
+  }
+  return 'all'
+}
+
 const MAP_ROTATE_KEY_PREFIX = 'ate_map_rotate_'
 
 function productMapRotateKey() {
@@ -424,27 +468,41 @@ function toggleBinSort() {
   }
 }
 
-const isAllSiteSelected = computed(() =>
-  allSites.value.length > 0 &&
-  allSites.value.every(s => options.value.selected_sites.includes(s))
-)
-
 function toggleAllSite() {
-  if (isAllSiteSelected.value) {
-    options.value.selected_sites = []
+  if (siteDisplayMode.value === 'default') {
+    // 默认状态下点击ALL -> 切换为只显示ALL
+    siteDisplayMode.value = 'only_all'
+    customSelectedSites.value = []
+  } else if (siteDisplayMode.value === 'only_all') {
+    // 只显示ALL状态下点击ALL -> 恢复为默认状态
+    siteDisplayMode.value = 'default'
+    customSelectedSites.value = []
   } else {
-    options.value.selected_sites = [...allSites.value]
+    // 自定义Site状态（如选中了Site2/Site3）下点击ALL -> 回到默认状态（所有site/all全部显示）
+    siteDisplayMode.value = 'default'
+    customSelectedSites.value = []
   }
   refreshAll()
 }
 
 function toggleSite(site: number) {
-  const idx = options.value.selected_sites.indexOf(site)
-  if (idx >= 0) {
-    options.value.selected_sites.splice(idx, 1)
+  if (siteDisplayMode.value === 'default' || siteDisplayMode.value === 'only_all') {
+    // 默认或仅ALL状态下点击某Site -> 自动取消ALL及所有其他Site，仅选中该Site
+    siteDisplayMode.value = 'custom'
+    customSelectedSites.value = [site]
   } else {
-    options.value.selected_sites.push(site)
-    options.value.selected_sites.sort((a, b) => a - b)
+    // 自定义Site状态下增加/移除勾选
+    const idx = customSelectedSites.value.indexOf(site)
+    if (idx >= 0) {
+      customSelectedSites.value.splice(idx, 1)
+    } else {
+      customSelectedSites.value.push(site)
+      customSelectedSites.value.sort((a, b) => a - b)
+    }
+    // 所有选中的Site都取消勾选时，自动恢复到默认状态
+    if (customSelectedSites.value.length === 0) {
+      siteDisplayMode.value = 'default'
+    }
   }
   refreshAll()
 }
@@ -515,15 +573,18 @@ async function fetchLotInfo() {
 }
 
 async function fetchBinData() {
-  const sitesParam = options.value.selected_sites.join(',') || 'all'
+  const sitesParam = getSitesParam()
   const data: any = await api.get(`/analysis/lot/${lotId.value}/bin_summary`, {
     params: { data_range: options.value.data_range, sites: sitesParam }
   })
   binData.value = data
 
-  if (lotInfo.value?.data_type === "Summary" || (data.all_sites && data.all_sites.length === 0)) { if (allSites.value.length === 0) { allSites.value = [0]; options.value.selected_sites = [0]; } } else if (allSites.value.length === 0 && data.all_sites?.length > 0) {
+  if (lotInfo.value?.data_type === "Summary" || (data.all_sites && data.all_sites.length === 0)) {
+    if (allSites.value.length === 0) {
+      allSites.value = [0]
+    }
+  } else if (allSites.value.length === 0 && data.all_sites?.length > 0) {
     allSites.value = data.all_sites
-    options.value.selected_sites = [...data.all_sites]
   }
 }
 
@@ -534,7 +595,7 @@ async function fetchPassBins() {
 
 async function fetchMapData() {
   try {
-    const sitesParam = options.value.selected_sites.join(',') || 'all'
+    const sitesParam = getSitesParam()
     const mapData: any = await api.get(`/analysis/lot/${lotId.value}/wafer_bin_map`, {
       params: {
         data_range: options.value.data_range,
@@ -551,7 +612,7 @@ async function fetchMapData() {
 
 async function fetchRetestData() {
   if (!hasCoords.value) return
-  const sitesParam = options.value.selected_sites.join(',') || 'all'
+  const sitesParam = getSitesParam()
   try {
     retestData.value = await api.get(`/analysis/lot/${lotId.value}/retest_analysis`, {
       params: { sites: sitesParam }
@@ -595,9 +656,8 @@ function renderBinMap() {
 
   // Site过滤
   let data = mapCache.value
-  if (options.value.selected_sites.length < allSites.value.length) {
-    // 需要按site过滤，但mapCache已有site信息
-    data = data.filter((d: any) => options.value.selected_sites.includes(d.site))
+  if (siteDisplayMode.value === 'custom' && customSelectedSites.value.length > 0 && customSelectedSites.value.length < allSites.value.length) {
+    data = data.filter((d: any) => customSelectedSites.value.includes(d.site))
   }
 
   // 绑定鼠标事件（只绑定一次）
@@ -1128,8 +1188,12 @@ async function handleExport() {
   sheet.addRow([]) // 空行分隔
 
   // 2. 写表头
-  const sites = options.value.selected_sites
-  const tableHeader = ['Bin', 'Name', ...sites.map(s => `Site${s}`), 'All Site', '% of total', 'Comment']
+  const sites = displayedSites.value
+  const tableHeader = ['Bin', 'Name', ...sites.map(s => `Site${s}`)]
+  if (showAllSiteColumn.value) {
+    tableHeader.push('All Site', '% of total')
+  }
+  tableHeader.push('Comment')
   const headerRow = sheet.addRow(tableHeader)
   headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } }
   headerRow.fill = {
@@ -1145,10 +1209,11 @@ async function handleExport() {
       b.bin_number,
       b.bin_name,
       ...sites.map(s => b.sites[`site${s}`]?.count ?? 0),
-      b.all_site_count,
-      (b.all_site_pct ?? 0).toFixed(2) + '%',
-      b.comment || ''
     ]
+    if (showAllSiteColumn.value) {
+      rowData.push(b.all_site_count, (b.all_site_pct ?? 0).toFixed(2) + '%')
+    }
+    rowData.push(b.comment || '')
     const row = sheet.addRow(rowData)
     row.alignment = { horizontal: 'center', vertical: 'middle' };
     if (isPassBin(b.bin_number)) {
@@ -1157,13 +1222,28 @@ async function handleExport() {
   })
 
   // 写 Summary 行 (Passes, Fails, Sum)
-  const passRow = sheet.addRow(['Passes', '', ...sites.map(s => getSitePass(s)), getTotalPass(), (getTotalAll() > 0 ? (getTotalPass() / getTotalAll() * 100).toFixed(2) + '%' : '-'), ''])
+  const passRowData: any[] = ['Passes', '', ...sites.map(s => getSitePass(s))]
+  if (showAllSiteColumn.value) {
+    passRowData.push(getTotalPass(), (getTotalAll() > 0 ? (getTotalPass() / getTotalAll() * 100).toFixed(2) + '%' : '-'))
+  }
+  passRowData.push('')
+  const passRow = sheet.addRow(passRowData)
   passRow.font = { bold: true }
   
-  const failRow = sheet.addRow(['Fails', '', ...sites.map(s => getSiteFail(s)), getTotalFail(), (getTotalAll() > 0 ? (getTotalFail() / getTotalAll() * 100).toFixed(2) + '%' : '-'), ''])
+  const failRowData: any[] = ['Fails', '', ...sites.map(s => getSiteFail(s))]
+  if (showAllSiteColumn.value) {
+    failRowData.push(getTotalFail(), (getTotalAll() > 0 ? (getTotalFail() / getTotalAll() * 100).toFixed(2) + '%' : '-'))
+  }
+  failRowData.push('')
+  const failRow = sheet.addRow(failRowData)
   failRow.font = { bold: true }
   
-  const sumRow = sheet.addRow(['Sum', '', ...sites.map(s => getSiteTotal(s)), getTotalAll(), '100.00%', ''])
+  const sumRowData: any[] = ['Sum', '', ...sites.map(s => getSiteTotal(s))]
+  if (showAllSiteColumn.value) {
+    sumRowData.push(getTotalAll(), '100.00%')
+  }
+  sumRowData.push('')
+  const sumRow = sheet.addRow(sumRowData)
   sumRow.font = { bold: true }
 
   // 设置列宽
@@ -1172,9 +1252,10 @@ async function handleExport() {
   })
 
   // 4. 添加 Map 图像和图例 (合成一张图)
-  if (binMapCanvas.value && options.value.selected_sites.length > 0 && hasCoords.value) {
+  if (binMapCanvas.value && (displayedSites.value.length > 0 || showAllSiteColumn.value) && hasCoords.value) {
     // 获取需要显示的 Bin 图例
     const visibleBins = bins.filter((b: any) => {
+      if (sites.length === 0) return b.all_site_count > 0
       return sites.reduce((sum, s) => sum + (b.sites[`site${s}`]?.count ?? 0), 0) > 0
     })
 

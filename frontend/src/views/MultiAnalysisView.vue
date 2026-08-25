@@ -77,6 +77,7 @@
           <div class="radio-group">
             <label><input type="radio" v-model="options.filter_type" value="all" /> ALL_DATA</label>
             <label><input type="radio" v-model="options.filter_type" value="filter_by_limit" /> Filter by limit</label>
+            <label><input type="radio" v-model="options.filter_type" value="pass" /> PASS</label>
           </div>
         </div>
 
@@ -178,7 +179,8 @@ const router = useRouter()
 const lotIdsStr = route.query.lot_ids as string
 
 const openMultiBin = () => {
-  const url = router.resolve(`/multi-bin?lot_ids=${lotIdsStr}`).href
+  const currentLotIds = lots.value && lots.value.length ? lots.value.map(l => l.id).join(',') : lotIdsStr
+  const url = router.resolve(`/multi-bin?lot_ids=${currentLotIds}`).href
   window.open(url, '_blank')
 }
 
@@ -308,6 +310,9 @@ const gridData = computed(() => {
 })
 
 const totalDieCount = computed(() => {
+  if (options.value.filter_type === 'pass') {
+    return totalPassCount.value
+  }
   if (lotDetails.value.length) {
     return lotDetails.value.reduce((sum, lot) => sum + (lot.die_count || 0), 0)
   }
@@ -322,6 +327,9 @@ const totalPassCount = computed(() => {
 })
 
 const averageYield = computed(() => {
+  if (options.value.filter_type === 'pass') {
+    return totalPassCount.value > 0 ? 1.0 : 0
+  }
   if (lotDetails.value.length) {
     const totalPass = totalPassCount.value
     const totalDie = totalDieCount.value

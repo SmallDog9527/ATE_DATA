@@ -57,11 +57,18 @@
                 />
               </td>
             </tr>
-            <tr class="summary-row">
+            <tr class="summary-row" :class="{ 'active-filter-row': globalBinFilter === null }">
               <td colspan="2">Total</td>
               <td>{{ getAllTotal() }}</td>
               <td>100%</td>
-              <td></td>
+              <td class="chk-col">
+                <input
+                  type="checkbox"
+                  :checked="globalBinFilter === null"
+                  @change="setGlobalBinFilter(null)"
+                  class="bin-checkbox"
+                />
+              </td>
             </tr>
             <tr class="summary-row pass-row">
               <td colspan="2">Pass</td>
@@ -300,7 +307,8 @@ const router = useRouter()
 const lotIdsStr = route.query.lot_ids as string
 
 const openMultiAnalysis = () => {
-  const url = router.resolve(`/multi-analysis?lot_ids=${lotIdsStr}`).href
+  const currentLotIds = lots.value && lots.value.length ? lots.value.map(l => l.id).join(',') : lotIdsStr
+  const url = router.resolve(`/multi-analysis?lot_ids=${currentLotIds}`).href
   window.open(url, '_blank')
 }
 
@@ -815,14 +823,24 @@ function toggleHighlight(idx: number, binNum: number | null) {
 }
 
 function setGlobalBinFilter(binNum: number | null) {
-  globalBinFilter.value = binNum
+  if (binNum === null) {
+    globalBinFilter.value = null
+  } else {
+    // If the clicked bin is already selected, uncheck it -> fallback to default TOTAL (null)
+    if (globalBinFilter.value === binNum) {
+      globalBinFilter.value = null
+    } else {
+      globalBinFilter.value = binNum
+    }
+  }
+
   if (isOsatSummaryReport.value) {
     nextTick(drawOsatTrend)
     return
   }
   // Apply global filter to all maps
   mapDataList.value.forEach((mapItem, i) => {
-    selectedBins.value[i] = binNum
+    selectedBins.value[i] = globalBinFilter.value
     drawMap(i)
   })
 }

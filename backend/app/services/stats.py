@@ -72,6 +72,10 @@ def apply_filter(
         # 按 sigma 筛选时不改变极值，仅通过更新 limit 并重新统计，这里不实际过滤数据
         return data
 
+    elif filter_type == 'pass':
+        # Pass filter is handled at dataframe level (SOFT_BIN in [1, 2])
+        return data
+
     elif filter_type == 'custom':
         if custom_min is not None:
             data = data[data >= custom_min]

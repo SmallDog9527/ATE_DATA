@@ -261,7 +261,7 @@ def get_ftp_logs(
     """查询 FTP 上传与快照扫描日志（支持按 LOT/文件名/路径模糊搜索，支持全部快照文件检索）"""
     query = db.query(FtpUploadLog)
     
-    # 若有搜索词或显式勾选包含快照文件，则搜索包含 'scanned' 的全部记录
+    # Exclude scanned records by default unless searching or explicitly requested
     if not search and not include_scanned:
         query = query.filter(FtpUploadLog.status != 'scanned')
         
@@ -380,6 +380,124 @@ def skip_failed_ftp_log(
     log.error_msg = 'Manually skipped by user'
     db.commit()
     return {"message": "Log status updated to manual skip"}
+
+
+@router.get("/ftp-logs/{log_id}/download")
+def download_ftp_log_raw_file(
+    log_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_eng),
+):
+    """
+    Download raw original file associated with an FTP upload log.
+    Checks local cache directories first, otherwise retrieves file directly from the remote FTP server.
+    """
+    from app.models.ftp_upload_log import FtpUploadLog
+    from app.models.osat_config import OsatConfig
+    from app.services.ftp_service import _make_ftp, _make_sftp
+    from urllib.parse import quote
+    import io
+    from fastapi.responses import FileResponse, StreamingResponse
+    
+    log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="FTP log record not found")
+        
+    filename = log.filename or os.path.basename(log.remote_path)
+    if not filename:
+        filename = f"ftp_file_{log_id}.dat"
+        
+    # 1. Check local download cache
+    DOWNLOAD_DIR = "/tmp/FTP/download"
+    candidate_names = [
+        f"{log_id}_{filename}",
+        filename,
+    ]
+    for cname in candidate_names:
+        cpath = os.path.join(DOWNLOAD_DIR, cname)
+        if os.path.isfile(cpath) and os.path.getsize(cpath) > 0:
+            encoded_name = quote(filename)
+            headers = {
+                "Content-Disposition": f"attachment; filename=\"{encoded_name}\"; filename*=UTF-8''{encoded_name}"
+            }
+            return FileResponse(cpath, filename=filename, headers=headers)
+            
+    # 2. Check local extracted directory
+    EXTRACTED_DIR = "/tmp/FTP/extracted"
+    prefix = f"{log_id}_"
+    extracted_files = []
+    if os.path.exists(EXTRACTED_DIR):
+        for name in os.listdir(EXTRACTED_DIR):
+            if name.startswith(prefix):
+                fpath = os.path.join(EXTRACTED_DIR, name)
+                if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
+                    extracted_files.append(fpath)
+                    
+    if len(extracted_files) == 1:
+        cpath = extracted_files[0]
+        actual_name = os.path.basename(cpath)[len(prefix):]
+        encoded_name = quote(actual_name or filename)
+        headers = {
+            "Content-Disposition": f"attachment; filename=\"{encoded_name}\"; filename*=UTF-8''{encoded_name}"
+        }
+        return FileResponse(cpath, filename=actual_name or filename, headers=headers)
+    elif len(extracted_files) > 1:
+        import zipfile
+        mem_buf = io.BytesIO()
+        with zipfile.ZipFile(mem_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for fpath in extracted_files:
+                arc_name = os.path.basename(fpath)[len(prefix):]
+                zf.write(fpath, arcname=arc_name)
+        mem_buf.seek(0)
+        zip_filename = f"{os.path.splitext(filename)[0]}.zip"
+        encoded_name = quote(zip_filename)
+        headers = {
+            "Content-Disposition": f"attachment; filename=\"{encoded_name}\"; filename*=UTF-8''{encoded_name}"
+        }
+        return StreamingResponse(mem_buf, media_type="application/zip", headers=headers)
+
+    # 3. Retrieve directly from remote FTP/SFTP server
+    osat = db.query(OsatConfig).filter(OsatConfig.id == log.osat_id).first()
+    if not osat:
+        raise HTTPException(status_code=400, detail="OSAT configuration not found")
+        
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    temp_target_path = os.path.join(DOWNLOAD_DIR, f"temp_{log_id}_{filename}")
+    
+    conn = None
+    try:
+        if (osat.protocol or "").upper() == "SFTP":
+            conn = _make_sftp(osat)
+        else:
+            conn = _make_ftp(osat)
+            
+        with open(temp_target_path, "wb") as f_out:
+            conn.retrbinary(f"RETR {log.remote_path}", f_out.write)
+            
+        if not os.path.exists(temp_target_path) or os.path.getsize(temp_target_path) == 0:
+            raise Exception("Remote file is empty or unreachable (0 bytes)")
+            
+        encoded_name = quote(filename)
+        headers = {
+            "Content-Disposition": f"attachment; filename=\"{encoded_name}\"; filename*=UTF-8''{encoded_name}"
+        }
+        return FileResponse(temp_target_path, filename=filename, headers=headers)
+    except Exception as e:
+        if os.path.exists(temp_target_path):
+            try:
+                os.remove(temp_target_path)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"Failed to download raw file from FTP: {e}")
+    finally:
+        if conn:
+            try:
+                conn.quit()
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
 
 @router.post("/ftp-logs/retry-all-failed")
@@ -1464,6 +1582,32 @@ def get_snapshot_summary_48h(
         "osat_text": "",
         "formatted_text": "近48小时内暂无扫描记录",
     }
+
+    # Fetch system restart metadata from Redis
+    last_restart_time = None
+    restart_history = []
+    try:
+        from app.core.redis_client import get_redis
+        import json
+        r = get_redis()
+        raw_last = r.get("system:last_restart_time")
+        if raw_last:
+            last_restart_time = raw_last.decode("utf-8") if isinstance(raw_last, bytes) else str(raw_last)
+        raw_hist = r.lrange("system:restart_history", 0, 50)
+        for item in raw_hist:
+            try:
+                if isinstance(item, bytes):
+                    item = item.decode("utf-8")
+                hist_obj = json.loads(item)
+                if isinstance(hist_obj, dict):
+                    restart_history.append(hist_obj)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[get_snapshot_summary_48h] Error getting restart metadata: {e}")
+
+    latest["last_restart_time"] = last_restart_time
+    latest["restart_history"] = restart_history
     latest["sessions"] = sessions
 
     return latest

@@ -25,6 +25,7 @@ grafana_data/
 *.swp
 dify/
 .claude/
+.hermes/
 
 # OS
 .DS_Store

@@ -476,7 +476,7 @@
               <colgroup>
                 <col style="width:120px" />
                 <col />
-                <col style="width:190px" />
+                <col style="width:195px" />
                 <col style="width:100px" />
                 <col style="width:150px" />
                 <col />
@@ -501,6 +501,7 @@
                       <span class="badge red">❌ 失效</span>
                       <button @click="retryFtpLog(log.id)" class="btn-sm btn-retry" style="padding: 2px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; border: 1px solid #dcdfe6; background: #fff;">重试</button>
                       <button @click="skipFtpLog(log.id)" class="btn-sm btn-skip" style="padding: 2px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; border: 1px solid #e6a23c; background: #fff; color: #e6a23c;">Skip</button>
+                      <button @click="downloadRawFtpLog(log)" :disabled="log._downloading" class="btn-sm btn-down" style="padding: 2px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; border: 1px solid #3b82f6; background: #fff; color: #3b82f6;">{{ log._downloading ? 'downing...' : 'down' }}</button>
                     </div>
                     <span v-else-if="log.status === 'manual skip'" class="badge orange">⏭️ manual skip</span>
                     <span v-else-if="log.status === 'skipped'" class="badge orange">⏭️ Skipped</span>
@@ -720,7 +721,11 @@
               <!-- 2. 默认视图（无搜索/筛选条件）：显示近48小时快照扫描记录摘要 (无边框精简排版) -->
               <div v-else-if="!snapshotSearchQuery.trim() && !snapshotFilterOsat && !snapshotFilterStatus" class="snapshot-summary-box" style="background:transparent; border:none; padding:8px 0; margin-top:8px;">
                 <div v-if="snapshot48hLoading" class="loading-state" style="padding:12px 0;text-align:center;color:#64748b;">⏳ 正在加载近48小时快照记录...</div>
-                <div v-else-if="snapshot48hSummary" style="display:flex; flex-direction:column; gap:4px;">
+                <div v-else-if="snapshot48hSummary" style="display:flex; flex-direction:column; gap:6px;">
+                  <div v-if="snapshot48hSummary.last_restart_time" style="display:flex; align-items:center; gap:6px; font-size:13px; color:#475569; padding:2px 0; margin-bottom:4px;">
+                    <span>🔄 系统重启：</span>
+                    <span style="font-weight:600; color:#1e293b;">{{ snapshot48hSummary.last_restart_time }} 该系统重启</span>
+                  </div>
                   <div v-for="(sess, idx) in (snapshot48hSummary.sessions || [snapshot48hSummary])" :key="idx" class="snapshot-session-row">
                     <div class="sess-col sess-mode">
                       <span :class="['badge', sess.status === 'running' ? 'red' : (sess.mode === '手动' ? 'gold' : 'purple')]">
@@ -1650,6 +1655,7 @@ interface FtpLog {
   remote_path: string; filename?: string; status: string
   error_msg?: string; file_size?: number; lot_id_created?: number
   uploaded_at?: string
+  _downloading?: boolean
 }
 const ftpLogs        = ref<FtpLog[]>([])
 const logsLoading    = ref(false)
@@ -1800,6 +1806,45 @@ async function skipFtpLog(logId: number) {
     await loadFtpLogs()
   } catch (err: any) {
     alert(err.response?.data?.detail || '跳过操作失败')
+  }
+}
+
+async function downloadRawFtpLog(log: any) {
+  if (!log || !log.id) return
+  log._downloading = true
+  try {
+    const res: any = await api.get(`/settings/ftp-logs/${log.id}/download`, {
+      responseType: 'blob',
+    })
+    const blobData = res.data instanceof Blob ? res.data : new Blob([res.data])
+    let filename = log.filename || (log.remote_path ? log.remote_path.split('/').pop() : '') || `ftp_file_${log.id}.dat`
+
+    // Extract filename from Content-Disposition header if available
+    const disposition = res.headers?.['content-disposition'] || ''
+    if (disposition.includes('filename*=')) {
+      const match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+      if (match && match[1]) {
+        filename = decodeURIComponent(match[1])
+      }
+    } else if (disposition.includes('filename=')) {
+      const match = disposition.match(/filename="?([^";]+)"?/i)
+      if (match && match[1]) {
+        filename = decodeURIComponent(match[1])
+      }
+    }
+
+    const url = window.URL.createObjectURL(blobData)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+  } catch (err: any) {
+    alert(err.response?.data?.detail || '下载原文件失败，请检查网络或远端 FTP 是否可达')
+  } finally {
+    log._downloading = false
   }
 }
 

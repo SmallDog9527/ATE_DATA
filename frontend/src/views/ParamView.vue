@@ -7,7 +7,9 @@
         <div class="info-item"><span class="label">程序</span><span class="value">{{ lotInfo.program }}</span></div>
         <div class="info-item"><span class="label">测试机</span><span class="value">{{ lotInfo.test_machine }}</span></div>
         <div class="info-item"><span class="label">工位数</span><span class="value">{{ lotInfo.station_count }}</span></div>
+        <div class="info-item"><span class="label">测试项数</span><span class="value">{{ paramList.length }}</span></div>
         <div class="info-item"><span class="label">测试数量</span><span class="value">{{ lotInfo.die_count }}</span></div>
+        <div class="info-item"><span class="label">测试PASS</span><span class="value">{{ lotInfo.pass_count }}</span></div>
         <div class="info-item">
           <span class="label">良率</span>
           <span class="value" :style="yieldColor(lotInfo.yield_rate)">

@@ -26,12 +26,16 @@
           <span class="value">{{ lotInfo.station_count }}</span>
         </div>
         <div class="info-item">
+          <span class="label">测试项数</span>
+          <span class="value">{{ itemCount }}</span>
+        </div>
+        <div class="info-item">
           <span class="label">测试数量</span>
           <span class="value">{{ lotInfo.die_count }}</span>
         </div>
         <div class="info-item">
-          <span class="label">测试项数</span>
-          <span class="value">{{ itemCount }}</span>
+          <span class="label">测试PASS</span>
+          <span class="value">{{ lotInfo.pass_count }}</span>
         </div>
         <div class="info-item">
           <span class="label">良率</span>
@@ -90,6 +94,7 @@
             <option value="all">All Data</option>
             <option value="robust">Robust Data</option>
             <option value="filter_by_limit">Filter By Limit</option>
+            <option value="pass">Filter By Pass</option>
             <option value="filter_by_sigma">Filter by Sigma</option>
           </select>
         </div>

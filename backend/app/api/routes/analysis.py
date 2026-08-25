@@ -63,6 +63,10 @@ def get_test_items_summary(
         elif data_range == 'original':
             df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='first')
 
+    # Filter by PASS if requested
+    if filter_type == 'pass' and 'SOFT_BIN' in df.columns:
+        df = df[pd.to_numeric(df['SOFT_BIN'], errors='coerce').fillna(-1).astype(int).isin([1, 2])].copy()
+
     # 获取所有参数名和Limit (从 site=0 的 TestItem 记录中读取)
     items = db.query(TestItem).filter(
         and_(TestItem.lot_id == lot_id, TestItem.site == 0)
@@ -2198,6 +2202,8 @@ def get_param_data(
         cols_to_load.append('X_COORD')
     if 'Y_COORD' in available_cols:
         cols_to_load.append('Y_COORD')
+    if 'SOFT_BIN' in available_cols:
+        cols_to_load.append('SOFT_BIN')
 
     try:
         df = pd.read_parquet(lot.parquet_path, columns=cols_to_load)
@@ -2210,6 +2216,10 @@ def get_param_data(
             df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='last')
         elif data_range == 'original':
             df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='first')
+
+    # Filter by PASS if requested
+    if filter_type == 'pass' and 'SOFT_BIN' in df.columns:
+        df = df[pd.to_numeric(df['SOFT_BIN'], errors='coerce').fillna(-1).astype(int).isin([1, 2])].copy()
 
     # Site筛选
     if sites != 'all':
@@ -2450,6 +2460,10 @@ def get_multi_lot_items(
                         df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='last')
                     elif data_range == 'original':
                         df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='first')
+                
+                # Filter by PASS if requested
+                if filter_type == 'pass' and 'SOFT_BIN' in df.columns:
+                    df = df[pd.to_numeric(df['SOFT_BIN'], errors='coerce').fillna(-1).astype(int).isin([1, 2])].copy()
                 
                 lot_items = [it for it in all_items if it.lot_id == lot.id]
                 for it in lot_items:
@@ -3086,6 +3100,11 @@ def get_multi_lot_param_hist(
                 df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='last')
             elif data_range == 'original':
                 df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='first')
+        
+        # Filter by PASS if requested
+        if filter_type == 'pass' and 'SOFT_BIN' in df.columns:
+            df = df[pd.to_numeric(df['SOFT_BIN'], errors='coerce').fillna(-1).astype(int).isin([1, 2])].copy()
+
         vals = df[param_name].dropna().values.astype(float)
         lot_raw_values[lot.id] = vals
         all_raw_combined.extend(vals.tolist())

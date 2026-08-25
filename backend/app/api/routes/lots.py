@@ -1277,7 +1277,13 @@ def get_mp_yield_list(
         if product_name:
             query = query.filter(Lot.product_name.ilike(f"%{product_name}%"))
         if osat_name:
-            if osat_name.lower() == "chipmore":
+            if osat_name.upper() in ("HTKS", "HTJS", "KSHT"):
+                query = query.filter(or_(
+                    Lot.osat_name.ilike("%HTKS%"),
+                    Lot.osat_name.ilike("%HTJS%"),
+                    Lot.osat_name.ilike("%KSHT%")
+                ))
+            elif osat_name.lower() == "chipmore":
                 query = query.filter(or_(Lot.osat_name.ilike(f"%{osat_name}%"), Lot.osat_name.is_(None)))
             else:
                 query = query.filter(Lot.osat_name.ilike(f"%{osat_name}%"))
@@ -1509,7 +1515,13 @@ def get_lots(
         if test_machine:
             query = query.filter(Lot.test_machine == test_machine)
         if osat_name:
-            if osat_name.lower() == "chipmore":
+            if osat_name.upper() in ("HTKS", "HTJS", "KSHT"):
+                query = query.filter(or_(
+                    Lot.osat_name.ilike("%HTKS%"),
+                    Lot.osat_name.ilike("%HTJS%"),
+                    Lot.osat_name.ilike("%KSHT%")
+                ))
+            elif osat_name.lower() == "chipmore":
                 query = query.filter(or_(Lot.osat_name.ilike(f"%{osat_name}%"), Lot.osat_name.is_(None)))
             else:
                 query = query.filter(Lot.osat_name.ilike(f"%{osat_name}%"))
@@ -2491,15 +2503,33 @@ def get_distinct_osat_names(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """获取数据库中所有已有的 OSAT 厂名称"""
+    """
+    Get all distinct OSAT base names for the data list page filter.
+    Extracts the prefix before '_' (e.g. UCD_FT, UCD_CP -> UCD) and preserves historical names (never decreases).
+    """
     try:
-        results = db.query(Lot.osat_name).filter(Lot.osat_name.isnot(None)).distinct().all()
-        names = [r[0] for r in results if r[0].strip()]
-        names = sorted(list(set([n.strip() for n in names])))
-        defaults = ["Chipmore", "LBS", "HTKS", "UCD"]
+        from app.models.osat_config import OsatConfig
+
+        lot_osats = db.query(Lot.osat_name).filter(Lot.osat_name.isnot(None)).distinct().all()
+        config_osats = db.query(OsatConfig.name).filter(OsatConfig.name.isnot(None)).distinct().all()
+
+        raw_names = [r[0] for r in lot_osats if r[0] and str(r[0]).strip()] + \
+                    [r[0] for r in config_osats if r[0] and str(r[0]).strip()]
+
+        extracted = set()
+        for raw in raw_names:
+            base_name = str(raw).split('_')[0].strip()
+            if base_name:
+                # Merge HTKS, HTJS, KSHT into HTKS
+                if base_name.upper() in ("HTKS", "HTJS", "KSHT"):
+                    base_name = "HTKS"
+                extracted.add(base_name)
+
+        # Historical default OSAT names to ensure the list never decreases
+        defaults = ["Chipmore", "HTKS", "LBS", "UCD"]
         for d in defaults:
-            if d not in names:
-                names.append(d)
-        return sorted(names)
+            extracted.add(d)
+
+        return sorted(list(extracted), key=lambda x: x.upper())
     except Exception as e:
-        return ["Chipmore", "LBS", "HTKS", "HTJS", "UCD"]
+        return ["Chipmore", "HTKS", "LBS", "UCD"]

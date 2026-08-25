@@ -595,9 +595,10 @@ async function saveCheckConfig() {
 }
 
 function openMergeDialog() {
-  const firstLot = selectedRows.value[0]
+  const currentSelected = getOrderedSelectedRows()
+  const firstLot = currentSelected[0]
   if (!firstLot) return
-  const waferIds = new Set(selectedRows.value.map(row => (row.wafer_id || '').trim()))
+  const waferIds = new Set(currentSelected.map(row => (row.wafer_id || '').trim()))
   if (waferIds.size > 1) {
     alert('所选数据的晶圆编号不一致，无法合并！')
     return
@@ -611,7 +612,8 @@ function openMergeDialog() {
 }
 
 function openMergeManyDialog() {
-  const firstLot = selectedRows.value[0]
+  const currentSelected = getOrderedSelectedRows()
+  const firstLot = currentSelected[0]
   if (!firstLot) return
   mergeManyError.value = ''
   mergeManyForm.value = {
@@ -1350,8 +1352,21 @@ function onGridFilterChanged() {
   }, 250)
 }
 
+function getOrderedSelectedRows(): any[] {
+  if (gridApi.value) {
+    const ordered: any[] = []
+    gridApi.value.forEachNodeAfterFilterAndSort((node: any) => {
+      if (node.isSelected() && node.data) {
+        ordered.push(node.data)
+      }
+    })
+    if (ordered.length > 0) return ordered
+  }
+  return selectedRows.value || []
+}
+
 function onSelectionChanged() {
-  selectedRows.value = gridApi.value?.getSelectedRows() || []
+  selectedRows.value = getOrderedSelectedRows()
 }
 
 function openDisplayEditDialog(row: any, field: 'filename' | 'lot_id' | 'wafer_id' | 'data_type' | 'test_machine') {
@@ -1587,7 +1602,8 @@ async function handleMerge() {
   merging.value = true
 
   try {
-    const ids = selectedRows.value.map(r => r.id)
+    const currentSelected = getOrderedSelectedRows()
+    const ids = currentSelected.map(r => r.id)
     await api.post('/lots/merge', {
       ids,
       new_name: mergeForm.value.new_name.trim(),
@@ -1610,7 +1626,8 @@ async function handleMergeMany() {
   mergingMany.value = true
 
   try {
-    const ids = selectedRows.value.map(r => r.id)
+    const currentSelected = getOrderedSelectedRows()
+    const ids = currentSelected.map(r => r.id)
     await api.post('/lots/merge_many', {
       ids,
       new_name: mergeManyForm.value.new_name.trim(),
@@ -1628,25 +1645,17 @@ async function handleMergeMany() {
 }
 
 function handleMultiAnalysis() {
-  if (selectedRows.value.length < 2) return
-  const sorted = [...selectedRows.value].sort((a, b) => {
-    const da = a.test_date ? new Date(a.test_date).getTime() : 0
-    const db = b.test_date ? new Date(b.test_date).getTime() : 0
-    return (da || 0) - (db || 0)
-  })
-  const ids = sorted.map(r => r.id).join(',')
+  const currentSelected = getOrderedSelectedRows()
+  if (currentSelected.length < 2) return
+  const ids = currentSelected.map(r => r.id).join(',')
   const url = router.resolve(`/multi-analysis?lot_ids=${ids}`).href
   window.open(url, '_blank')
 }
 
 function handleMultiBin() {
-  if (selectedRows.value.length < 2) return
-  const sorted = [...selectedRows.value].sort((a, b) => {
-    const da = a.test_date ? new Date(a.test_date).getTime() : 0
-    const db = b.test_date ? new Date(b.test_date).getTime() : 0
-    return (da || 0) - (db || 0)
-  })
-  const ids = sorted.map(r => r.id).join(',')
+  const currentSelected = getOrderedSelectedRows()
+  if (currentSelected.length < 2) return
+  const ids = currentSelected.map(r => r.id).join(',')
   const url = router.resolve(`/multi-bin?lot_ids=${ids}`).href
   window.open(url, '_blank')
 }
