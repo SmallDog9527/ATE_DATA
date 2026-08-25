@@ -559,7 +559,7 @@ def daily_ftp_scan_snapshot_job():
     from datetime import datetime
     from sqlalchemy import func
 
-    print("[scheduler] ? Starting daily FTP scan snapshot job (00:00 & 12:00)...")
+    print("[scheduler] Starting daily FTP scan snapshot job (00:00 & 12:00)...")
     db = SessionLocal()
     shanghai_tz = ZoneInfo("Asia/Shanghai")
     start_ts = datetime.now(shanghai_tz)
@@ -596,11 +596,10 @@ def daily_ftp_scan_snapshot_job():
             tot_new += cnt
 
         osat_text = ", ".join(osat_counts_list)
-        formatted_text = f"?? {start_time_str} ---- {end_time_str} ??{duration_mins}???????{tot_new}????{osat_text}"
-
+        formatted_text = f"Auto {start_time_str} ---- {end_time_str} duration {duration_mins} min, added {tot_new} files. {osat_text}"
         final_sess = {
             "session_id": session_id,
-            "mode": "??",
+            "mode": "Auto",
             "status": "completed",
             "progress_pct": 100,
             "start_time": start_time_str,

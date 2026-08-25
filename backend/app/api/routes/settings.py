@@ -1310,7 +1310,20 @@ def get_ftp_extracted_logs(
 
 
 # Helper to manage immutable permanent scan sessions list in Redis (English comments)
+def _normalize_session_dict(sess_dict):
+    """Normalize session mode to Auto or Manual strictly."""
+    if not isinstance(sess_dict, dict):
+        return sess_dict
+    raw_mode = str(sess_dict.get("mode") or "").strip().lower()
+    if raw_mode.startswith("man") or "manual" in raw_mode:
+        sess_dict["mode"] = "Manual"
+    else:
+        sess_dict["mode"] = "Auto"
+    return sess_dict
+
+
 def _get_permanent_scan_sessions():
+    """Retrieve permanent FTP scan sessions with strict normalization."""
     try:
         from app.core.redis_client import get_redis
         import json
@@ -1323,7 +1336,7 @@ def _get_permanent_scan_sessions():
                     item = item.decode('utf-8')
                 sess_obj = json.loads(item)
                 if isinstance(sess_obj, dict):
-                    sessions.append(sess_obj)
+                    sessions.append(_normalize_session_dict(sess_obj))
             except Exception as ex:
                 print(f"[ftp_scan] Error decoding session item: {ex}")
         return sessions
@@ -1381,15 +1394,15 @@ def trigger_snapshot_scan(
     session_id = f"manual_{int(time.time() * 1000)}"
     sess_info = {
         "session_id": session_id,
-        "mode": "手动",
+        "mode": "Manual",
         "status": "running",
         "progress_pct": 10,
         "start_time": start_time_str,
-        "end_time": "进行中",
+        "end_time": "Running",
         "duration_minutes": 0,
         "total_new_files": 0,
         "osats": [o.name for o in osats],
-        "formatted_text": f"手动 {start_time_str} ---- 进行中 (进度: 10%)",
+        "formatted_text": f"Manual {start_time_str} ---- Running (progress: 10%)",
     }
     _add_or_update_permanent_session(sess_info)
 
@@ -1413,7 +1426,7 @@ def trigger_snapshot_scan(
                 for s in perm_list:
                     if s.get("session_id") == sess_id:
                         s["progress_pct"] = min(90, pct)
-                        s["formatted_text"] = f"手动 {start_time_str} ---- 进行中 (进度: {min(90, pct)}%)"
+                        s["formatted_text"] = f"Manual {start_time_str} ---- Running (progress: {min(90, pct)}%)"
                         _add_or_update_permanent_session(s)
                         break
 
@@ -1437,11 +1450,11 @@ def trigger_snapshot_scan(
                 tot_new += cnt
 
             osat_text = ", ".join(osat_counts_list)
-            formatted_text = f"手动 {start_time_str} ---- {end_time_str} 历时{duration_mins}分钟，一共新增{tot_new}个文件。{osat_text}"
+            formatted_text = f"Manual {start_time_str} ---- {end_time_str} duration {duration_mins} min, added {tot_new} files. {osat_text}"
 
             final_sess = {
                 "session_id": sess_id,
-                "mode": "手动",
+                "mode": "Manual",
                 "status": "completed",
                 "progress_pct": 100,
                 "start_time": start_time_str,
@@ -1554,7 +1567,7 @@ def get_snapshot_summary_48h(
 
                 sess_item = {
                     "session_id": f"auto_{start_str}",
-                    "mode": "自动",
+                    "mode": "Auto",
                     "status": "completed",
                     "progress_pct": 100,
                     "start_time": start_str,
@@ -1562,7 +1575,7 @@ def get_snapshot_summary_48h(
                     "duration_minutes": dur_mins,
                     "total_new_files": tot_cnt,
                     "osat_text": osat_text,
-                    "formatted_text": f"自动 {start_str} ---- {end_str} 历时{dur_mins}分钟，一共新增{tot_cnt}个文件。{osat_text}",
+                    "formatted_text": f"Auto {start_str} ---- {end_str} duration {dur_mins} min, added {tot_cnt} files. {osat_text}",
                 }
                 _add_or_update_permanent_session(sess_item)
             
@@ -1572,7 +1585,7 @@ def get_snapshot_summary_48h(
     sessions.sort(key=lambda x: x.get("start_time") or "", reverse=True)
 
     latest = dict(sessions[0]) if sessions else {
-        "mode": "自动",
+        "mode": "Auto",
         "status": "completed",
         "progress_pct": 100,
         "start_time": "-",

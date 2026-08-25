@@ -728,8 +728,8 @@
                   </div>
                   <div v-for="(sess, idx) in (snapshot48hSummary.sessions || [snapshot48hSummary])" :key="idx" class="snapshot-session-row">
                     <div class="sess-col sess-mode">
-                      <span :class="['badge', sess.status === 'running' ? 'red' : (sess.mode === '手动' ? 'gold' : 'purple')]">
-                        [{{ sess.mode || '自动' }}]
+                      <span :class="['badge', sess.status === 'running' ? 'red' : (isManualMode(sess.mode) ? 'gold' : 'purple')]">
+                        [{{ formatScanMode(sess.mode) }}]
                       </span>
                     </div>
 
@@ -2192,6 +2192,16 @@ const paginatedDailySummaryRows = computed(() => {
   const start = (summaryPage.value - 1) * summaryPageSize.value
   return dailySummaryRows.value.slice(start, start + summaryPageSize.value)
 })
+
+function isManualMode(mode?: string): boolean {
+  if (!mode) return false
+  const m = String(mode).toLowerCase().trim()
+  return m.includes('man')
+}
+
+function formatScanMode(mode?: string): string {
+  return isManualMode(mode) ? 'Manual' : 'Auto'
+}
 
 function parseOsatText(text?: string) {
   if (!text) return []

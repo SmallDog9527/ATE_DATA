@@ -1723,6 +1723,11 @@ onMounted(() => {
   fetchOsatNames()
 })
 watch(activeHomeTab, (newTab) => {
+  if (newTab === 'all') {
+    filters.value.status = ''
+  } else {
+    filters.value.status = 'processed'
+  }
   if (gridApi.value) {
     const model = gridApi.value.getFilterModel() || {}
     if (newTab === 'FT') {
@@ -1731,6 +1736,11 @@ watch(activeHomeTab, (newTab) => {
       model.data_type = { type: 'equals', filter: 'CP' }
     } else {
       delete model.data_type
+    }
+    if (filters.value.status) {
+      model.status = { type: 'equals', filter: filters.value.status }
+    } else {
+      delete model.status
     }
     gridApi.value.setFilterModel(model)
   }
