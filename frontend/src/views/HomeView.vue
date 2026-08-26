@@ -1501,15 +1501,15 @@ async function handleUpload() {
     const duplicates: string[] = checkRes?.duplicates || []
 
     if (duplicates.length > 0) {
-      const msg = `检测到以下 ${duplicates.length} 个数据在数据库中已存在：
-
-` +
-                  duplicates.map(n => `• ${n}`).join('
-') +
-                  `
-
-是否继续上传？
-（点击确定后将自动在文件名后追加数字编号继续上传解析）`
+      const dupList = duplicates.map(n => '\u2022 ' + n).join(String.fromCharCode(10))
+      const msg = [
+        '检测到以下 ' + duplicates.length + ' 个数据在数据库中已存在：',
+        '',
+        dupList,
+        '',
+        '是否继续上传？',
+        '（点击确定后将自动在文件名后追加数字编号继续上传解析）'
+      ].join(String.fromCharCode(10))
       if (!confirm(msg)) {
         return
       }
@@ -1534,15 +1534,15 @@ async function handleUpload() {
     const uploadResults = res?.results || []
     const failed = uploadResults.filter((r: any) => r.status === 'failed')
     if (failed.length) {
-      alert(failed.map((r: any) => `${r.filename}: ${r.error || '解析失败'}`).join('
-'))
+      const failMsg = failed.map((r: any) => (r.filename + ': ' + (r.error || '解析失败'))).join(String.fromCharCode(10))
+      alert(failMsg)
     }
     const newIds: number[] = uploadResults.map((r: any) => r.lot_id).filter(Boolean)
     if (newIds.length > 0) {
       startPolling(newIds)
     }
   } catch (e: any) {
-    alert(`上传失败：${e.message || e}`)
+    alert('上传失败：' + (e.message || e))
   } finally {
     uploading.value = false
   }
