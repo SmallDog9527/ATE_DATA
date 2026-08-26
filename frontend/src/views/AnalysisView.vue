@@ -68,6 +68,7 @@
           <button 
             class="btn-bin save-report-btn" 
             :class="{ saved: isSavedReport }" 
+            style="margin-left: 36px;"
             @click="handleSaveToReport"
           >
             {{ isSavedReport ? '💾 已保存到报表' : '💾 保存到报表中心' }}
@@ -123,8 +124,12 @@
           <label>chars_row</label>
           <div class="radio-group row">
             <label><input type="radio" v-model="options.chars_row" :value="1" /> 1</label>
-            <label><input type="radio" v-model="options.chars_row" :value="3" /> 3</label>
-            <label><input type="radio" v-model="options.chars_row" :value="5" /> 5</label>
+            <label :style="{ opacity: isBothExportMode ? 0.5 : 1, cursor: isBothExportMode ? 'not-allowed' : 'pointer' }">
+              <input type="radio" v-model="options.chars_row" :value="3" :disabled="isBothExportMode" /> 3
+            </label>
+            <label :style="{ opacity: isBothExportMode ? 0.5 : 1, cursor: isBothExportMode ? 'not-allowed' : 'pointer' }">
+              <input type="radio" v-model="options.chars_row" :value="5" :disabled="isBothExportMode" /> 5
+            </label>
           </div>
         </div>
 
@@ -149,6 +154,34 @@
           <div class="radio-group row">
             <label><input type="radio" v-model="options.site_mode" value="site" /> SITE</label>
             <label><input type="radio" v-model="options.site_mode" value="lot" /> LOT</label>
+          </div>
+        </div>
+
+        <div class="option-group">
+          <label>Export_mode</label>
+          <div class="radio-group row">
+            <label><input type="checkbox" v-model="options.export_hist" @change="handleExportModeChange('hist')" /> hist</label>
+            <label><input type="checkbox" v-model="options.export_scatter" @change="handleExportModeChange('scatter')" /> scatter</label>
+          </div>
+        </div>
+
+        <div class="option-group" v-if="options.export_scatter">
+          <label>Scatter Y-Axis</label>
+          <div class="radio-group row">
+            <label><input type="radio" v-model="options.scatter_y_mode" value="auto" /> auto</label>
+            <label><input type="radio" v-model="options.scatter_y_mode" value="limit" /> limit</label>
+            <label><input type="radio" v-model="options.scatter_y_mode" value="sigma" /> sigma</label>
+          </div>
+          <div v-if="options.scatter_y_mode === 'sigma'" style="margin-top: 6px; display: flex; align-items: center; gap: 6px;">
+            <span style="font-size: 12px; color: #555;">N =</span>
+            <input
+              v-model.number="options.scatter_sigma_n"
+              type="number"
+              min="1"
+              max="10"
+              step="0.5"
+              style="width: 60px; padding: 2px 6px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 12px;"
+            />
           </div>
         </div>
     </div>
@@ -212,7 +245,29 @@ const options = ref({
   delta_site: 3,
   mean_limit: 'show',
   site_mode: 'site',
+  export_hist: true,
+  export_scatter: false,
+  scatter_y_mode: 'auto',
+  scatter_sigma_n: 6,
 })
+
+const isBothExportMode = computed(() => options.value.export_hist && options.value.export_scatter)
+
+watch(isBothExportMode, (val) => {
+  if (val) {
+    options.value.chars_row = 1
+  }
+})
+
+function handleExportModeChange(type: 'hist' | 'scatter') {
+  if (!options.value.export_hist && !options.value.export_scatter) {
+    if (type === 'hist') {
+      options.value.export_hist = true
+    } else {
+      options.value.export_scatter = true
+    }
+  }
+}
 
 const exporting = ref(false)
 const exportProgress = ref(0)
@@ -861,16 +916,20 @@ async function handleExport() {
   exportProgress.value = 0
   
   try {
-    // 1. ??????
+    // 1. 发起导出
+    const exportModeVal = isBothExportMode.value ? 'both' : (options.value.export_scatter ? 'scatter' : 'hist')
     const startRes: any = await api.post(`/analysis/lot/${lotId.value}/export_items/start`, null, {
       params: { 
         filter_type: options.value.filter_type,
         sigma: options.value.sigma,
         data_range: options.value.data_range,
-        chars_row: options.value.chars_row,
+        chars_row: isBothExportMode.value ? 1 : options.value.chars_row,
         delta_site: options.value.delta_site,
         site_mode: options.value.site_mode,
-        selected_items: selectedItems
+        selected_items: selectedItems,
+        export_mode: exportModeVal,
+        scatter_y_mode: options.value.scatter_y_mode,
+        scatter_sigma_n: options.value.scatter_sigma_n
       }
     })
     

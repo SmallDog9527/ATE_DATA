@@ -79,8 +79,8 @@
                     {{ tool.btn4.label }}
                   </button>
                 </div>
+                <span v-if="tool.description" class="tool-desc">{{ tool.description }}</span>
               </div>
-              <span v-if="tool.description" class="tool-desc">{{ tool.description }}</span>
             </td>
           </tr>
 
@@ -156,26 +156,14 @@ function getButton1Label(tool: ToolItem): string {
 const toolsList = ref<ToolItem[]>([
   {
     id: 1,
-    name: '程序增加Fucntion测试时间',
-    description: '',
+    name: '程序增加Function测试时间',
+    description: '上传程序后自动下载，编译测试后在pgs同目录会生成time.csv来查看各个Function的测试时间',
     btn1: {
       label: '上传程序',
       className: 'btn-primary',
       action: () => {
         triggerTool1Upload()
       },
-    },
-    btn2: {
-      label: '按键 2',
-      className: 'btn-default',
-    },
-    btn3: {
-      label: '按键 3',
-      className: 'btn-default',
-    },
-    btn4: {
-      label: '按键 4',
-      className: 'btn-default',
     },
   },
 ])
@@ -202,7 +190,7 @@ function triggerTool1Upload() {
 async function handleFileSelected(e: Event) {
   const input = e.target as HTMLInputElement
   const files = input.files
-  if (!files || files.length === 0) return
+  if (!files || files.length === 0 || !files[0]) return
 
   const file = files[0]
   input.value = '' // 清空以允许重复选择同名文件
@@ -405,8 +393,6 @@ function handleButtonClick(tool: ToolItem, btnSlot: number) {
 .tool-desc {
   font-size: 12px;
   color: #888;
-  margin-top: 4px;
-  display: block;
 }
 
 .btn {

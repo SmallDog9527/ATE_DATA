@@ -183,7 +183,8 @@ def _draw_stats_line(ax_obj, y_pos, items_groups):
                     color='#000000', fontweight='bold', fontsize=8, ha='center')
 
 
-def _hist_worker_init(parquet_path, needed_cols, items_data, site_mode, lot_label, filter_type, sigma):
+def _hist_worker_init(parquet_path, needed_cols, items_data, site_mode, lot_label, filter_type, sigma,
+                      scatter_y_mode='auto', scatter_sigma_n=6.0, export_mode='hist'):
     """Initializer: read parquet (column-selective) + create reusable figure."""
     g = {}
     g['df'] = pd.read_parquet(parquet_path, columns=needed_cols)
@@ -192,13 +193,16 @@ def _hist_worker_init(parquet_path, needed_cols, items_data, site_mode, lot_labe
     g['lot_label'] = lot_label
     g['filter_type'] = filter_type
     g['sigma'] = sigma
+    g['scatter_y_mode'] = scatter_y_mode
+    g['scatter_sigma_n'] = scatter_sigma_n
+    g['export_mode'] = export_mode
     g['fig'], g['ax'] = plt.subplots(figsize=(5.37, 4.21))
     _G.clear()
     _G.update(g)
 
 
-def _render_hist_png(idx):
-    """Render one histogram, return (idx, png_bytes) or (idx, None)."""
+def _render_hist_png_inner(idx):
+    """Render one histogram, return png_bytes or None."""
     df = _G['df']
     ax = _G['ax']
     fig = _G['fig']
@@ -206,20 +210,20 @@ def _render_hist_png(idx):
     p_name = item['item_name']
     p_num = item['item_number']
     if p_name not in df.columns:
-        return (idx, None)
+        return None
     ll = item.get('lower_limit')
     ul = item.get('upper_limit')
     unit = item.get('unit') or ''
     vals = df[p_name].dropna().values.astype(float)
     if len(vals) == 0:
-        return (idx, None)
+        return None
     filter_type = _G['filter_type']
     sigma = _G['sigma']
     site_mode = _G['site_mode']
     lot_label = _G['lot_label']
     filtered_all = _apply_filter(vals, filter_type, ll, ul, sigma)
     if len(filtered_all) == 0:
-        return (idx, None)
+        return None
     edges, exceeds_limit, ll_bin_idx, ul_bin_idx = _calc_hist_edges(filtered_all, ll, ul)
     sites_data = []
     if site_mode == 'lot':
@@ -348,4 +352,150 @@ def _render_hist_png(idx):
     img_data = io.BytesIO()
     fig.savefig(img_data, format='png', dpi=100)
     img_data.seek(0)
-    return (idx, img_data.getvalue())
+    return img_data.getvalue()
+
+
+def _render_scatter_png_inner(idx):
+    """Render one scatter chart (ordered by site), return png_bytes or None."""
+    df = _G['df']
+    ax = _G['ax']
+    fig = _G['fig']
+    item = _G['items'][idx]
+    p_name = item['item_name']
+    p_num = item['item_number']
+    if p_name not in df.columns:
+        return None
+    ll = item.get('lower_limit')
+    ul = item.get('upper_limit')
+    unit = item.get('unit') or ''
+    vals = df[p_name].dropna().values.astype(float)
+    if len(vals) == 0:
+        return None
+    filter_type = _G['filter_type']
+    sigma = _G['sigma']
+    site_mode = _G['site_mode']
+    lot_label = _G['lot_label']
+    scatter_y_mode = _G.get('scatter_y_mode', 'auto')
+    scatter_sigma_n = float(_G.get('scatter_sigma_n', 6.0))
+
+    filtered_all = _apply_filter(vals, filter_type, ll, ul, sigma)
+    if len(filtered_all) == 0:
+        return None
+
+    s0_stats = _calc_param_stats(filtered_all, ll, ul, len(filtered_all))
+
+    # Prepare site grouped data in ascending order of site number
+    sites_data = []
+    if site_mode == 'lot' or 'SITE_NUM' not in df.columns:
+        sites_data.append({'site': 0, 'vals': filtered_all, 'label': lot_label})
+    else:
+        site_groups = df.dropna(subset=[p_name]).groupby('SITE_NUM')
+        sorted_groups = sorted(site_groups, key=lambda x: int(x[0]))
+        for site_num, site_df in sorted_groups:
+            if site_num == 0:
+                continue
+            site_vals = site_df[p_name].values.astype(float)
+            site_filtered = _apply_filter(site_vals, filter_type, ll, ul, sigma)
+            if len(site_filtered) > 0:
+                sites_data.append({'site': int(site_num), 'vals': site_filtered, 'label': f"S{int(site_num)}"})
+        if not sites_data:
+            sites_data.append({'site': 0, 'vals': filtered_all, 'label': lot_label})
+
+    ax.clear()
+    ax.set_axisbelow(True)
+    ax.yaxis.grid(True, linestyle='--', alpha=0.5, zorder=0)
+    ax.xaxis.grid(True, linestyle='--', alpha=0.3, zorder=0)
+
+    # Plot points sequentially by site
+    current_x = 0
+    for sidx, s in enumerate(sites_data):
+        s_vals = s['vals']
+        n_s = len(s_vals)
+        x_pts = np.arange(current_x + 1, current_x + n_s + 1)
+        current_x += n_s
+        color = '#4dabf7' if s['site'] == 0 else SITE_COLORS[sidx % len(SITE_COLORS)]
+        ax.scatter(x_pts, s_vals, s=8, alpha=0.6, color=color, label=s['label'], zorder=3, edgecolors='none')
+
+    total_n = max(current_x, 1)
+    ax.set_xlim(0, max(total_n + 1, 10))
+
+    # Y-axis range calculation
+    if scatter_y_mode == 'limit' and ll is not None and ul is not None and ll != ul:
+        pad = (ul - ll) * 0.05 or abs(ul) * 0.01 or 0.1
+        y_min = ll - pad
+        y_max = ul + pad
+    elif scatter_y_mode == 'sigma' and s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None and s0_stats['stdev'] > 0:
+        y_min = s0_stats['mean'] - scatter_sigma_n * s0_stats['stdev']
+        y_max = s0_stats['mean'] + scatter_sigma_n * s0_stats['stdev']
+        if y_min == y_max:
+            y_min -= 1
+            y_max += 1
+    else:
+        # Auto mode: use data actual min and max
+        data_min = float(np.min(filtered_all))
+        data_max = float(np.max(filtered_all))
+        if data_min == data_max:
+            y_min = data_min - 1
+            y_max = data_max + 1
+        else:
+            pad = (data_max - data_min) * 0.05 or 0.1
+            y_min = data_min - pad
+            y_max = data_max + pad
+
+    ax.set_ylim(y_min, y_max)
+
+    # Reference lines
+    if scatter_y_mode == 'limit':
+        # Limit mode: only draw LL and UL red dashed lines
+        if ll is not None:
+            ax.axhline(ll, color='red', linestyle='--', linewidth=1.5, zorder=4)
+            ax.text(ax.get_xlim()[0], ll, f'LL:{ll}', color='red', fontsize=7, ha='left', va='bottom')
+        if ul is not None:
+            ax.axhline(ul, color='red', linestyle='--', linewidth=1.5, zorder=4)
+            ax.text(ax.get_xlim()[0], ul, f'UL:{ul}', color='red', fontsize=7, ha='left', va='bottom')
+    elif scatter_y_mode == 'sigma' and s0_stats.get('mean') is not None and s0_stats.get('stdev') is not None:
+        # Sigma mode: draw purple dashed lines only
+        sig_l = s0_stats['mean'] - scatter_sigma_n * s0_stats['stdev']
+        sig_u = s0_stats['mean'] + scatter_sigma_n * s0_stats['stdev']
+        ax.axhline(sig_l, color='#722ed1', linestyle='--', linewidth=1, zorder=4)
+        ax.axhline(sig_u, color='#722ed1', linestyle='--', linewidth=1, zorder=4)
+
+    # Title & stats header
+    ax.set_title(f"{p_num}.{p_name}", fontsize=12, fontweight='bold', color='black', pad=32)
+    cpk_val = s0_stats['cpk'] if s0_stats['cpk'] is not None else 0
+    stats_info = [("Min=", f"{s0_stats['min_val']:.4f}"),
+                  ("Max=", f"{s0_stats['max_val']:.4f}"),
+                  ("Mean=", f"{s0_stats['mean']:.4f}"),
+                  ("Stdev=", f"{s0_stats['stdev']:.4f}"),
+                  ("CPK=", f"{cpk_val:.4f}")]
+    _draw_stats_line(ax, 1.05, [stats_info])
+    ax.set_ylabel(unit, fontsize=12, fontweight='bold', color='black')
+    ax.set_xlabel("Parts", fontsize=8)
+    ax.tick_params(labelsize=7)
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.22), ncol=4, fontsize=7, frameon=False)
+    fig.tight_layout()
+    img_data = io.BytesIO()
+    fig.savefig(img_data, format='png', dpi=100)
+    img_data.seek(0)
+    return img_data.getvalue()
+
+
+def _render_hist_png(idx):
+    """Render one histogram, return (idx, png_bytes) or (idx, None)."""
+    png = _render_hist_png_inner(idx)
+    return (idx, png)
+
+
+def _render_chart_export(idx):
+    """Render charts according to export_mode ('both', 'scatter', 'hist')."""
+    export_mode = _G.get('export_mode', 'hist')
+    if export_mode == 'both':
+        h_png = _render_hist_png_inner(idx)
+        s_png = _render_scatter_png_inner(idx)
+        return (idx, {'hist': h_png, 'scatter': s_png})
+    elif export_mode == 'scatter':
+        s_png = _render_scatter_png_inner(idx)
+        return (idx, {'scatter': s_png})
+    else:
+        h_png = _render_hist_png_inner(idx)
+        return (idx, {'hist': h_png})

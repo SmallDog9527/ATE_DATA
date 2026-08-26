@@ -55,12 +55,128 @@ def get_test_items_summary(
 ):
     """根据过滤器计算所有参数的统计数据"""
     lot = db.query(Lot).filter(Lot.id == lot_id).first()
-    if not lot or not lot.parquet_path:
-        raise HTTPException(status_code=404, detail="数据不存在")
+    if not lot:
+        raise HTTPException(status_code=404, detail="Data not found")
 
-    df = pd.read_parquet(lot.parquet_path)
+    # Load saved item comments if available
+    saved_comments = {}
+    comments_filepath = os.path.join(ITEM_COMMENTS_DIR, f"lot_{lot_id}.json")
+    if os.path.exists(comments_filepath):
+        try:
+            with open(comments_filepath, "r", encoding="utf-8") as f:
+                saved_comments = json.load(f) or {}
+        except Exception:
+            saved_comments = {}
+
+    has_parquet = bool(lot.parquet_path and os.path.exists(lot.parquet_path))
+
+    # Fallback to database test_items if parquet file is missing on disk
+    if not has_parquet:
+        items_all = db.query(TestItem).filter(TestItem.lot_id == lot_id).order_by(TestItem.item_number, TestItem.site).all()
+        if not items_all:
+            return []
+        grouped = {}
+        for it in items_all:
+            if it.item_number not in grouped:
+                grouped[it.item_number] = {
+                    "id": it.id,
+                    "item_number": it.item_number,
+                    "item_name": it.item_name,
+                    "first_fail_bin": None,
+                    "unit": it.unit,
+                    "lower_limit": it.lower_limit,
+                    "upper_limit": it.upper_limit,
+                    "exec_qty": 0,
+                    "fail_count": 0,
+                    "fail_rate": 0.0,
+                    "yield_rate": 1.0,
+                    "mean": None,
+                    "stdev": None,
+                    "min_val": None,
+                    "max_val": None,
+                    "cpu": None,
+                    "cpl": None,
+                    "cpk": None,
+                    "comment": saved_comments.get(it.item_name, "") if isinstance(saved_comments, dict) else "",
+                }
+            if it.site == 0:
+                grouped[it.item_number].update({
+                    "id": it.id,
+                    "unit": it.unit,
+                    "lower_limit": it.lower_limit,
+                    "upper_limit": it.upper_limit,
+                    "exec_qty": it.exec_qty or 0,
+                    "fail_count": it.fail_count or 0,
+                    "fail_rate": it.fail_rate or 0.0,
+                    "yield_rate": it.yield_rate if it.yield_rate is not None else 1.0,
+                    "mean": it.mean,
+                    "stdev": it.stdev,
+                    "min_val": it.min_val,
+                    "max_val": it.max_val,
+                    "cpu": it.cpu,
+                    "cpl": it.cpl,
+                    "cpk": it.cpk,
+                    "comment": saved_comments.get(it.item_name, "") if isinstance(saved_comments, dict) else "",
+                })
+            else:
+                grouped[it.item_number][f"mean_s{it.site}"] = it.mean
+        return list(grouped.values())
+
+    try:
+        df = pd.read_parquet(lot.parquet_path)
+    except Exception as e:
+        print(f"[get_test_items_summary] Warning: failed to read parquet {lot.parquet_path}: {e}, falling back to DB")
+        items_all = db.query(TestItem).filter(TestItem.lot_id == lot_id).order_by(TestItem.item_number, TestItem.site).all()
+        if not items_all:
+            return []
+        grouped = {}
+        for it in items_all:
+            if it.item_number not in grouped:
+                grouped[it.item_number] = {
+                    "id": it.id,
+                    "item_number": it.item_number,
+                    "item_name": it.item_name,
+                    "first_fail_bin": None,
+                    "unit": it.unit,
+                    "lower_limit": it.lower_limit,
+                    "upper_limit": it.upper_limit,
+                    "exec_qty": 0,
+                    "fail_count": 0,
+                    "fail_rate": 0.0,
+                    "yield_rate": 1.0,
+                    "mean": None,
+                    "stdev": None,
+                    "min_val": None,
+                    "max_val": None,
+                    "cpu": None,
+                    "cpl": None,
+                    "cpk": None,
+                    "comment": saved_comments.get(it.item_name, "") if isinstance(saved_comments, dict) else "",
+                }
+            if it.site == 0:
+                grouped[it.item_number].update({
+                    "id": it.id,
+                    "unit": it.unit,
+                    "lower_limit": it.lower_limit,
+                    "upper_limit": it.upper_limit,
+                    "exec_qty": it.exec_qty or 0,
+                    "fail_count": it.fail_count or 0,
+                    "fail_rate": it.fail_rate or 0.0,
+                    "yield_rate": it.yield_rate if it.yield_rate is not None else 1.0,
+                    "mean": it.mean,
+                    "stdev": it.stdev,
+                    "min_val": it.min_val,
+                    "max_val": it.max_val,
+                    "cpu": it.cpu,
+                    "cpl": it.cpl,
+                    "cpk": it.cpk,
+                    "comment": saved_comments.get(it.item_name, "") if isinstance(saved_comments, dict) else "",
+                })
+            else:
+                grouped[it.item_number][f"mean_s{it.site}"] = it.mean
+        return list(grouped.values())
     
-    # 坐标去重：若存在坐标则进行 de-duplication
+    # Coordinates de-duplication if coordinate columns exist
     if lot.data_type == 'CP' and 'X_COORD' in df.columns and 'Y_COORD' in df.columns:
         if data_range == 'final':
             df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='last')
@@ -71,14 +187,14 @@ def get_test_items_summary(
     if filter_type == 'pass' and 'SOFT_BIN' in df.columns:
         df = df[pd.to_numeric(df['SOFT_BIN'], errors='coerce').fillna(-1).astype(int).isin([1, 2])].copy()
 
-    # 获取所有参数名和Limit (从 site=0 的 TestItem 记录中读取)
+    # Read items and limits from site=0 TestItem records
     items = db.query(TestItem).filter(
         and_(TestItem.lot_id == lot_id, TestItem.site == 0)
     ).order_by(TestItem.item_number).all()
 
     from app.services.stats import apply_filter, calc_param_stats
 
-    # 获取所有 Site 并按 Site 分组数据
+    # Group df by site
     sites = []
     df_by_site = {}
     if 'SITE_NUM' in df.columns:
@@ -94,7 +210,7 @@ def get_test_items_summary(
         values = df[item.item_name].values.astype(float)
         exec_qty = int(df[item.item_name].notna().sum())
         
-        # 应用过滤
+        # Apply filtering
         ll, ul = item.lower_limit, item.upper_limit
         if filter_type == 'filter_by_sigma' and len(values[~np.isnan(values)]) > 1:
             clean_vals = values[~np.isnan(values)]
@@ -105,10 +221,10 @@ def get_test_items_summary(
 
         filtered_values = apply_filter(values, filter_type, item.lower_limit, item.upper_limit, sigma)
         
-        # 计算统计
+        # Calculate statistics
         stats = calc_param_stats(filtered_values, ll, ul, exec_qty)
         
-        # 计算各个 Site 的 Mean
+        # Calculate mean for each site
         site_means = {}
         for s in sites:
             s_df = df_by_site[s]
@@ -122,30 +238,17 @@ def get_test_items_summary(
             else:
                 site_means[f"mean_s{s}"] = None
 
-        # 寻找第一个失效的 Bin
+        # Find first fail bin
         first_fail_bin = None
         if stats.get('fail_count', 0) > 0 and 'SOFT_BIN' in df.columns:
-            # 找到失效的掩码。注意这里的 ll, ul 已经是最终用于统计的限制（可能受 sigma 影响）
             item_vals = df[item.item_name]
-            # 这里的判断逻辑与 calc_param_stats 保持一致
             fail_mask = (item_vals.notna()) & (
                 ((item_vals < ll) if ll is not None else False) | 
                 ((item_vals > ul) if ul is not None else False)
             )
-            # 找到第一个 True 的索引标签
             if fail_mask.any():
                 first_idx = fail_mask.idxmax()
                 first_fail_bin = int(df.loc[first_idx, 'SOFT_BIN'])
-
-        # Load saved item comments if available
-        saved_comments = {}
-        comments_filepath = os.path.join(ITEM_COMMENTS_DIR, f"lot_{lot_id}.json")
-        if os.path.exists(comments_filepath):
-            try:
-                with open(comments_filepath, "r", encoding="utf-8") as f:
-                    saved_comments = json.load(f) or {}
-            except Exception:
-                saved_comments = {}
 
         result.append({
             "id": item.id,
@@ -638,9 +741,12 @@ def start_export_test_items(
     delta_site: float = Query(3.0),
     selected_items: str = Query(""),
     site_mode: str = Query("site"),
+    export_mode: str = Query("hist"),
+    scatter_y_mode: str = Query("auto"),
+    scatter_sigma_n: float = Query(6.0),
     db: Session = Depends(get_db),
 ):
-    """启动异步导出任务"""
+    """Start asynchronous export task"""
     task_id = str(uuid.uuid4())
     export_tasks[task_id] = {
         "status": "processing",
@@ -652,7 +758,8 @@ def start_export_test_items(
     
     background_tasks.add_task(
         run_export_task,
-        task_id, lot_id, filter_type, sigma, data_range, chars_row, delta_site, selected_items, site_mode, db
+        task_id, lot_id, filter_type, sigma, data_range, chars_row, delta_site, selected_items, site_mode,
+        export_mode, scatter_y_mode, scatter_sigma_n, db
     )
     
     return {"task_id": task_id}
@@ -724,6 +831,9 @@ def run_export_task(
     delta_site: float,
     selected_items: str,
     site_mode: str,
+    export_mode: str,
+    scatter_y_mode: str,
+    scatter_sigma_n: float,
     db: Session
 ):
     """后台执行导出任务"""
@@ -938,11 +1048,11 @@ def run_export_task(
                     ax_obj.text(0.5, current_y, line_text, transform=ax_obj.transAxes, 
                                 color='#000000', fontweight='bold', fontsize=8, ha='center')
 
-            # ─── Parallel histogram rendering (persistent process pool) ───
+            # ─── Parallel chart rendering (persistent process pool) ───
             # Worker module is pure (no app imports) so spawn stays fast.
             import multiprocessing as _mp
             from concurrent.futures import ProcessPoolExecutor as _PPE
-            from app.workers.hist_worker import _hist_worker_init, _render_hist_png
+            from app.workers.hist_worker import _hist_worker_init, _render_chart_export
 
             # Persistent global pool (created once, reused across exports)
             global _HIST_POOL
@@ -968,34 +1078,68 @@ def run_export_task(
             # Setup phase: each worker reads parquet + creates reusable figure.
             # Submit init to each of the N workers (idempotent; extra calls just re-init).
             _init_futs = [_HIST_POOL.submit(_hist_worker_init, lot.parquet_path, _needed_cols,
-                                            _items_data, site_mode, lot_label, filter_type, sigma)
+                                            _items_data, site_mode, lot_label, filter_type, sigma,
+                                            scatter_y_mode, scatter_sigma_n, export_mode)
                           for _ in range(_n_workers)]
             for _f in _init_futs:
                 _f.result()
 
             # Render phase: ex.map is the optimized batch pattern.
             _t0 = __import__('time').time()
-            _raw_results = list(_HIST_POOL.map(_render_hist_png, range(_total_render)))
+            _raw_results = list(_HIST_POOL.map(_render_chart_export, range(_total_render)))
             _t1 = __import__('time').time()
-            print(f"[export] render phase: {_total_render} items in {_t1-_t0:.1f}s ({(_t1-_t0)/max(_total_render,1)*1000:.0f}ms/项)", flush=True)
-            _render_results = [r[1] if r else None for r in _raw_results]
-            _done = sum(1 for _p in _render_results if _p is not None)
+            print(f"[export] render phase ({export_mode}): {_total_render} items in {_t1-_t0:.1f}s ({(_t1-_t0)/max(_total_render,1)*1000:.0f}ms/item)", flush=True)
+            _done = sum(1 for _r in _raw_results if _r and _r[1])
             export_tasks[task_id]["progress"] = 15 + int((_done / max(_total_render, 1)) * 65)
 
             # Insert phase: write images into Excel in main process (openpyxl/xlsxwriter).
-            for _i, _png in enumerate(_render_results):
-                if _png is None:
+            for _i, _res_tuple in enumerate(_raw_results):
+                if not _res_tuple or not _res_tuple[1]:
                     continue
                 _it = _items_data[_i]
-                _group_idx = _i // chars_row
-                _within = _i % chars_row
-                _r_idx = _group_idx * 22 + 2
-                _c_idx = _within * 7 + 2
-                _info_r_idx = _group_idx * 22 + 6 + _within
-                hist_sheet.write(_info_r_idx, 0, _it['item_number'])
-                hist_sheet.write(_info_r_idx, 1, _it['item_name'])
-                hist_sheet.insert_image(_r_idx, _c_idx, f'h_{_i}.png',
-                                        {'image_data': io.BytesIO(_png), 'x_scale': 1.0, 'y_scale': 1.0})
+                charts = _res_tuple[1]
+
+                if export_mode == 'both':
+                    _group_idx = _i
+                    _r_idx = _group_idx * 22 + 2
+                    _info_r_idx = _group_idx * 22 + 6
+                    hist_sheet.write(_info_r_idx, 0, _it['item_number'])
+                    hist_sheet.write(_info_r_idx, 1, _it['item_name'])
+
+                    h_png = charts.get('hist')
+                    if h_png:
+                        hist_sheet.insert_image(_r_idx, 2, f'h_{_i}.png',
+                                                {'image_data': io.BytesIO(h_png), 'x_scale': 1.0, 'y_scale': 1.0})
+                    s_png = charts.get('scatter')
+                    if s_png:
+                        hist_sheet.insert_image(_r_idx, 9, f's_{_i}.png',
+                                                {'image_data': io.BytesIO(s_png), 'x_scale': 1.0, 'y_scale': 1.0})
+                elif export_mode == 'scatter':
+                    s_png = charts.get('scatter')
+                    if not s_png:
+                        continue
+                    _group_idx = _i // chars_row
+                    _within = _i % chars_row
+                    _r_idx = _group_idx * 22 + 2
+                    _c_idx = _within * 7 + 2
+                    _info_r_idx = _group_idx * 22 + 6 + _within
+                    hist_sheet.write(_info_r_idx, 0, _it['item_number'])
+                    hist_sheet.write(_info_r_idx, 1, _it['item_name'])
+                    hist_sheet.insert_image(_r_idx, _c_idx, f's_{_i}.png',
+                                            {'image_data': io.BytesIO(s_png), 'x_scale': 1.0, 'y_scale': 1.0})
+                else:
+                    h_png = charts.get('hist')
+                    if not h_png:
+                        continue
+                    _group_idx = _i // chars_row
+                    _within = _i % chars_row
+                    _r_idx = _group_idx * 22 + 2
+                    _c_idx = _within * 7 + 2
+                    _info_r_idx = _group_idx * 22 + 6 + _within
+                    hist_sheet.write(_info_r_idx, 0, _it['item_number'])
+                    hist_sheet.write(_info_r_idx, 1, _it['item_name'])
+                    hist_sheet.insert_image(_r_idx, _c_idx, f'h_{_i}.png',
+                                            {'image_data': io.BytesIO(h_png), 'x_scale': 1.0, 'y_scale': 1.0})
 
             export_tasks[task_id]["progress"] = 80
 
@@ -2289,8 +2433,8 @@ def get_param_data(
     data_range: final / original / all
     """
     lot = db.query(Lot).filter(Lot.id == lot_id).first()
-    if not lot or not lot.parquet_path:
-        raise HTTPException(status_code=404, detail="数据文件不存在")
+    if not lot or not lot.parquet_path or not os.path.exists(lot.parquet_path):
+        raise HTTPException(status_code=404, detail="Data file not found on server")
 
     # 读取Parquet (仅读取需要的列，极大提升I/O速度)
     try:
@@ -2520,6 +2664,203 @@ def get_param_data(
         "ll_bin_index": ll_bin_index,
         "ul_bin_index": ul_bin_index,
         "sites": result_data,
+    }
+
+
+@router.get("/lot/{lot_id}/trim_step_data")
+def get_trim_step_data(
+    lot_id: int,
+    base_param: str = Query(...),
+    param_names: Optional[str] = Query(None, description="Comma-separated step parameter names"),
+    filter_type: str = Query("all"),
+    sigma: float = Query(3.0),
+    data_range: str = Query("final"),
+    custom_min: Optional[float] = Query(None),
+    custom_max: Optional[float] = Query(None),
+    custom_ll: Optional[float] = Query(None),
+    custom_ul: Optional[float] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Fetch multi-step trim parameter data and per-die curves for Trim Step Mode.
+    filter_type: all / robust / filter_by_limit / filter_by_sigma / custom
+    data_range: final / original / all
+    """
+    lot = db.query(Lot).filter(Lot.id == lot_id).first()
+    if not lot or not lot.parquet_path:
+        raise HTTPException(status_code=404, detail="Data file not found")
+
+    # Read Parquet schema to inspect available columns
+    try:
+        import pyarrow.parquet as pq
+        parquet_file = pq.ParquetFile(lot.parquet_path)
+        available_cols = set(parquet_file.schema.names)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read Parquet Schema: {e}")
+
+    # Determine step parameter names
+    if param_names:
+        step_param_list = [p.strip() for p in param_names.split(",") if p.strip()]
+    else:
+        # Discover steps from database TestItem for lot_id and site 0
+        items = db.query(TestItem).filter(
+            and_(TestItem.lot_id == lot_id, TestItem.site == 0)
+        ).order_by(TestItem.item_number).all()
+        step_param_list = []
+        for it in items:
+            name = it.item_name
+            if name == base_param or (name.startswith(base_param) and (name[len(base_param):].isdigit() or name[len(base_param):] == '')):
+                step_param_list.append(name)
+
+    if not step_param_list:
+        raise HTTPException(status_code=404, detail=f"No trim steps found for {base_param}")
+
+    valid_step_cols = [c for c in step_param_list if c in available_cols]
+    if not valid_step_cols:
+        raise HTTPException(status_code=404, detail="None of the specified trim step parameters exist in data")
+
+    cols_to_load = list(valid_step_cols)
+    if 'SITE_NUM' in available_cols:
+        cols_to_load.append('SITE_NUM')
+    if 'X_COORD' in available_cols:
+        cols_to_load.append('X_COORD')
+    if 'Y_COORD' in available_cols:
+        cols_to_load.append('Y_COORD')
+    if 'SOFT_BIN' in available_cols:
+        cols_to_load.append('SOFT_BIN')
+
+    try:
+        df = pd.read_parquet(lot.parquet_path, columns=cols_to_load)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read parquet data: {e}")
+
+    # Deduplication for CP coordinate data
+    if lot.data_type == 'CP' and 'X_COORD' in df.columns and 'Y_COORD' in df.columns:
+        if data_range == 'final':
+            df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='last')
+        elif data_range == 'original':
+            df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='first')
+
+    # Filter PASS dies if requested
+    if filter_type == 'pass' and 'SOFT_BIN' in df.columns:
+        df = df[pd.to_numeric(df['SOFT_BIN'], errors='coerce').fillna(-1).astype(int).isin([1, 2])].copy()
+
+    # Query TestItem metadata
+    test_items = db.query(TestItem).filter(
+        and_(
+            TestItem.lot_id == lot_id,
+            TestItem.item_name.in_(valid_step_cols),
+            TestItem.site == 0
+        )
+    ).all()
+    item_map = {it.item_name: it for it in test_items}
+
+    from app.services.stats import apply_filter, calc_param_stats
+
+    # Available sites
+    sites_list = []
+    if 'SITE_NUM' in df.columns:
+        sites_list = sorted([int(s) for s in df['SITE_NUM'].unique() if pd.notna(s)])
+
+    steps_result = []
+    unit = item_map.get(valid_step_cols[0]).unit if (valid_step_cols and valid_step_cols[0] in item_map and item_map.get(valid_step_cols[0]).unit) else ""
+
+    for step_idx, step_name in enumerate(valid_step_cols):
+        it = item_map.get(step_name)
+        ll = it.lower_limit if it else None
+        ul = it.upper_limit if it else None
+        step_unit = it.unit if it else ""
+        item_number = it.item_number if it else step_idx + 1
+
+        if filter_type == 'custom':
+            if custom_ll is not None:
+                ll = custom_ll
+            if custom_ul is not None:
+                ul = custom_ul
+
+        step_vals = df[step_name].dropna().values.astype(float)
+        filtered_all = apply_filter(step_vals, filter_type, ll, ul, sigma, custom_min, custom_max)
+        all_stats = calc_param_stats(filtered_all, ll, ul, len(filtered_all))
+
+        # Per-site stats
+        stats_by_site = {}
+        if 'SITE_NUM' in df.columns:
+            for s in sites_list:
+                s_df = df[df['SITE_NUM'] == s]
+                if step_name in s_df.columns:
+                    s_vals = s_df[step_name].dropna().values.astype(float)
+                    s_filtered = apply_filter(s_vals, filter_type, ll, ul, sigma, custom_min, custom_max)
+                    s_stats = calc_param_stats(s_filtered, ll, ul, len(s_filtered))
+                    stats_by_site[s] = s_stats
+                else:
+                    stats_by_site[s] = None
+
+        steps_result.append({
+            "step_index": step_idx,
+            "item_number": item_number,
+            "param_name": step_name,
+            "unit": step_unit,
+            "lower_limit": ll,
+            "upper_limit": ul,
+            "stats_all": all_stats,
+            "stats_by_site": stats_by_site
+        })
+
+    # Build per-die curves
+    curves = []
+    has_coords = ('X_COORD' in df.columns and 'Y_COORD' in df.columns)
+    has_site = ('SITE_NUM' in df.columns)
+
+    for row_idx, (df_idx, row) in enumerate(df.iterrows()):
+        site_num = int(row['SITE_NUM']) if (has_site and pd.notna(row['SITE_NUM'])) else 1
+        x_c = int(row['X_COORD']) if (has_coords and pd.notna(row['X_COORD'])) else None
+        y_c = int(row['Y_COORD']) if (has_coords and pd.notna(row['Y_COORD'])) else None
+
+        points = []
+        for step_idx, step_name in enumerate(valid_step_cols):
+            val = row[step_name]
+            if pd.notna(val):
+                points.append([step_idx, round(float(val), 6)])
+            else:
+                points.append([step_idx, None])
+
+        curves.append({
+            "die_id": row_idx,
+            "site": site_num,
+            "x_coord": x_c,
+            "y_coord": y_c,
+            "points": points
+        })
+
+    # Find matching target parameter if available
+    target_value = None
+    target_param_name = None
+    base_clean = base_param.replace('_pre', '').replace('pre', '').replace('_PRE', '').replace('PRE', '')
+    
+    target_items = db.query(TestItem).filter(
+        and_(
+            TestItem.lot_id == lot_id,
+            TestItem.site == 0,
+            TestItem.item_name.ilike('%target%')
+        )
+    ).all()
+    
+    for tit in target_items:
+        tname = tit.item_name
+        if base_clean.lower() in tname.lower() or tname.lower().startswith(base_clean.lower()):
+            target_param_name = tname
+            target_value = tit.lower_limit if tit.lower_limit is not None else tit.upper_limit
+            break
+
+    return {
+        "base_param": base_param,
+        "unit": unit,
+        "step_count": len(valid_step_cols),
+        "target_param_name": target_param_name,
+        "target_value": target_value,
+        "steps": steps_result,
+        "sites": sites_list,
+        "curves": curves
     }
 
 
