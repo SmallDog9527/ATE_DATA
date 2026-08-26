@@ -1367,36 +1367,51 @@ def download_manual_upload_log(
 
 
 def get_project_version() -> str:
+    import json
     import os
     import subprocess
-    # 1. 尝试从本地的 app/version.txt 文件读取 (Docker 容器环境或本地部署)
+
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    # 检查 backend/app/version.txt 或是旧路径 backend/version.txt
-    version_file_app = os.path.join(os.path.dirname(os.path.dirname(current_dir)), "version.txt")
-    version_file_root = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))), "version.txt")
+    app_dir = os.path.dirname(os.path.dirname(current_dir))
+
+    # 1. Try reading the latest version from version_history.json
+    history_file = os.path.join(app_dir, "version_history.json")
+    if os.path.exists(history_file):
+        try:
+            with open(history_file, "r", encoding="utf-8") as f:
+                history_data = json.load(f)
+                if isinstance(history_data, list) and len(history_data) > 0:
+                    latest_ver = history_data[0].get("version", "").strip()
+                    if latest_ver:
+                        return latest_ver
+        except Exception:
+            pass
+
+    # 2. Try reading from version.txt
+    version_file_app = os.path.join(app_dir, "version.txt")
+    version_file_root = os.path.join(os.path.dirname(app_dir), "version.txt")
     for version_file in (version_file_app, version_file_root):
         if os.path.exists(version_file):
             for encoding in ("utf-8", "utf-16", "gbk"):
                 try:
                     with open(version_file, "r", encoding=encoding) as f:
                         ver = f.read().strip()
-                        # 清除可能存在的 BOM 字符和空字符
                         ver = ver.replace('\x00', '').replace('\ufeff', '').strip()
                         if ver:
                             return ver
                 except Exception:
                     pass
 
-    # 2. 尝试执行 git 命令动态获取 (本地开发环境)
+    # 3. Try reading from git tags
     try:
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))))
+        project_root = os.path.dirname(os.path.dirname(app_dir))
         result = subprocess.run(
             ["git", "describe", "--tags", "--abbrev=0"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             check=True,
-            cwd=project_root
+            cwd=project_root,
         )
         tag = result.stdout.strip()
         if tag:
@@ -1404,8 +1419,9 @@ def get_project_version() -> str:
     except Exception:
         pass
 
-    # 3. 兜底默认版本号
-    return "V01_20260623"
+    # 4. Fallback default version
+    return "V01_20260826"
+
 
 
 @router.get("/version")

@@ -24,7 +24,10 @@
       <div class="toolbar-left">
         <button class="btn btn-primary" @click="showUpload = true">⬆ 上传</button>
         <button class="btn" @click="fetchLots">🔄 刷新</button>
-        <button class="btn btn-danger" :disabled="!selectedRows.length" @click="handleDelete">
+        <button class="btn btn-danger"
+                :disabled="!selectedRows.length || (activeHomeTab !== 'ENG_DATA' && !authStore.isAdmin)"
+                :title="(activeHomeTab !== 'ENG_DATA' && !authStore.isAdmin) ? '非管理员仅在 ENG_DATA 中可删除个人上传数据' : ''"
+                @click="handleDelete">
           🗑 删除 {{ selectedRows.length ? `(${selectedRows.length})` : '' }}
         </button>
         <button class="btn btn-download" :disabled="!selectedRows.length" @click="handleDownload"
@@ -476,11 +479,7 @@ const filteredLots = computed(() => {
     return lots.value
   }
   if (activeHomeTab.value === 'ENG_DATA') {
-    if (authStore.isAdmin || authStore.isEng) {
-      return lots.value.filter((l: any) => l.data_source === 'manual' && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield')
-    } else {
-      return lots.value.filter((l: any) => l.data_source === 'manual' && l.user_id === authStore.user?.id && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield')
-    }
+    return lots.value.filter((l: any) => l.data_source === 'manual' && l.user_id === authStore.user?.id && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield')
   }
   if (activeHomeTab.value === 'CP_LOT') {
     return lots.value.filter((l: any) => l.data_type === 'CP_LOT')
@@ -1521,11 +1520,19 @@ async function handleUpload() {
 async function handleDelete() {
   if (!selectedRows.value.length) return
 
-  // OSAT_FT/OSAT_CP 所有人均可访问，但只有 admin/eng 可以删除。
-  const hasFtpLot = selectedRows.value.some(r => r.data_source === 'ftp')
-  if (hasFtpLot && !authStore.isAdmin && !authStore.isEng) {
-    alert('您没有权限删除 OSAT_FT / OSAT_CP 的数据记录！')
+  // Non-admin can only delete in ENG_DATA
+  if (activeHomeTab.value !== 'ENG_DATA' && !authStore.isAdmin) {
+    alert('非管理员用户在全部数据及 OSAT 视图中禁止执行删除操作！')
     return
+  }
+
+  // Non-admin can only delete their own manual data
+  if (!authStore.isAdmin) {
+    const hasOthers = selectedRows.value.some(r => r.user_id !== authStore.user?.id || r.data_source === 'ftp')
+    if (hasOthers) {
+      alert('您只能删除本人上传的数据！')
+      return
+    }
   }
 
   if (!confirm(`确认删除 ${selectedRows.value.length} 条记录？`)) return

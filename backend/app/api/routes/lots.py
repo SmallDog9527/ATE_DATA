@@ -980,34 +980,11 @@ def get_mp_yield_overview(
             range_type = "month"
             range_value = months
 
-        # Check user role permissions to determine data source access (default to True if current_user is None for system tasks)
-        is_admin_or_eng = True
-        if current_user is not None:
-            is_admin_or_eng = current_user.role in ['admin', 'eng']
-
-        if is_admin_or_eng:
-            filters = [
-                Lot.data_type == "MP_Yield",
-                Lot.status != "deleted",
-            ]
-        else:
-            shared_lot_ids = (
-                db.query(LotShare.lot_id)
-                .filter(
-                    LotShare.shared_to == current_user.id,
-                    LotShare.expires_at > datetime.now(timezone.utc),
-                )
-                .subquery()
-            )
-            filters = [
-                Lot.data_type == "MP_Yield",
-                Lot.status != "deleted",
-                or_(
-                    Lot.user_id == current_user.id,
-                    Lot.id.in_(shared_lot_ids),
-                    Lot.data_source == DataSource.ftp
-                )
-            ]
+        # All users have read access to MP_Yield summary metrics
+        filters = [
+            Lot.data_type == "MP_Yield",
+            Lot.status != "deleted",
+        ]
 
         if range_type == "month":
             val = range_value if range_value is not None else 3
@@ -1027,23 +1004,7 @@ def get_mp_yield_overview(
                     Lot.status != "deleted",
                 )
             )
-            # Apply user role visibility filters for non-privileged users
-            if current_user is not None and current_user.role not in ['admin', 'eng']:
-                shared_lot_ids = (
-                    db.query(LotShare.lot_id)
-                    .filter(
-                        LotShare.shared_to == current_user.id,
-                        LotShare.expires_at > datetime.now(timezone.utc),
-                    )
-                    .subquery()
-                )
-                recent_lots_q = recent_lots_q.filter(
-                    or_(
-                        Lot.user_id == current_user.id,
-                        Lot.id.in_(shared_lot_ids),
-                        Lot.data_source == DataSource.ftp
-                    )
-                )
+            # All users can query recent lot list
             if product_name:
                 recent_lots_q = recent_lots_q.filter(Lot.product_name.ilike(f"%{product_name}%"))
             recent_lots_results = (
@@ -1238,28 +1199,8 @@ def get_mp_yield_list(
     Get a list of MP Yield records with horizontally pivoted sbin1-sbin130 values.
     """
     try:
-        now = datetime.now(timezone.utc)
-        if current_user.role in ['admin', 'eng']:
-            query = db.query(Lot)
-        else:
-            shared_lot_ids = (
-                db.query(LotShare.lot_id)
-                .filter(
-                    LotShare.shared_to == current_user.id,
-                    LotShare.expires_at > now,
-                )
-                .subquery()
-            )
-            from app.models.lot import DataSource
-            query = db.query(Lot).filter(
-                or_(
-                    Lot.user_id == current_user.id,
-                    Lot.id.in_(shared_lot_ids),
-                    Lot.data_source == DataSource.ftp
-                )
-            )
-            
-        query = query.filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
+        # All users have read access to MP_Yield records
+        query = db.query(Lot).filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
         
         # Deduplicate wafer runs: only show the latest wafer run (highest ID) for each unique (lot_id, wafer_id) combination
         latest_wafer_run_ids = (
@@ -1458,27 +1399,12 @@ def get_lots(
 ):
     try:
         now = datetime.now(timezone.utc)
-        if current_user.role in ['admin', 'eng']:
-            query = db.query(Lot)
-        else:
-            # 自己的 + 别人分享给我且未过期的
-            shared_lot_ids = (
-                db.query(LotShare.lot_id)
-                .filter(
-                    LotShare.shared_to == current_user.id,
-                    LotShare.expires_at > now,
-                )
-                .subquery()
-            )
-            from app.models.lot import DataSource
-            query = db.query(Lot).filter(
-                or_(
-                    Lot.user_id == current_user.id,
-                    Lot.id.in_(shared_lot_ids),
-                    Lot.data_source == DataSource.ftp,  # 所有人均可访问 OSAT (FTP) 数据
-                    Lot.data_type == 'CP_LOT'  # Everyone can access CP_LOT data
-                )
-            )
+        from app.models.lot import DataSource
+
+        query = db.query(Lot)
+        if data_source == 'manual':
+            # In ENG_DATA view (data_source='manual'), each user only sees their own manual uploads
+            query = query.filter(Lot.user_id == current_user.id)
         
         query = query.filter(Lot.status != 'deleted')
 
@@ -1591,22 +1517,26 @@ def delete_lots(
     import shutil
     ids = data.get("ids", [])
     deleted_count = 0
+    from app.models.lot import DataSource
+
     for lot_id in ids:
         lot = db.query(Lot).filter(Lot.id == lot_id).first()
         if lot:
-            # 权限检查：只有 admin/eng 可以删除 OSAT_FT/OSAT_CP (ftp) 数据；对于手动上传数据，只有 owner 或 admin 可以删除
-            from app.models.lot import DataSource
+            # Permission check:
+            # 1. FTP uploaded data can ONLY be deleted by admin
             if lot.data_source == DataSource.ftp:
-                if current_user.role not in ['admin', 'eng']:
+                if current_user.role != 'admin':
                     continue
+            # 2. Manual upload data: only the owner or admin can delete
             else:
                 if current_user.role != 'admin' and lot.user_id != current_user.id:
                     continue
-            # 1. 删除关联的统计数据（外键约束）
+
+            # 1. Delete associated statistical summary records
             db.query(BinSummary).filter(BinSummary.lot_id == lot_id).delete()
             db.query(TestItem).filter(TestItem.lot_id == lot_id).delete()
 
-            # 2. 删除物理文件
+            # 2. Delete physical storage files
             if lot.storage_path and os.path.exists(lot.storage_path):
                 try:
                     if os.path.isdir(lot.storage_path):
@@ -1622,18 +1552,16 @@ def delete_lots(
                 except Exception as e:
                     print(f"Error deleting parquet_path {lot.parquet_path}: {e}")
 
-            # 3. 如果是 FTP 数据，同步删除 FTP 上传日志
-            #    这样下次 FTP 扫描时会将该文件视为新文件，重新抓取并解析
+            # 3. Synchronize FTP upload logs if FTP data was removed by admin
             if lot.data_source == DataSource.ftp and lot.ftp_path:
                 from app.models.ftp_upload_log import FtpUploadLog
                 deleted_logs = db.query(FtpUploadLog).filter(
                     FtpUploadLog.remote_path == lot.ftp_path
                 ).delete()
                 if deleted_logs:
-                    print(f"[delete_lots] 已清除 FTP 上传日志 ftp_path={lot.ftp_path!r}，"
-                          f"下次扫描将重新抓取该文件")
+                    print(f"[delete_lots] Cleared FTP upload log for ftp_path={lot.ftp_path!r}")
 
-            # 4. 删除主记录或软删除
+            # 4. Soft delete manual uploads or hard delete FTP records
             if lot.data_source == DataSource.manual:
                 lot.status = 'deleted'
             else:
