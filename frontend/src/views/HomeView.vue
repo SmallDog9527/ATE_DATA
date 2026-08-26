@@ -1492,6 +1492,33 @@ function isStdfFile(name: string): boolean {
 
 async function handleUpload() {
   const filesToUpload = [...uploadFiles.value]
+  if (!filesToUpload.length) return
+
+  let allowDuplicate = false
+  try {
+    const fileNames = filesToUpload.map(f => f.name)
+    const checkRes: any = await api.post('/lots/check-duplicates', { filenames: fileNames })
+    const duplicates: string[] = checkRes?.duplicates || []
+
+    if (duplicates.length > 0) {
+      const msg = `检测到以下 ${duplicates.length} 个数据在数据库中已存在：
+
+` +
+                  duplicates.map(n => `• ${n}`).join('
+') +
+                  `
+
+是否继续上传？
+（点击确定后将自动在文件名后追加数字编号继续上传解析）`
+      if (!confirm(msg)) {
+        return
+      }
+      allowDuplicate = true
+    }
+  } catch (err) {
+    console.warn('Duplicate pre-check warning:', err)
+  }
+
   showUpload.value = false
   uploadFiles.value = []
   uploading.value = true
@@ -1499,19 +1526,23 @@ async function handleUpload() {
   try {
     const formData = new FormData()
     filesToUpload.forEach(f => formData.append('files', f))
+    if (allowDuplicate) {
+      formData.append('allow_duplicate', 'true')
+    }
     const res: any = await api.post('/lots/upload', formData)
     await fetchLots()
     const uploadResults = res?.results || []
     const failed = uploadResults.filter((r: any) => r.status === 'failed')
     if (failed.length) {
-      alert(failed.map((r: any) => `${r.filename}: ${r.error || '解析失败'}`).join('\n'))
+      alert(failed.map((r: any) => `${r.filename}: ${r.error || '解析失败'}`).join('
+'))
     }
     const newIds: number[] = uploadResults.map((r: any) => r.lot_id).filter(Boolean)
     if (newIds.length > 0) {
       startPolling(newIds)
     }
-  } catch (e) {
-    alert('上传失败')
+  } catch (e: any) {
+    alert(`上传失败：${e.message || e}`)
   } finally {
     uploading.value = false
   }

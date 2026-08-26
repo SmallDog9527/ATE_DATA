@@ -4,7 +4,7 @@ import subprocess
 import zipfile
 import io
 import tempfile
-from fastapi import APIRouter, Depends, Query, UploadFile, File, HTTPException, BackgroundTasks, Body
+from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException, BackgroundTasks, Body
 from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_, func
@@ -197,37 +197,106 @@ def is_summary_file(fname: str) -> bool:
     return False
 
 
+
+class CheckDuplicatesRequest(BaseModel):
+    filenames: List[str]
+
+
+@router.post("/check-duplicates")
+def check_duplicate_lots(
+    data: CheckDuplicatesRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Check if any filenames in the provided list already exist in active lot records.
+    """
+    duplicates = []
+    for raw_name in data.filenames:
+        name = os.path.basename(raw_name)
+        base = os.path.splitext(name)[0]
+        # Check active Lot records for exact name or standard converted names
+        exists = db.query(Lot).filter(
+            Lot.status != 'deleted',
+            or_(
+                Lot.filename == name,
+                Lot.filename == f"{name}.zip",
+                Lot.filename == f"{base}.csv",
+                Lot.filename == f"{base}.csv.zip",
+                Lot.filename == f"{base}.zip",
+            )
+        ).first()
+        if exists:
+            duplicates.append(raw_name)
+    return {"duplicates": duplicates}
+
+
+def _generate_unique_lot_name_and_path(base_filename: str, target_dir: str, db: Session) -> tuple:
+    """
+    Generate a unique non-conflicting lot filename and storage path by appending numeric suffix _1, _2, etc.
+    """
+    lower = base_filename.lower()
+    if lower.endswith('.csv.zip'):
+        root_name = base_filename[:-8]
+        ext = '.csv.zip'
+    elif lower.endswith('.stdf.gz') or lower.endswith('.std.gz') or lower.endswith('.csv.gz'):
+        parts = base_filename.split('.')
+        ext = '.' + '.'.join(parts[-2:])
+        root_name = base_filename[:-len(ext)]
+    else:
+        root_name, ext = os.path.splitext(base_filename)
+
+    candidate_name = base_filename
+    candidate_path = os.path.join(target_dir, candidate_name)
+    counter = 1
+
+    while True:
+        db_exists = db.query(Lot).filter(
+            Lot.filename == candidate_name,
+            Lot.status != 'deleted'
+        ).first()
+        disk_exists = os.path.exists(candidate_path)
+        if not db_exists and not disk_exists:
+            return candidate_name, candidate_path
+        candidate_name = f"{root_name}_{counter}{ext}"
+        candidate_path = os.path.join(target_dir, candidate_name)
+        counter += 1
+
 @router.post("/upload")
 async def upload_files(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
+    allow_duplicate: bool = Form(False),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     results = []
     for file in files:
         try:
-            batch = await _process_upload(file, db, background_tasks, current_user.id)
+            batch = await _process_upload(file, db, background_tasks, current_user.id, allow_duplicate=allow_duplicate)
             results.extend(batch)
         except Exception as e:
             results.append({"filename": file.filename, "status": "failed", "error": str(e)})
     return {"results": results}
 
 
-async def _process_upload(file: UploadFile, db: Session, background_tasks: BackgroundTasks, user_id: int):
+async def _process_upload(file: UploadFile, db: Session, background_tasks: BackgroundTasks, user_id: int, allow_duplicate: bool = False):
     filename = file.filename
     ext = os.path.splitext(filename)[-1].lower()
     base_name = os.path.splitext(filename)[0]
 
     # Determine folder based on file type
     target_dir = SUMMARY_DIR if is_summary_file(filename) else DATA_DIR
-    save_path = os.path.join(target_dir, filename)
-    counter = 1
-    while os.path.exists(save_path):
-        new_filename = f"{base_name}_{counter}{ext}"
-        save_path = os.path.join(target_dir, new_filename)
-        counter += 1
-    filename = os.path.basename(save_path)
+    if allow_duplicate:
+        filename, save_path = _generate_unique_lot_name_and_path(filename, target_dir, db)
+    else:
+        save_path = os.path.join(target_dir, filename)
+        counter = 1
+        while os.path.exists(save_path):
+            new_filename = f"{base_name}_{counter}{ext}"
+            save_path = os.path.join(target_dir, new_filename)
+            counter += 1
+        filename = os.path.basename(save_path)
 
     with open(save_path, "wb") as f:
         content = await file.read()
@@ -295,7 +364,8 @@ async def _process_upload(file: UploadFile, db: Session, background_tasks: Backg
         # 将 CSV 路径纳入后续处理流程（无原始 ZIP，extract_dir=None）
         return await _process_csv_paths(
             [csv_save_path], os.path.basename(csv_save_path),
-            None, None, db, background_tasks, user_id
+            None, None, db, background_tasks, user_id,
+            allow_duplicate=allow_duplicate
         )
 
     # 如果是zip，解压找csv
@@ -307,32 +377,36 @@ async def _process_upload(file: UploadFile, db: Session, background_tasks: Backg
         return await _process_csv_paths(
             csv_paths, filename, save_path,
             extract_dir, db, background_tasks, user_id,
-            original_content=None
+            original_content=None,
+            allow_duplicate=allow_duplicate
         )
     if is_zip:
         csv_paths, extract_dir = _extract_data_archive(save_path, filename)
         return await _process_csv_paths(
             csv_paths, filename, save_path,
             extract_dir, db, background_tasks, user_id,
-            original_content=None
+            original_content=None,
+            allow_duplicate=allow_duplicate
         )
 
     return await _process_csv_paths(
         csv_paths, filename, save_path if is_zip else None,
         extract_dir, db, background_tasks, user_id,
-        original_content=content if not is_zip else None
+        original_content=content if not is_zip else None,
+        allow_duplicate=allow_duplicate
     )
 
 
 async def _process_csv_paths(
     csv_paths: list,
     original_filename: str,
-    zip_save_path,          # 原始 ZIP 文件路径（非 ZIP 时为 None）
-    extract_dir,            # ZIP 解压目录（非 ZIP 时为 None）
+    zip_save_path,          # Original ZIP file path (None if not zip)
+    extract_dir,            # ZIP extraction directory (None if not zip)
     db: Session,
     background_tasks: BackgroundTasks,
     user_id: int,
-    original_content: bytes = None,   # 非 ZIP 直传时的原始字节内容
+    original_content: bytes = None,   # Raw bytes if not zip
+    allow_duplicate: bool = False,
 ) -> list:
     """将 csv_paths 列表逐一创建 Lot 记录并触发后台解析任务"""
     is_zip = zip_save_path is not None
@@ -367,14 +441,31 @@ async def _process_csv_paths(
                 if os.path.exists(physical_sum_path):
                     raise HTTPException(status_code=400, detail=f"汇总文件 '{csv_name}' 已存在，无需重复上传解析")
 
-        # zip 上传入库的 filename 为 {csv_base}[_n].csv.zip，需按 base 前缀匹配防重复
+        # Check if record already exists in database
         csv_base = os.path.splitext(csv_name)[0]
         existing_lot = db.query(Lot).filter(
-            Lot.filename.like(f"{csv_base}%"),
+            or_(
+                Lot.filename == csv_name,
+                Lot.filename == f"{csv_name}.zip",
+                Lot.filename == f"{csv_base}.csv",
+                Lot.filename == f"{csv_base}.csv.zip",
+            ),
             Lot.status != 'deleted'
         ).first()
         if existing_lot:
-            raise HTTPException(status_code=400, detail=f"系统已包含同名数据记录 '{csv_name}'，无需重复解析")
+            if not allow_duplicate:
+                raise HTTPException(status_code=400, detail=f"Data record '{csv_name}' already exists in database")
+            else:
+                unique_csv_name, _ = _generate_unique_lot_name_and_path(csv_name, DATA_DIR, db)
+                if unique_csv_name != csv_name:
+                    new_csv_path = os.path.join(os.path.dirname(csv_path), unique_csv_name)
+                    if os.path.exists(csv_path) and csv_path != new_csv_path:
+                        try:
+                            os.rename(csv_path, new_csv_path)
+                            csv_path = new_csv_path
+                        except Exception:
+                            pass
+                    csv_name = unique_csv_name
 
         if csv_name.lower().endswith(('.xls', '.xlsx')):
             try:
@@ -498,24 +589,34 @@ async def _process_csv_paths(
 
         if is_zip:
             # Save the zipped file inside the persistent DATA_DIR instead of extract_dir
-            single_zip_path = os.path.join(DATA_DIR, f"{csv_name}.zip")
-            # Handle possible duplicate zip names in DATA_DIR
-            if os.path.exists(single_zip_path):
-                base_name = os.path.splitext(csv_name)[0]
-                counter = 1
-                while os.path.exists(single_zip_path):
-                    single_zip_path = os.path.join(DATA_DIR, f"{base_name}_{counter}.csv.zip")
-                    counter += 1
+            if allow_duplicate:
+                lot_filename, single_zip_path = _generate_unique_lot_name_and_path(f"{csv_name}.zip", DATA_DIR, db)
+            else:
+                single_zip_path = os.path.join(DATA_DIR, f"{csv_name}.zip")
+                if os.path.exists(single_zip_path):
+                    base_name = os.path.splitext(csv_name)[0]
+                    counter = 1
+                    while os.path.exists(single_zip_path):
+                        single_zip_path = os.path.join(DATA_DIR, f"{base_name}_{counter}.csv.zip")
+                        counter += 1
+                lot_filename = os.path.basename(single_zip_path)
             with zipfile.ZipFile(single_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                 zf.write(csv_path, csv_name)
             lot_storage_path = single_zip_path
             lot_file_size = os.path.getsize(single_zip_path)
-            lot_filename = os.path.basename(single_zip_path)
-            # CSV 原文件保留，供后台异步解析使用
         else:
-            lot_storage_path = csv_path
-            lot_file_size = os.path.getsize(csv_path)
-            lot_filename = csv_name
+            if allow_duplicate:
+                lot_filename, lot_storage_path = _generate_unique_lot_name_and_path(csv_name, DATA_DIR, db)
+                if csv_path != lot_storage_path and os.path.exists(csv_path):
+                    try:
+                        os.rename(csv_path, lot_storage_path)
+                        csv_path = lot_storage_path
+                    except Exception:
+                        pass
+            else:
+                lot_storage_path = csv_path
+                lot_filename = csv_name
+            lot_file_size = os.path.getsize(lot_storage_path) if os.path.exists(lot_storage_path) else 0
 
         # 快速识别tester类型，提取基本元数据
         from app.services.parsers.detector import detect_tester
