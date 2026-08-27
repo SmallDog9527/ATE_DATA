@@ -8,8 +8,8 @@ import secrets
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES  = 120        # 2 小时
-REFRESH_TOKEN_EXPIRE_DAYS    = 7          # 7 天
+ACCESS_TOKEN_EXPIRE_MINUTES  = 120        # 2 hours
+REFRESH_TOKEN_EXPIRE_DAYS    = 30         # 30 days
 REFRESH_TOKEN_REDIS_PREFIX   = "refresh:"
 
 
@@ -36,12 +36,12 @@ def decode_token(token: str) -> Optional[dict]:
         return None
 
 
-# ──────────────────────────────────────────
-# Refresh Token  (随机串 + Redis 存储)
-# ──────────────────────────────────────────
+# ------------------------------------------
+# Refresh Token (Random token + Redis storage)
+# ------------------------------------------
 
 def create_refresh_token(user_id: int) -> str:
-    """生成 7 天有效的 Refresh Token，存入 Redis"""
+    """Generate a 30-day valid Refresh Token and store it into Redis."""
     from app.core.redis_client import get_redis
     token = secrets.token_urlsafe(48)
     r = get_redis()
@@ -54,7 +54,7 @@ def create_refresh_token(user_id: int) -> str:
 
 
 def verify_refresh_token(token: str) -> Optional[int]:
-    """验证 Refresh Token，返回 user_id；token 不存在则返回 None"""
+    """Verify Refresh Token and return user_id. Returns None if invalid or expired."""
     from app.core.redis_client import get_redis
     r = get_redis()
     val = r.get(f"{REFRESH_TOKEN_REDIS_PREFIX}{token}")
@@ -62,7 +62,7 @@ def verify_refresh_token(token: str) -> Optional[int]:
 
 
 def revoke_refresh_token(token: str):
-    """登出时撤销 Refresh Token"""
+    """Revoke Refresh Token on logout."""
     from app.core.redis_client import get_redis
     get_redis().delete(f"{REFRESH_TOKEN_REDIS_PREFIX}{token}")
 

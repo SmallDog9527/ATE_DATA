@@ -3,7 +3,7 @@ Admin User Management API Routes
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from app.core.database import get_db
 from app.core.security import get_password_hash
@@ -19,14 +19,14 @@ from app.schemas.user import (
     UserImportItem,
     UserImportResponse,
 )
-from app.api.deps import get_current_user, require_admin
+from app.api.deps import get_current_user, require_admin, require_admin_or_eng
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
-# ──────────────────────────────────────────
+# ------------------------------------------
 # Search users (Logged-in users, for share selection)
-# ──────────────────────────────────────────
+# ------------------------------------------
 @router.get("/search", response_model=List[UserResponse])
 def search_users(
     q: str = Query(..., min_length=1),
@@ -47,9 +47,9 @@ def search_users(
     return results
 
 
-# ──────────────────────────────────────────
+# ------------------------------------------
 # Export all users JSON (Admin)
-# ──────────────────────────────────────────
+# ------------------------------------------
 @router.get("/export", response_model=List[UserExportItem])
 def export_users(
     db: Session = Depends(get_db),
@@ -75,9 +75,9 @@ def export_users(
     return result
 
 
-# ──────────────────────────────────────────
+# ------------------------------------------
 # Import users JSON (Admin)
-# ──────────────────────────────────────────
+# ------------------------------------------
 @router.post("/import", response_model=UserImportResponse)
 def import_users(
     items: List[UserImportItem],
@@ -151,9 +151,9 @@ def import_users(
     )
 
 
-# ──────────────────────────────────────────
+# ------------------------------------------
 # Admin create new user directly
-# ──────────────────────────────────────────
+# ------------------------------------------
 @router.post("/create", response_model=UserListItem)
 def create_user(
     body: AdminCreateUserRequest,
@@ -195,9 +195,9 @@ def create_user(
     )
 
 
-# ──────────────────────────────────────────
+# ------------------------------------------
 # Get all users list (Admin)
-# ──────────────────────────────────────────
+# ------------------------------------------
 @router.get("", response_model=List[UserListItem])
 def list_users(
     db: Session = Depends(get_db),
@@ -225,9 +225,23 @@ def list_users(
     return result
 
 
-# ──────────────────────────────────────────
+# ------------------------------------------
+# Query daily active users (Admin or Engineer)
+# ------------------------------------------
+@router.get("/active/daily")
+def get_daily_active_users_endpoint(
+    target_date: Optional[str] = Query(None, description="Format: YYYY-MM-DD. Defaults to today."),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin_or_eng),
+):
+    """Retrieve daily active users count and list for a given date."""
+    from app.services.activity import get_daily_active_users
+    return get_daily_active_users(target_date, db)
+
+
+# ------------------------------------------
 # Toggle user active status (Admin)
-# ──────────────────────────────────────────
+# ------------------------------------------
 @router.put("/{user_id}/toggle-active")
 def toggle_active(
     user_id: int,
@@ -244,9 +258,9 @@ def toggle_active(
     return {"id": user.id, "is_active": user.is_active}
 
 
-# ──────────────────────────────────────────
+# ------------------------------------------
 # Set user role (Admin)
-# ──────────────────────────────────────────
+# ------------------------------------------
 @router.put("/{user_id}/role")
 def set_role(
     user_id: int,
@@ -266,9 +280,9 @@ def set_role(
     return {"id": user.id, "role": user.role}
 
 
-# ──────────────────────────────────────────
+# ------------------------------------------
 # Admin reset user password only
-# ──────────────────────────────────────────
+# ------------------------------------------
 @router.put("/{user_id}/reset-password")
 def admin_reset_password(
     user_id: int,
@@ -284,9 +298,9 @@ def admin_reset_password(
     return {"message": f"Password for user {user.username} has been reset"}
 
 
-# ──────────────────────────────────────────
+# ------------------------------------------
 # Admin reset user account username & password
-# ──────────────────────────────────────────
+# ------------------------------------------
 @router.put("/{user_id}/reset-account-password")
 def reset_account_and_password(
     user_id: int,
@@ -325,9 +339,9 @@ def reset_account_and_password(
     }
 
 
-# ──────────────────────────────────────────
+# ------------------------------------------
 # Toggle user alert subscription (Admin)
-# ──────────────────────────────────────────
+# ------------------------------------------
 @router.put("/{user_id}/toggle-alerts")
 def toggle_alerts(
     user_id: int,
@@ -364,10 +378,10 @@ def test_ftp_alert(
     if not target_email:
         raise HTTPException(status_code=400, detail="Your user account does not have an email address")
 
-    subject = "【ATE System】FTP Alert Test Email"
+    subject = "[ATE System] FTP Alert Test Email"
     html = f"""
     <div style="font-family:sans-serif;max-width:600px;margin:auto;border:1px solid #ddd;padding:20px;border-radius:8px">
-      <h2 style="color:#d9534f">⚠️ ATE Alert Test</h2>
+      <h2 style="color:#d9534f">ATE Alert Test</h2>
       <p>This is a test email triggered by user {current_user.username}.</p>
       <hr style="border:0;border-top:1px solid #eee"/>
       <p>Target Email: {target_email}</p>
