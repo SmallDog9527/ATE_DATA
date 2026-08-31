@@ -1,5 +1,15 @@
 [
   {
+    "version": "V01_20260831",
+    "content": "1. 修复多数据分析页面（MultiParamView）直方图显示问题：\n   - 修复数据源字段读取（兼容 counts 与 histogram.counts），消除 undefined 异常；\n   - 补全超限模式（Category 轴）与正常模式（Value 轴）双向渲染支持，全面对齐单 LOT 视图标准；\n   - 统一 LL / UL 标签显示在红色虚线正中间（position: 'middle'），移除冗余的气泡（pin）标记。\n2. 修复 Trim Step 模式切换参数时 Scatter 折线图丢失问题：\n   - 修复 ECharts 实例在 DOM 动态销毁重建时的生命周期管理，解决切换参数后实例失效导致图表空白的问题；\n   - 优化数据加载与 DOM 挂载时机，确保在 DOM 渲染后稳定重绘折线图。\n3. 后端直方图接口规范对齐：`/analysis/multi/param_hist` 接口返回值中补齐 histogram 结构对象。",
+    "updated_at": "2026-08-31 11:05:00"
+  },
+  {
+    "version": "V01_20260828",
+    "content": "1. 单批次与多批次 Trim Step 分析模式对齐与增强：\n   - 单 LOT / 多 LOT 全面支持 Trim Step 步进分析模式，自动识别聚合 Trim 步进测试项并支持下拉筛选与 PREV/NEXT 顺畅切换；\n   - 多 LOT 模式样式与单 LOT 统一：纯白卡片背景、左对齐排版、统一紫色切换按钮及独立着色的 LOT Chips 标签联动；\n   - Step 统计汇总表支持展示各 LOT / Site 均值及极值高亮（最小值绿字/最大值红字）；\n   - Scatter 折线图支持 Shift（消除 LOT/Site 固有偏差）、Robust（10% 截断均值）、Invert（分半区物理连续性重排及 y=ax+b 拟合回归线）以及 2X 视图缩放；\n   - 新增 Trim 步进目标校准预测器 (Trim Step Predictor)，支持输入 Pre 值与目标 Target 快速预测推荐最优 Step。\n2. 后端新增多 LOT Trim 数据聚合接口：新增 `/analysis/multi/trim_step_data` 接口，支持多批次测试数据的高性能向量化提取与全量步进聚合统计。",
+    "updated_at": "2026-08-28 17:05:00"
+  },
+  {
     "version": "V01_20260826",
     "content": "1. 新增 Trim Step 分析模式：支持 Trim 多步进测试项自动识别与聚合下拉筛选，支持各 Step 折线图连续展示与多 Tab 独立分析。\n2. 新增小工具1：给程序添加各个Function的测试时间导出功能。\n",
     "updated_at": "2026-08-26 01:07:51"

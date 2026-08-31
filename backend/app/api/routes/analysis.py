@@ -1952,7 +1952,21 @@ def get_test_items(
     db: Session = Depends(get_db),
     site: int = Query(0),
 ):
-    """获取参数列表（用于参数详情页表格）"""
+    """Retrieve test items for a lot with integer column detection"""
+    lot = db.query(Lot).filter(Lot.id == lot_id).first()
+    int_cols = set()
+    if lot and lot.parquet_path and os.path.exists(lot.parquet_path):
+        try:
+            df = pd.read_parquet(lot.parquet_path)
+            for col in df.columns:
+                s = df[col].dropna()
+                if len(s) > 0 and pd.api.types.is_numeric_dtype(s):
+                    vals = s.values
+                    if np.all(np.equal(np.mod(vals, 1), 0)):
+                        int_cols.add(col)
+        except Exception:
+            pass
+
     items = db.query(TestItem).filter(
         and_(TestItem.lot_id == lot_id, TestItem.site == site)
     ).order_by(TestItem.item_number).all()
@@ -1976,6 +1990,7 @@ def get_test_items(
             "cpu": item.cpu,
             "cpl": item.cpl,
             "cpk": item.cpk,
+            "is_integer": item.item_name in int_cols,
         }
         for item in items
     ]
@@ -2671,6 +2686,12 @@ def get_param_data(
 def get_trim_step_data(
     lot_id: int,
     base_param: str = Query(...),
+    step_mode: str = Query("actual", description="Step mode: 'actual' or 'scan'"),
+    pre_param: Optional[str] = Query(None),
+    pre_bit_param: Optional[str] = Query(None),
+    post_param: Optional[str] = Query(None),
+    post_bit_param: Optional[str] = Query(None),
+    target_param: Optional[str] = Query(None),
     param_names: Optional[str] = Query(None, description="Comma-separated step parameter names"),
     filter_type: str = Query("all"),
     sigma: float = Query(3.0),
@@ -2683,6 +2704,7 @@ def get_trim_step_data(
 ):
     """
     Fetch multi-step trim parameter data and per-die curves for Trim Step Mode.
+    Supports both Actual Trim Step aggregation (pre/post/bit) and Scan Step mode.
     filter_type: all / robust / filter_by_limit / filter_by_sigma / custom
     data_range: final / original / all
     """
@@ -2698,6 +2720,261 @@ def get_trim_step_data(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read Parquet Schema: {e}")
 
+    from app.services.stats import apply_filter, calc_param_stats
+
+    # Check if actual step mode is requested or can be used
+    if step_mode == "actual" and (pre_param or post_param or post_bit_param):
+        # ── 1. Actual Trim Step Mode (Pre / Post / Bit aggregation) ──
+        pre_col = pre_param if pre_param in available_cols else None
+        pre_bit_col = pre_bit_param if pre_bit_param in available_cols else None
+        post_col = post_param if post_param in available_cols else None
+        post_bit_col = post_bit_param if post_bit_param in available_cols else None
+        target_col = target_param if target_param in available_cols else None
+
+        needed_cols = [c for c in [pre_col, pre_bit_col, post_col, post_bit_col, target_col] if c]
+        if not needed_cols:
+            raise HTTPException(status_code=404, detail="Specified trim parameters not found in data")
+
+        cols_to_load = list(needed_cols)
+        for extra in ['SITE_NUM', 'X_COORD', 'Y_COORD', 'SOFT_BIN']:
+            if extra in available_cols and extra not in cols_to_load:
+                cols_to_load.append(extra)
+
+        try:
+            df = pd.read_parquet(lot.parquet_path, columns=cols_to_load)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read parquet data: {e}")
+
+        # Deduplication for CP coordinate data
+        if lot.data_type == 'CP' and 'X_COORD' in df.columns and 'Y_COORD' in df.columns:
+            if data_range == 'final':
+                df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='last')
+            elif data_range == 'original':
+                df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='first')
+
+        # Filter PASS dies if requested
+        if filter_type == 'pass' and 'SOFT_BIN' in df.columns:
+            df = df[pd.to_numeric(df['SOFT_BIN'], errors='coerce').fillna(-1).astype(int).isin([1, 2])].copy()
+
+        # Available sites
+        sites_list = []
+        if 'SITE_NUM' in df.columns:
+            sites_list = sorted([int(s) for s in df['SITE_NUM'].unique() if pd.notna(s)])
+
+        # Query TestItem metadata for pre and post
+        test_items = db.query(TestItem).filter(
+            and_(
+                TestItem.lot_id == lot_id,
+                TestItem.item_name.in_([c for c in [pre_param, post_param] if c]),
+                TestItem.site == 0
+            )
+        ).all()
+        item_map = {it.item_name: it for it in test_items}
+        pre_it = item_map.get(pre_param)
+        post_it = item_map.get(post_param)
+
+        unit = (pre_it.unit if pre_it and pre_it.unit else "") or (post_it.unit if post_it and post_it.unit else "")
+        ll = pre_it.lower_limit if pre_it else (post_it.lower_limit if post_it else None)
+        ul = pre_it.upper_limit if pre_it else (post_it.upper_limit if post_it else None)
+
+        if filter_type == 'custom':
+            if custom_ll is not None:
+                ll = custom_ll
+            if custom_ul is not None:
+                ul = custom_ul
+
+        # Determine step indices present in data
+        post_steps = []
+        if post_bit_col and post_bit_col in df.columns:
+            post_steps = sorted([int(x) for x in df[post_bit_col].dropna().unique()])
+        elif post_col:
+            post_steps = [1]
+
+        step_indices = sorted(list(set([0] + post_steps)))
+        steps_result = []
+
+        for st in step_indices:
+            if st == 0 and pre_col:
+                st_name = pre_col
+                item_number = pre_it.item_number if pre_it else 1
+                step_vals = df[pre_col].dropna().values.astype(float)
+                filtered_all = apply_filter(step_vals, filter_type, ll, ul, sigma, custom_min, custom_max)
+                all_stats = calc_param_stats(filtered_all, ll, ul, len(filtered_all))
+                pre_mean = all_stats.get("mean")
+                post_mean = None
+                all_mean = 0.0
+
+                all_stats["pre_mean"] = pre_mean
+                all_stats["post_mean"] = post_mean
+                all_stats["all_mean"] = all_mean
+                all_stats["delta_mean"] = all_mean
+
+                stats_by_site = {}
+                if 'SITE_NUM' in df.columns:
+                    for s in sites_list:
+                        s_df = df[df['SITE_NUM'] == s]
+                        if pre_col in s_df.columns:
+                            s_vals = s_df[pre_col].dropna().values.astype(float)
+                            s_filtered = apply_filter(s_vals, filter_type, ll, ul, sigma, custom_min, custom_max)
+                            s_st = calc_param_stats(s_filtered, ll, ul, len(s_filtered))
+                            s_st["pre_mean"] = s_st.get("mean")
+                            s_st["post_mean"] = None
+                            s_st["all_mean"] = 0.0
+                            s_st["delta_mean"] = 0.0
+                            stats_by_site[s] = s_st
+                        else:
+                            stats_by_site[s] = None
+            else:
+                st_name = f"{post_param or base_param} (Step {st})"
+                item_number = post_it.item_number if post_it else (pre_it.item_number if pre_it else st + 1)
+                
+                mask = (df[post_bit_col] == st) if post_bit_col else pd.Series(True, index=df.index)
+                st_df = df[mask]
+                
+                # Pre stats for dies trimmed to this step
+                pre_step_vals = st_df[pre_col].dropna().values.astype(float) if (pre_col and pre_col in st_df.columns) else np.array([])
+                pre_filtered = apply_filter(pre_step_vals, filter_type, ll, ul, sigma, custom_min, custom_max)
+                pre_stats = calc_param_stats(pre_filtered, ll, ul, len(pre_filtered))
+                
+                # Post stats for dies trimmed to this step
+                post_step_vals = st_df[post_col].dropna().values.astype(float) if (post_col and post_col in st_df.columns) else np.array([])
+                post_filtered = apply_filter(post_step_vals, filter_type, ll, ul, sigma, custom_min, custom_max)
+                post_stats = calc_param_stats(post_filtered, ll, ul, len(post_filtered))
+                
+                all_stats = post_stats
+                pre_mean = pre_stats.get("mean")
+                post_mean = post_stats.get("mean")
+                all_mean = round(post_mean - pre_mean, 6) if (post_mean is not None and pre_mean is not None) else None
+
+                all_stats["pre_mean"] = pre_mean
+                all_stats["post_mean"] = post_mean
+                all_stats["all_mean"] = all_mean
+                all_stats["delta_mean"] = all_mean
+
+                stats_by_site = {}
+                if 'SITE_NUM' in df.columns:
+                    for s in sites_list:
+                        s_df = st_df[st_df['SITE_NUM'] == s]
+                        if post_col and post_col in s_df.columns:
+                            s_pre_vals = s_df[pre_col].dropna().values.astype(float) if (pre_col and pre_col in s_df.columns) else np.array([])
+                            s_pre_filt = apply_filter(s_pre_vals, filter_type, ll, ul, sigma, custom_min, custom_max)
+                            s_pre_stats = calc_param_stats(s_pre_filt, ll, ul, len(s_pre_filt))
+                            
+                            s_post_vals = s_df[post_col].dropna().values.astype(float)
+                            s_post_filt = apply_filter(s_post_vals, filter_type, ll, ul, sigma, custom_min, custom_max)
+                            s_post_stats = calc_param_stats(s_post_filt, ll, ul, len(s_post_filt))
+                            
+                            s_p_m = s_pre_stats.get("mean")
+                            s_pt_m = s_post_stats.get("mean")
+                            s_d_m = round(s_pt_m - s_p_m, 6) if (s_pt_m is not None and s_p_m is not None) else None
+                            
+                            s_post_stats["pre_mean"] = s_p_m
+                            s_post_stats["post_mean"] = s_pt_m
+                            s_post_stats["all_mean"] = s_d_m
+                            s_post_stats["delta_mean"] = s_d_m
+                            stats_by_site[s] = s_post_stats
+                        else:
+                            stats_by_site[s] = None
+
+            steps_result.append({
+                "step_index": st,
+                "item_number": item_number,
+                "param_name": st_name,
+                "unit": unit,
+                "lower_limit": ll,
+                "upper_limit": ul,
+                "pre_mean": pre_mean,
+                "post_mean": post_mean,
+                "all_mean": all_mean,
+                "delta_mean": all_mean,
+                "pre_min": (pre_stats if st > 0 else all_stats).get("min_val"),
+                "pre_max": (pre_stats if st > 0 else all_stats).get("max_val"),
+                "stats_all": all_stats,
+                "stats_by_site": stats_by_site
+            })
+
+        # Build per-die curves
+        curves = []
+        fail_dies = []
+        has_coords = ('X_COORD' in df.columns and 'Y_COORD' in df.columns)
+        has_site = ('SITE_NUM' in df.columns)
+
+        for row_idx, (df_idx, row) in enumerate(df.iterrows()):
+            site_num = int(row['SITE_NUM']) if (has_site and pd.notna(row['SITE_NUM'])) else 1
+            x_c = int(row['X_COORD']) if (has_coords and pd.notna(row['X_COORD'])) else None
+            y_c = int(row['Y_COORD']) if (has_coords and pd.notna(row['Y_COORD'])) else None
+
+            points = []
+            pre_val = float(row[pre_col]) if (pre_col and pd.notna(row[pre_col])) else None
+            # Step 0
+            points.append([0, 0.0 if pre_val is not None else None])
+
+            # Other steps (delta = post - pre)
+            post_st = int(row[post_bit_col]) if (post_bit_col and pd.notna(row[post_bit_col])) else None
+            post_val = float(row[post_col]) if (post_col and pd.notna(row[post_col])) else None
+            pre_bit_val = int(row[pre_bit_col]) if (pre_bit_col and pd.notna(row[pre_bit_col])) else None
+            for st in step_indices:
+                if st == 0:
+                    continue
+                if post_st == st and post_val is not None and pre_val is not None:
+                    delta_val = round(post_val - pre_val, 6)
+                    points.append([st, delta_val])
+                else:
+                    points.append([st, None])
+
+            curves.append({
+                "die_id": row_idx,
+                "site": site_num,
+                "x_coord": x_c,
+                "y_coord": y_c,
+                "points": points
+            })
+
+            # Collect failed dies (pre/post value outside respective limits)
+            post_ll = post_it.lower_limit if post_it else ll
+            post_ul = post_it.upper_limit if post_it else ul
+            pre_fail = (pre_val is not None and ((ll is not None and pre_val < ll) or (ul is not None and pre_val > ul)))
+            post_fail = (post_val is not None and ((post_ll is not None and post_val < post_ll) or (post_ul is not None and post_val > post_ul)))
+            if pre_fail or post_fail:
+                fail_dies.append({
+                    "die_id": row_idx,
+                    "site": site_num,
+                    "x_coord": x_c,
+                    "y_coord": y_c,
+                    "pre": round(pre_val, 6) if pre_val is not None else None,
+                    "pre_code": pre_bit_val,
+                    "post": round(post_val, 6) if post_val is not None else None,
+                    "post_code": post_st,
+                    "pre_fail": bool(pre_fail),
+                    "post_fail": bool(post_fail),
+                })
+
+        # Target value
+        target_value = None
+        target_param_name = target_param
+        if target_col and target_col in df.columns:
+            t_vals = df[target_col].dropna()
+            if len(t_vals) > 0:
+                target_value = float(t_vals.iloc[0])
+        elif target_param:
+            tit = db.query(TestItem).filter(and_(TestItem.lot_id == lot_id, TestItem.item_name == target_param, TestItem.site == 0)).first()
+            if tit:
+                target_value = tit.lower_limit if tit.lower_limit is not None else tit.upper_limit
+
+        return {
+            "base_param": base_param,
+            "step_mode": "actual",
+            "unit": unit,
+            "step_count": len(step_indices),
+            "target_param_name": target_param_name,
+            "target_value": target_value,
+            "steps": steps_result,
+            "sites": sites_list,
+            "curves": curves,
+            "fail_dies": fail_dies
+        }
+
+    # ── 2. Scan Step Mode (Sequentially scanned step parameters) ──
     # Determine step parameter names
     if param_names:
         step_param_list = [p.strip() for p in param_names.split(",") if p.strip()]
@@ -2720,14 +2997,9 @@ def get_trim_step_data(
         raise HTTPException(status_code=404, detail="None of the specified trim step parameters exist in data")
 
     cols_to_load = list(valid_step_cols)
-    if 'SITE_NUM' in available_cols:
-        cols_to_load.append('SITE_NUM')
-    if 'X_COORD' in available_cols:
-        cols_to_load.append('X_COORD')
-    if 'Y_COORD' in available_cols:
-        cols_to_load.append('Y_COORD')
-    if 'SOFT_BIN' in available_cols:
-        cols_to_load.append('SOFT_BIN')
+    for extra in ['SITE_NUM', 'X_COORD', 'Y_COORD', 'SOFT_BIN']:
+        if extra in available_cols and extra not in cols_to_load:
+            cols_to_load.append(extra)
 
     try:
         df = pd.read_parquet(lot.parquet_path, columns=cols_to_load)
@@ -2754,8 +3026,6 @@ def get_trim_step_data(
         )
     ).all()
     item_map = {it.item_name: it for it in test_items}
-
-    from app.services.stats import apply_filter, calc_param_stats
 
     # Available sites
     sites_list = []
@@ -2854,6 +3124,7 @@ def get_trim_step_data(
 
     return {
         "base_param": base_param,
+        "step_mode": "scan",
         "unit": unit,
         "step_count": len(valid_step_cols),
         "target_param_name": target_param_name,
@@ -3032,6 +3303,245 @@ def get_multi_lot_items(
             "lots": [{"id": l.id, "filename": l.filename, "lot_id": l.lot_id, "wafer_id": l.wafer_id, "product_name": l.product_name} for l in ordered_lots],
             "params": params,
         }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/multi/trim_step_data")
+def get_multi_trim_step_data(
+    lot_ids: str = Query(..., description="逗号分隔的lot id，如 1,2,3"),
+    pre_param: Optional[str] = Query(None),
+    pre_bit_param: Optional[str] = Query(None),
+    post_param: Optional[str] = Query(None),
+    post_bit_param: Optional[str] = Query(None),
+    target_param: Optional[str] = Query(None),
+    filter_type: str = Query("all"),
+    sigma: float = Query(3.0),
+    data_range: str = Query("final"),
+    custom_min: Optional[float] = Query(None),
+    custom_max: Optional[float] = Query(None),
+    custom_ll: Optional[float] = Query(None),
+    custom_ul: Optional[float] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    多LOT Trim Step 统计（仅 Actual 模式：pre/post/bit 聚合）。
+    返回每个 LOT 的 step 统计，不包含 per-die curves / 失效明细。
+    """
+    try:
+        ids = [int(x) for x in lot_ids.split(",") if x.strip()]
+        lots = db.query(Lot).filter(Lot.id.in_(ids)).all()
+        lot_map = {l.id: l for l in lots}
+        ordered_lots = [lot_map[i] for i in ids if i in lot_map]
+        if not ordered_lots:
+            raise HTTPException(status_code=404, detail="No lots found")
+
+        import pyarrow.parquet as pq
+        from app.services.stats import apply_filter, calc_param_stats
+
+        def _calc_trim_steps(df, pre_col, post_col, post_bit_col, step_indices, ll, ul, unit, param_label):
+            steps_result = []
+            for st in step_indices:
+                if st == 0:
+                    step_vals = df[pre_col].dropna().values.astype(float)
+                    filtered_all = apply_filter(step_vals, filter_type, ll, ul, sigma, custom_min, custom_max)
+                    stats_all = calc_param_stats(filtered_all, ll, ul, len(filtered_all))
+                    pre_mean = stats_all.get("mean")
+                    post_mean = None
+                    all_mean = 0.0
+                else:
+                    mask = (df[post_bit_col] == st) if post_bit_col else pd.Series(True, index=df.index)
+                    st_df = df[mask]
+                    pre_step_vals = st_df[pre_col].dropna().values.astype(float) if pre_col else np.array([])
+                    pre_stats = calc_param_stats(apply_filter(pre_step_vals, filter_type, ll, ul, sigma, custom_min, custom_max), ll, ul, len(pre_step_vals))
+                    post_step_vals = st_df[post_col].dropna().values.astype(float) if (post_col and post_col in st_df.columns) else np.array([])
+                    post_stats = calc_param_stats(apply_filter(post_step_vals, filter_type, ll, ul, sigma, custom_min, custom_max), ll, ul, len(post_step_vals))
+                    stats_all = post_stats
+                    pre_mean = pre_stats.get("mean")
+                    post_mean = post_stats.get("mean")
+                    all_mean = round(post_mean - pre_mean, 6) if (post_mean is not None and pre_mean is not None) else None
+
+                stats_all["pre_mean"] = pre_mean
+                stats_all["post_mean"] = post_mean
+                stats_all["all_mean"] = all_mean
+
+                steps_result.append({
+                    "step_index": st,
+                    "param_name": pre_col if st == 0 else f"{param_label or pre_col} (Step {st})",
+                    "unit": unit,
+                    "lower_limit": ll,
+                    "upper_limit": ul,
+                    "pre_mean": pre_mean,
+                    "post_mean": post_mean,
+                    "all_mean": all_mean,
+                    "delta_mean": all_mean,
+                    "pre_min": (pre_stats if st > 0 else stats_all).get("min_val"),
+                    "pre_max": (pre_stats if st > 0 else stats_all).get("max_val"),
+                    "exec_qty": stats_all.get("exec_qty"),
+                    "stats_all": stats_all,
+                })
+            return steps_result
+
+        def _calc_trim_curves(df, pre_col, post_col, post_bit_col, step_indices, lot_id=None):
+            curves = []
+            has_coords = ('X_COORD' in df.columns and 'Y_COORD' in df.columns)
+            has_site = ('SITE_NUM' in df.columns)
+            for row_idx, (df_idx, row) in enumerate(df.iterrows()):
+                site_num = int(row['SITE_NUM']) if (has_site and pd.notna(row['SITE_NUM'])) else 1
+                x_c = int(row['X_COORD']) if (has_coords and pd.notna(row['X_COORD'])) else None
+                y_c = int(row['Y_COORD']) if (has_coords and pd.notna(row['Y_COORD'])) else None
+                points = []
+                pre_val = float(row[pre_col]) if (pre_col and pd.notna(row[pre_col])) else None
+                points.append([0, 0.0 if pre_val is not None else None])
+                post_st = int(row[post_bit_col]) if (post_bit_col and pd.notna(row[post_bit_col])) else None
+                post_val = float(row[post_col]) if (post_col and pd.notna(row[post_col])) else None
+                for st in step_indices:
+                    if st == 0:
+                        continue
+                    if post_st == st and post_val is not None and pre_val is not None:
+                        points.append([st, round(post_val - pre_val, 6)])
+                    else:
+                        points.append([st, None])
+                curves.append({
+                    "die_id": f"{lot_id}_{row_idx}" if lot_id is not None else row_idx,
+                    "lot_id": lot_id,
+                    "site": site_num,
+                    "x_coord": x_c,
+                    "y_coord": y_c,
+                    "points": points,
+                })
+            return curves
+
+        result_lots = []
+        lot_dfs = []  # (lot_id, display_name, df, pre_col, post_col, post_bit_col, unit, ll, ul, target_value)
+
+        for lot in ordered_lots:
+            if not lot.parquet_path or not os.path.exists(lot.parquet_path):
+                continue
+            try:
+                parquet_file = pq.ParquetFile(lot.parquet_path)
+                available_cols = set(parquet_file.schema.names)
+            except Exception:
+                continue
+
+            pre_col = pre_param if pre_param in available_cols else None
+            pre_bit_col = pre_bit_param if pre_bit_param in available_cols else None
+            post_col = post_param if post_param in available_cols else None
+            post_bit_col = post_bit_param if post_bit_param in available_cols else None
+            target_col = target_param if target_param in available_cols else None
+            if not pre_col:
+                continue
+
+            cols_to_load = [c for c in [pre_col, pre_bit_col, post_col, post_bit_col, target_col] if c]
+            for extra in ['SITE_NUM', 'X_COORD', 'Y_COORD', 'SOFT_BIN']:
+                if extra in available_cols and extra not in cols_to_load:
+                    cols_to_load.append(extra)
+
+            try:
+                df = pd.read_parquet(lot.parquet_path, columns=cols_to_load)
+            except Exception:
+                continue
+
+            if lot.data_type == 'CP' and 'X_COORD' in df.columns and 'Y_COORD' in df.columns:
+                if data_range == 'final':
+                    df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='last')
+                elif data_range == 'original':
+                    df = df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='first')
+
+            if filter_type == 'pass' and 'SOFT_BIN' in df.columns:
+                df = df[pd.to_numeric(df['SOFT_BIN'], errors='coerce').fillna(-1).astype(int).isin([1, 2])].copy()
+
+            # Per-lot limits
+            test_items = db.query(TestItem).filter(
+                and_(
+                    TestItem.lot_id == lot.id,
+                    TestItem.site == 0,
+                    TestItem.item_name.in_([c for c in [pre_param, post_param] if c]),
+                )
+            ).all()
+            item_map = {it.item_name: it for it in test_items}
+            pre_it = item_map.get(pre_param)
+            post_it = item_map.get(post_param)
+
+            unit = (pre_it.unit if pre_it and pre_it.unit else "") or (post_it.unit if post_it and post_it.unit else "")
+            ll = pre_it.lower_limit if pre_it else (post_it.lower_limit if post_it else None)
+            ul = pre_it.upper_limit if pre_it else (post_it.upper_limit if post_it else None)
+            if filter_type == 'custom':
+                if custom_ll is not None:
+                    ll = custom_ll
+                if custom_ul is not None:
+                    ul = custom_ul
+
+            post_steps = []
+            if post_bit_col and post_bit_col in df.columns:
+                post_steps = sorted([int(x) for x in df[post_bit_col].dropna().unique()])
+            elif post_col:
+                post_steps = [1]
+            step_indices = sorted(list(set([0] + post_steps)))
+
+            steps_result = _calc_trim_steps(df, pre_col, post_col, post_bit_col, step_indices, ll, ul, unit, post_param)
+            curves = _calc_trim_curves(df, pre_col, post_col, post_bit_col, step_indices, lot_id=lot.id)
+
+            sites_list = []
+            if 'SITE_NUM' in df.columns:
+                sites_list = sorted([int(s) for s in df['SITE_NUM'].unique() if pd.notna(s)])
+
+            target_value = None
+            target_param_name = target_param
+            if target_col and target_col in df.columns:
+                t_vals = df[target_col].dropna()
+                if len(t_vals) > 0:
+                    target_value = float(t_vals.iloc[0])
+            elif target_param:
+                tit = db.query(TestItem).filter(and_(TestItem.lot_id == lot.id, TestItem.item_name == target_param, TestItem.site == 0)).first()
+                if tit:
+                    target_value = tit.lower_limit if tit.lower_limit is not None else tit.upper_limit
+
+            result_lots.append({
+                "lot_id": lot.id,
+                "display_name": lot.wafer_id or lot.lot_id or lot.filename,
+                "unit": unit,
+                "target_param_name": target_param_name,
+                "target_value": target_value,
+                "sites": sites_list,
+                "steps": steps_result,
+                "curves": curves,
+            })
+            lot_dfs.append((lot.id, lot.wafer_id or lot.lot_id or lot.filename, df, pre_col, post_col, post_bit_col, unit, ll, ul, target_value))
+
+        # ALL 聚合：合并所有 LOT 的 die
+        all_steps = []
+        all_curves = []
+        all_unit = ""
+        all_target = None
+        if lot_dfs:
+            first = lot_dfs[0]
+            all_unit = first[6]
+            all_target = first[9]
+            merged = pd.concat([d[2] for d in lot_dfs], ignore_index=True)
+            all_ll, all_ul = first[7], first[8]
+            all_post_steps = []
+            for d in lot_dfs:
+                pbc = d[5]
+                if pbc and pbc in merged.columns:
+                    all_post_steps += [int(x) for x in merged[pbc].dropna().unique()]
+            all_step_indices = sorted(list(set([0] + all_post_steps)))
+            all_steps = _calc_trim_steps(merged, first[3], first[4], first[5], all_step_indices, all_ll, all_ul, all_unit, post_param)
+            for d in lot_dfs:
+                all_curves += _calc_trim_curves(d[2], d[3], d[4], d[5], all_step_indices, lot_id=d[0])
+
+        return {
+            "unit": all_unit,
+            "target_param_name": target_param,
+            "target_value": all_target,
+            "lots": result_lots,
+            "all_steps": all_steps,
+            "all_curves": all_curves,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -3619,6 +4129,10 @@ def get_multi_lot_param_hist(
             "wafer_id": lot.wafer_id or "",
             "lot_id_str": lot.lot_id or "",
             "counts": counts_list,
+            "histogram": {
+                "counts": counts_list,
+                "edges": global_edges_list,
+            },
             "stats": stats,
         })
 

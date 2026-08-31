@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="param-view">
     <!-- LOT基本信息栏 -->
     <div class="lot-info-bar" v-if="lotInfo">
@@ -62,7 +62,11 @@
       </div>
       <!-- 内容区 -->
       <div class="content-row">
-        <div class="charts-area" :style="{ width: (currentTab?.options.scatter_zoom_2x && currentTab?.options.show_scatter ? '1640px' : '840px') }">
+        <div
+          class="charts-area"
+          :class="{ 'vs-active': vsMode }"
+          :style="vsMode ? {} : { width: (currentTab?.options.scatter_zoom_2x && currentTab?.options.show_scatter ? '1600px' : '1100px') }"
+        >
           <!-- 顶部Options (移入此处以对齐) -->
           <div class="options-bar">
             <div class="options-left">
@@ -71,7 +75,7 @@
                 <select v-model="currentParamName" @change="onParamSelectChange">
                   <template v-if="currentTab?.options.trim_step_mode">
                     <option v-for="g in trimGroupList" :key="g.base_param" :value="g.base_param">
-                      {{ g.item_number }}:{{ g.base_param }} ({{ g.step_count }} Steps)
+                      {{ g.item_number }}:{{ g.base_param }}
                     </option>
                   </template>
                   <template v-else>
@@ -166,8 +170,51 @@
             <table>
               <thead>
                 <tr>
-                  <th style="position:sticky;top:0;background:#fafafa;z-index:2;min-width:110px;width:120px">Step</th>
-                  <th style="position:sticky;top:0;background:#fafafa;z-index:2;min-width:90px">ALL Mean</th>
+                  <th style="position:sticky;top:0;background:#fafafa;z-index:2;min-width:120px;width:130px;text-align:center">
+                    <div style="display:flex;align-items:center;justify-content:center">
+                      <div class="step-mode-switch" v-if="currentTrimGroup?.has_actual_steps && currentTrimGroup?.has_scan_steps">
+                        <button
+                          type="button"
+                          class="step-mode-btn"
+                          :class="{ active: (currentTab?.options.trim_step_type || 'scan') === 'actual' }"
+                          @click="setTrimStepType('actual')"
+                          title="显示按芯片实际 Trim Code 聚合统计的 Step Mean"
+                        >实际</button>
+                        <button
+                          type="button"
+                          class="step-mode-btn"
+                          :class="{ active: currentTab?.options.trim_step_type === 'scan' }"
+                          @click="setTrimStepType('scan')"
+                          title="显示测试程序各扫描 Step 的测量 Mean"
+                        >扫描</button>
+                      </div>
+                      <span v-else>Step</span>
+                    </div>
+                  </th>
+                  <!-- Actual mode headers -->
+                  <template v-if="(currentTab?.options.trim_step_type || 'scan') === 'actual'">
+                    <th style="position:sticky;top:0;background:#fafafa;z-index:2;min-width:130px" title="该Step所有Die的Pre值区间 [min, max]">
+                      pre区间{{ currentTab.data.unit ? ` (${currentTab.data.unit})` : '' }}
+                    </th>
+                    <th style="position:sticky;top:0;background:#fafafa;z-index:2;min-width:95px">
+                      Pre_mean{{ currentTab.data.unit ? ` (${currentTab.data.unit})` : '' }}
+                    </th>
+                    <th style="position:sticky;top:0;background:#fafafa;z-index:2;min-width:95px">
+                      Post_mean{{ currentTab.data.unit ? ` (${currentTab.data.unit})` : '' }}
+                    </th>
+                    <th style="position:sticky;top:0;background:#fafafa;z-index:2;min-width:95px">
+                      all_mean{{ trimDeltaUnitInfo(currentTab).unit ? ` (${trimDeltaUnitInfo(currentTab).unit})` : '' }}
+                    </th>
+                    <th style="position:sticky;top:0;background:#fafafa;z-index:2;min-width:70px">
+                      Qty
+                    </th>
+                  </template>
+                  <!-- Scan mode header -->
+                  <template v-else>
+                    <th style="position:sticky;top:0;background:#fafafa;z-index:2;min-width:90px">
+                      ALL Mean
+                    </th>
+                  </template>
                   <th
                     v-for="s in displayedTrimSites(currentTab)"
                     :key="'th_s'+s"
@@ -184,8 +231,19 @@
               </thead>
               <tbody>
                 <tr v-for="step in currentTab.data.trim_data.steps" :key="step.step_index">
-                  <td style="min-width:110px;width:120px;font-weight:600"><span class="site-cell-label">Step {{ step.step_index }}</span></td>
-                  <td style="font-weight:600">{{ getTrimStepAllMean(currentTab, step)?.toFixed(4) ?? '-' }}</td>
+                  <td style="min-width:120px;width:130px;font-weight:600"><span class="site-cell-label">Step {{ step.step_index }}</span></td>
+                  <!-- Actual mode cells -->
+                  <template v-if="(currentTab?.options.trim_step_type || 'scan') === 'actual'">
+                    <td style="font-weight:600">{{ step.pre_min != null && step.pre_max != null ? `[${step.pre_min.toFixed(4)}, ${step.pre_max.toFixed(4)}]` : '-' }}</td>
+                    <td style="font-weight:600">{{ getTrimStepPreMeanDisplay(currentTab, step) }}</td>
+                    <td style="font-weight:600">{{ getTrimStepPostMeanDisplay(currentTab, step) }}</td>
+                    <td style="font-weight:600;color:#1890ff">{{ getTrimStepAllMeanDisplay(currentTab, step) }}</td>
+                    <td style="font-weight:600;color:#555">{{ getTrimStepQty(currentTab, step) }}</td>
+                  </template>
+                  <!-- Scan mode cell -->
+                  <template v-else>
+                    <td style="font-weight:600">{{ getTrimStepAllMean(currentTab, step)?.toFixed(4) ?? '-' }}</td>
+                  </template>
                   <td
                     v-for="s in displayedTrimSites(currentTab)"
                     :key="'td_s'+s"
@@ -208,7 +266,7 @@
 
           <!-- 直方图 (普通模式显示，Trim Step模式隐藏) -->
           <div v-if="currentTab.options.show_histogram && !currentTab.options.trim_step_mode && currentTab.data" class="chart-container" style="flex-direction:column;align-items:center">
-            <div :ref="el => setChartRef(currentTab?.id, 'hist', el)" style="width:600px;height:400px"></div>
+            <div :ref="el => setChartRef(currentTab?.id, 'hist', el)" :style="{ width: vsMode ? '100%' : '1060px', height: '400px' }"></div>
             <div class="chart-legend">
               <span
                 v-for="s in chartSites(currentTab)"
@@ -285,7 +343,7 @@
             </div>
             <div
               :ref="el => setChartRef(currentTab?.id, 'scatter', el)"
-              :style="{ width: (currentTab?.options.scatter_zoom_2x ? '1600px' : '800px'), height: (currentTab?.options.scatter_zoom_2x ? '800px' : '400px') }"
+              :style="{ width: vsMode ? '100%' : (currentTab?.options.scatter_zoom_2x ? '1560px' : '1060px'), height: (currentTab?.options.scatter_zoom_2x ? '800px' : '400px') }"
             ></div>
             <div class="chart-legend">
               <span
@@ -363,6 +421,43 @@
                   </tr>
                 </tbody>
               </table>
+
+              <!-- 失效 Die 明细（超出 Limit 标红） -->
+              <div
+                class="trim-fail-box"
+                v-if="currentTab.data.trim_data.fail_dies && currentTab.data.trim_data.fail_dies.length > 0"
+              >
+                <div class="trim-calc-header" style="margin-top:10px">
+                  <span class="trim-calc-title">失效 Die 明细 (超出 Limit 标红)</span>
+                  <span class="trim-calc-target-info">共 {{ currentTab.data.trim_data.fail_dies.length }} 个</span>
+                </div>
+                <div style="max-height:260px;overflow:auto">
+                  <table class="trim-calc-table">
+                    <thead>
+                      <tr>
+                        <th>编号</th>
+                        <th>pre{{ currentTab.data.unit ? ` (${currentTab.data.unit})` : '' }}</th>
+                        <th>precode</th>
+                        <th>post{{ currentTab.data.unit ? ` (${currentTab.data.unit})` : '' }}</th>
+                        <th>post_code</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="fd in currentTab.data.trim_data.fail_dies" :key="fd.die_id">
+                        <td>{{ fd.die_id }}</td>
+                        <td :style="{ color: fd.pre_fail ? 'red' : '', fontWeight: fd.pre_fail ? 'bold' : '' }">
+                          {{ fd.pre != null ? fd.pre.toFixed(4) : '-' }}
+                        </td>
+                        <td>{{ fd.pre_code ?? '-' }}</td>
+                        <td :style="{ color: fd.post_fail ? 'red' : '', fontWeight: fd.post_fail ? 'bold' : '' }">
+                          {{ fd.post != null ? fd.post.toFixed(4) : '-' }}
+                        </td>
+                        <td>{{ fd.post_code ?? '-' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -387,7 +482,11 @@
         <!-- VS Right Panel -->
         <template v-if="vsMode && vsTab">
           <div class="vs-separator"><span>VS</span></div>
-          <div class="vs-right-panel" :style="{ width: (vsTab?.options.scatter_zoom_2x && currentTab?.options.show_scatter ? '1640px' : '840px') }">
+          <div
+            class="vs-right-panel"
+            :class="{ 'vs-active': vsMode }"
+            :style="vsMode ? {} : { width: (vsTab?.options.scatter_zoom_2x && currentTab?.options.show_scatter ? '1600px' : '1100px') }"
+          >
             <!-- VS mini options bar -->
             <div class="vs-opts-bar">
               <div class="nav-group">
@@ -463,7 +562,7 @@
             </div>
             <!-- VS Histogram -->
             <div v-if="currentTab.options.show_histogram && vsTab.data" class="chart-container" style="flex-direction:column;align-items:center">
-              <div :ref="el => setChartRef(VS_TAB_ID, 'hist', el)" style="width:600px;height:400px"></div>
+              <div :ref="el => setChartRef(VS_TAB_ID, 'hist', el)" style="width:100%;height:400px"></div>
               <div class="chart-legend">
                 <span
                   v-for="s in chartSites(vsTab)"
@@ -517,7 +616,7 @@
               </div>
               <div
                 :ref="el => setChartRef(VS_TAB_ID, 'scatter', el)"
-                :style="{ width: (vsTab?.options.scatter_zoom_2x ? '1600px' : '800px'), height: (vsTab?.options.scatter_zoom_2x ? '800px' : '400px') }"
+                :style="{ width: '100%', height: (vsTab?.options.scatter_zoom_2x ? '800px' : '400px') }"
               ></div>
               <div class="chart-legend">
                 <span
@@ -551,7 +650,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
 import api from '@/api'
@@ -608,8 +707,15 @@ interface Tab {
 interface TrimGroup {
   base_param: string
   item_number: number | string
+  pre_param?: string
+  pre_bit_param?: string
+  post_param?: string
+  post_bit_param?: string
+  target_param?: string
   step_count: number
-  steps: { item_number: number | string; item_name: string; step: number }[]
+  has_actual_steps: boolean
+  has_scan_steps: boolean
+  scan_steps: { item_number: number | string; item_name: string; step: number }[]
 }
 
 const tabs = ref<Tab[]>([])
@@ -627,6 +733,7 @@ const draftOptions = ref({
   show_scatter: true,
   show_map: true,
   trim_step_mode: false,    // Trim Step mode toggle
+  trim_step_type: 'scan' as 'actual' | 'scan',
   trim_shift: false,        // Trim Shift mode: align Site Step 0 to All-Site Step 0 Mean
   trim_robust: false,       // Trim Robust mode: 10% trimmed mean for each site
   trim_invert: false,       // Trim Invert mode: sort steps ascending by mean and draw y=ax+b trend line
@@ -640,48 +747,128 @@ const draftOptions = ref({
 })
 
 // Trim groups computed from paramList
+
 const trimGroupList = computed<TrimGroup[]>(() => {
-  const groups: Map<string, TrimGroup> = new Map()
-  
-  for (const item of paramList.value) {
+  const items = paramList.value
+  if (!items || items.length === 0) return []
+
+  const groupsMap: Map<string, TrimGroup> = new Map()
+
+  let i = 0
+  while (i < items.length) {
+    const item = items[i]
     const name = item.item_name
-    const lower = name.toLowerCase()
-    
-    // Ignore non-pre/non-trim items
-    if (lower.includes('_bit') || lower.includes('prebit') || lower.includes('postbit') || 
-        lower.includes('_post') || lower.includes('_target') || lower.includes('_after') || 
-        lower.includes('_repost') || lower.includes('compare')) {
-      continue
-    }
-    
-    const m = name.match(/^(.*?)(?:_pre|pre)(\d*)$/i)
-    if (m) {
-      const prefix = m[1]
-      const stepStr = m[2]
-      const step = stepStr ? parseInt(stepStr, 10) : 0
-      const isUnderscore = name.includes('_pre') || name.includes('_PRE') || name.includes('_Pre')
-      const preWord = name.includes('_PRE') ? '_PRE' : (name.includes('_Pre') ? '_Pre' : (isUnderscore ? '_pre' : (name.includes('PRE') ? 'PRE' : 'pre')))
-      const baseParam = prefix + preWord
-      
-      if (!groups.has(baseParam)) {
-        groups.set(baseParam, {
-          base_param: baseParam,
-          item_number: item.item_number,
-          step_count: 0,
-          steps: []
-        })
+    const low = name.toLowerCase()
+
+    // Match _pre item (not bit/code/target/delta/stress/leak/status/max/min)
+    const m_pre = name.match(/^(.*?)(?:_pre|pre)(1)?$/i)
+    const isScanSuffix = /_pre\d+$/i.test(name) && !/_pre1$/i.test(name)
+
+    if (m_pre && !isScanSuffix && !['_bit', 'bit', 'code', 'target', 'delta', 'stress', 'leak', 'status', 'max', 'min'].some(k => low.includes(k))) {
+      let basePrefix = m_pre[1].replace(/_+$/, '')
+      const groupItems = [item]
+      let j = i + 1
+
+      while (j < items.length) {
+        const nextItem = items[j]
+        const nextName = nextItem.item_name
+        const nextLow = nextName.toLowerCase()
+
+        // Stop if next item is another pre start
+        const m_next_pre = nextName.match(/^(.*?)(?:_pre|pre)(1)?$/i)
+        const nextIsScan = /_pre\d+$/i.test(nextName) && !/_pre1$/i.test(nextName)
+        if (m_next_pre && !nextIsScan && !['_bit', 'bit', 'code', 'target', 'delta', 'stress', 'leak', 'status', 'max', 'min', 'post', 'sim'].some(k => nextLow.includes(k))) {
+          break
+        }
+
+        // Check name similarity with basePrefix
+        if (nextLow.includes(basePrefix.toLowerCase()) || (basePrefix.length >= 3 && nextLow.startsWith(basePrefix.toLowerCase().slice(0, 3)))) {
+          groupItems.push(nextItem)
+          j++
+        } else {
+          break
+        }
       }
-      const g = groups.get(baseParam)!
-      g.steps.push({
-        item_number: item.item_number,
-        item_name: item.item_name,
-        step
-      })
-      g.step_count = g.steps.length
+
+      let preItem: any = null
+      let preBitItem: any = null
+      let postItem: any = null
+      let postBitItem: any = null
+      let targetItem: any = null
+      const scanSteps: any[] = []
+
+      for (const git of groupItems) {
+        const gname = git.item_name
+        const glow = gname.toLowerCase()
+
+        const mScan = gname.match(/^(.*?)(?:_pre|pre)(\d+)$/i)
+        if (mScan && parseInt(mScan[2], 10) > 1) {
+          scanSteps.push({
+            item_number: git.item_number,
+            item_name: git.item_name,
+            step: parseInt(mScan[2], 10) - 1,
+          })
+          continue
+        }
+
+        if (glow.endsWith('_pre') || glow.endsWith('pre') || glow.endsWith('_pre1')) {
+          if (!preItem && !glow.includes('bit') && !glow.includes('code')) {
+            preItem = git
+            scanSteps.push({
+              item_number: git.item_number,
+              item_name: git.item_name,
+              step: 0,
+            })
+          }
+        } else if (['pre_bit', 'prebit', 'pre_code', 'precode'].some(k => glow.includes(k))) {
+          preBitItem = git
+        } else if (['post_bit', 'postbit', 'post_code', 'postcode', 'trimcode'].some(k => glow.includes(k))) {
+          postBitItem = git
+        } else if (glow.endsWith('_post') || glow.endsWith('post') || glow.endsWith('_sim') || glow.endsWith('sim') || glow.endsWith('_after')) {
+          if (!postItem && !glow.includes('bit') && !glow.includes('code')) {
+            postItem = git
+          }
+        } else if (glow.endsWith('_target') || glow.endsWith('target')) {
+          targetItem = git
+        } else if ((glow.includes('code') || glow.includes('bit')) && !preBitItem && !postBitItem) {
+          postBitItem = git
+        }
+      }
+
+      // 必须在两个Pre之间的参数组中，至少有一个参数的所有数据都是整数，才认为是一个Trim的参数组
+      const hasIntParam = groupItems.some((git: any) => git.is_integer === true)
+
+      if (preItem && (postItem || postBitItem || scanSteps.length >= 2) && hasIntParam) {
+        const baseParam = basePrefix || preItem.item_name
+        groupsMap.set(baseParam, {
+          base_param: baseParam,
+          item_number: preItem.item_number,
+          pre_param: preItem?.item_name,
+          pre_bit_param: preBitItem?.item_name,
+          post_param: postItem?.item_name,
+          post_bit_param: postBitItem?.item_name,
+          target_param: targetItem?.item_name,
+          step_count: scanSteps.length >= 2 ? scanSteps.length : (postBitItem ? 2 : 1),
+          has_actual_steps: !!(preItem && (postItem || postBitItem)),
+          has_scan_steps: scanSteps.length >= 2,
+          scan_steps: scanSteps.sort((a, b) => a.step - b.step),
+        })
+        i = j - 1
+      }
     }
+    i++
   }
-  
-  return Array.from(groups.values()).filter(g => g.step_count >= 3)
+
+  return Array.from(groupsMap.values())
+})
+
+const currentTrimGroup = computed<TrimGroup | null>(() => {
+  const cur = currentParamName.value
+  return trimGroupList.value.find(g => 
+    g.base_param === cur || 
+    g.pre_param === cur || 
+    (g.scan_steps && g.scan_steps.some(s => s.item_name === cur))
+  ) || null
 })
 
 // Available site chips helper for both normal and Trim Step modes
@@ -700,17 +887,23 @@ function availableSiteChips(tab: Tab | null | undefined) {
 // Displayed site columns in Trim Step stats table
 function displayedTrimSites(tab: Tab | null | undefined): number[] {
   if (!tab?.data?.trim_data?.sites) return []
-  const v = tab.options?.site_view ?? 'all'
+  const isActual = tab.options?.trim_step_type === 'actual'
+  const v = tab.options?.site_view ?? (isActual ? 'all_only' : 'all')
   if (v === 'site') {
     const active = tab.options?.active_sites ?? []
     return tab.data.trim_data.sites.filter((s: number) => active.includes(s))
   }
+  if (v === 'all_only') {
+    return []
+  }
   return tab.data.trim_data.sites
 }
 
-// Single site die curves helper for Trim Step stats table expansion
+// Single site die curves helper for Trim Step stats table expansion (only in scan mode)
 function singleSiteDieCurves(tab: Tab | null | undefined): any[] {
   if (!tab?.data?.trim_data?.curves) return []
+  // In actual mode, do not expand individual die columns
+  if (tab.options?.trim_step_type === 'actual') return []
   const displayed = displayedTrimSites(tab)
   if (displayed.length !== 1) return []
   const siteNum = displayed[0]
@@ -811,7 +1004,7 @@ function calcTrimStepRobustMean(tab: Tab | null | undefined, stepIdx: number, si
   }
 
   const trimmed = vals.slice(cut, vals.length - cut)
-  if (trimmed.length === 0) return vals[0]
+  if (trimmed.length === 0) return vals[0] ?? null
   return trimmed.reduce((a, b) => a + b, 0) / trimmed.length
 }
 
@@ -873,6 +1066,121 @@ function getTrimStepAllMean(tab: Tab | null | undefined, step: any): number | nu
   return step?.stats_all?.mean ?? null
 }
 
+// Compute Delta unit scaling and display info
+function trimDeltaUnitInfo(tab: Tab | null | undefined): { unit: string; factor: number } {
+  if (!tab?.data?.trim_data?.steps || tab.data.trim_data.steps.length === 0) {
+    return { unit: tab?.data?.unit || '', factor: 1 }
+  }
+  const origUnit = tab.data.unit || ''
+  const steps = tab.data.trim_data.steps
+
+  let maxAbsDelta = 0
+  for (const st of steps) {
+    if (st.step_index === 0) continue
+    const delta = st.all_mean ?? st.delta_mean ?? (st.post_mean != null && st.pre_mean != null ? st.post_mean - st.pre_mean : null)
+    if (delta !== null && delta !== undefined && !isNaN(delta)) {
+      const d = Math.abs(delta)
+      if (d > maxAbsDelta) maxAbsDelta = d
+    }
+  }
+
+  const uUpper = origUnit.toUpperCase()
+  if (uUpper === 'V' && maxAbsDelta > 0 && maxAbsDelta < 0.5) {
+    return { unit: 'mV', factor: 1000 }
+  }
+  if (uUpper === 'A' && maxAbsDelta > 0 && maxAbsDelta < 0.5) {
+    return maxAbsDelta < 0.0005 ? { unit: 'uA', factor: 1000000 } : { unit: 'mA', factor: 1000 }
+  }
+  if (origUnit.toLowerCase() === 's' && maxAbsDelta > 0 && maxAbsDelta < 0.5) {
+    return { unit: 'ms', factor: 1000 }
+  }
+  if (origUnit.toLowerCase() === 'ohm' && maxAbsDelta > 0 && maxAbsDelta < 0.5) {
+    return { unit: 'mohm', factor: 1000 }
+  }
+
+  return { unit: origUnit, factor: 1 }
+}
+
+function getTrimStepPreMeanDisplay(tab: Tab | null | undefined, step: any): string {
+  if (!step) return '-'
+  const sites = displayedTrimSites(tab)
+  if (sites.length === 1) {
+    const s = sites[0]
+    const val = step.stats_by_site?.[s]?.pre_mean ?? step.stats_by_site?.[s]?.mean
+    return val != null ? val.toFixed(4) : '-'
+  }
+  const val = step.pre_mean ?? step.stats_all?.pre_mean ?? (step.step_index === 0 ? step.stats_all?.mean : null)
+  return val != null ? val.toFixed(4) : '-'
+}
+
+function getTrimStepPostMeanDisplay(tab: Tab | null | undefined, step: any): string {
+  if (!step || step.step_index === 0) return '-'
+  const sites = displayedTrimSites(tab)
+  if (sites.length === 1) {
+    const s = sites[0]
+    const val = step.stats_by_site?.[s]?.post_mean ?? step.stats_by_site?.[s]?.mean
+    return val != null ? val.toFixed(4) : '-'
+  }
+  const val = step.post_mean ?? step.stats_all?.post_mean ?? step.stats_all?.mean
+  return val != null ? val.toFixed(4) : '-'
+}
+
+function getTrimStepAllMeanDisplay(tab: Tab | null | undefined, step: any): string {
+  if (!tab?.data?.trim_data?.steps || !step) return '-'
+  if (step.step_index === 0) return '0'
+  const sites = displayedTrimSites(tab)
+  let rawVal: number | null = null
+  if (sites.length === 1) {
+    const s = sites[0]
+    rawVal = step.stats_by_site?.[s]?.all_mean ?? step.stats_by_site?.[s]?.delta_mean ?? (
+      step.stats_by_site?.[s]?.post_mean != null && step.stats_by_site?.[s]?.pre_mean != null
+        ? step.stats_by_site[s].post_mean - step.stats_by_site[s].pre_mean
+        : null
+    )
+  } else {
+    rawVal = step.all_mean ?? step.delta_mean ?? (
+      step.post_mean != null && step.pre_mean != null ? step.post_mean - step.pre_mean : null
+    )
+  }
+  if (rawVal == null || isNaN(rawVal)) return '-'
+  const { factor } = trimDeltaUnitInfo(tab)
+  return (rawVal * factor).toFixed(4)
+}
+
+// Compute tested/trimmed Die quantity for the step
+function getTrimStepQty(tab: Tab | null | undefined, step: any): number | string {
+  const sites = displayedTrimSites(tab)
+  if (sites.length === 1) {
+    const s = sites[0]
+    return step?.stats_by_site?.[s]?.exec_qty ?? step?.stats_all?.exec_qty ?? '-'
+  } else if (sites.length > 1 && sites.length < (tab?.data?.trim_data?.sites?.length || 0)) {
+    let sum = 0
+    let hasVal = false
+    for (const s of sites) {
+      const q = step?.stats_by_site?.[s]?.exec_qty
+      if (q != null) {
+        sum += q
+        hasVal = true
+      }
+    }
+    return hasVal ? sum : (step?.stats_all?.exec_qty ?? '-')
+  }
+  return step?.stats_all?.exec_qty ?? '-'
+}
+
+async function setTrimStepType(type: 'actual' | 'scan') {
+  if (!currentTab.value) return
+  currentTab.value.options.trim_step_type = type
+  if (type === 'actual') {
+    currentTab.value.options.site_view = 'all_only'
+    currentTab.value.options.active_sites = []
+  } else {
+    currentTab.value.options.site_view = 'all'
+    currentTab.value.options.active_sites = []
+  }
+  await loadTabData(currentTab.value.id)
+}
+
 // Highlighting min/max site in Trim Step table
 function trimSiteCellStyle(tab: Tab | null | undefined, step: any, siteNum: number, allSites: number[]) {
   const val = getTrimStepSiteMean(tab, step, siteNum)
@@ -898,11 +1206,15 @@ async function toggleTrimStepMode() {
   
   if (willBeTrim) {
     currentTab.value.options.show_histogram = false
+    currentTab.value.options.site_view = 'all'
+    currentTab.value.options.active_sites = []
     const curName = currentParamName.value
-    let group = trimGroupList.value.find(g => g.base_param === curName || g.steps.some(s => s.item_name === curName))
+    let group = trimGroupList.value.find(g => g.base_param === curName || g.pre_param === curName || (g.scan_steps && g.scan_steps.some(s => s.item_name === curName)))
     if (!group && trimGroupList.value.length > 0) {
       group = trimGroupList.value[0]
     }
+    // 组只有 actual steps（如 PRE/PRE_bit/POST/POST_BIT/target 结构）时默认 Actual 模式，否则 scan 模式只有一行
+    currentTab.value.options.trim_step_type = (group && group.has_actual_steps && !group.has_scan_steps) ? 'actual' : 'scan'
     if (group) {
       currentParamName.value = group.base_param
       currentTab.value.param_name = group.base_param
@@ -911,6 +1223,8 @@ async function toggleTrimStepMode() {
     }
   } else {
     currentTab.value.options.show_histogram = true
+    currentTab.value.options.site_view = 'all'
+    currentTab.value.options.active_sites = []
     const paramItem = paramList.value.find(p => p.item_name === currentParamName.value)
     if (paramItem) {
       currentTab.value.title = `${paramItem.item_number}:${paramItem.item_name}`
@@ -921,7 +1235,7 @@ async function toggleTrimStepMode() {
 
 function onParamSelectChange() {
   if (currentTab.value?.options?.trim_step_mode) {
-    const group = trimGroupList.value.find(g => g.base_param === currentParamName.value)
+    const group = trimGroupList.value.find(g => g.base_param === currentParamName.value || g.pre_param === currentParamName.value || (g.scan_steps && g.scan_steps.some(s => s.item_name === currentParamName.value)))
     if (group && currentTab.value) {
       currentTab.value.param_name = group.base_param
       currentTab.value.item_number = group.item_number
@@ -932,6 +1246,7 @@ function onParamSelectChange() {
   }
   addTab()
 }
+
 
 function toggleTrimShift() {
   if (!currentTab.value) return
@@ -1232,11 +1547,21 @@ function legendLabel(site: number) {
 // 选中ALL聚合 chip：仅 all_only(仅ALL聚合) 时高亮；默认/all 状态不显示ALL故不高亮
 function isAllChipActive(tab: Tab | null | undefined) {
   if (!tab) return false
+  if (tab.options?.trim_step_mode) {
+    return (tab.options?.site_view ?? 'all_only') === 'all_only'
+  }
   return (tab.options?.site_view ?? 'all') === 'all_only'
 }
 // 选中单个 Site chip：默认'all'全显时全部高亮；site_view==='site' 时仅选中的高亮
 function isSiteChipActive(tab: Tab | null | undefined, siteNum: number) {
   if (!tab) return false
+  if (tab.options?.trim_step_mode) {
+  const isActual = tab.options?.trim_step_type === 'actual'
+  const v = tab.options?.site_view ?? (isActual ? 'all_only' : 'all')
+    if (v === 'site') return (tab.options?.active_sites ?? []).includes(siteNum)
+    if (v === 'all') return true
+    return false // all_only
+  }
   const v = tab.options?.site_view ?? 'all'
   if (v === 'all') return true
   if (v === 'site') return (tab.options?.active_sites ?? []).includes(siteNum)
@@ -1249,40 +1574,59 @@ function chipStyle(siteNum: number) {
 }
 
 // chip 点击逻辑（多选累加 + ALL两态切换）：
-//  默认(all, 仅所有Site高亮，不含ALL聚合) → 点ALL → all_only(仅ALL聚合)；点Sn → site(仅选Sn，隐藏ALL聚合)
-//  all_only 状态 → 点ALL → 回到 all(所有Site)；点Sn → site(仅选Sn)
-//  site(多选) 状态 → 点Sn → 切换该Site选中/取消；点别的Sn → 累加进选中集合
-//                   全部取消 → 回到 all；点ALL → 显示所有Site
+//  Trim 模式：默认 all_only(仅ALL)；点Sn → site(仅选Sn)；再点ALL → all_only
 function onChipClick(tab: Tab | null | undefined, siteNum: number) {
   if (!tab?.options) return
-  const v = tab.options.site_view ?? 'all'
-  if (siteNum === 0) {
-    // ALL chip 两态切换：默认/子集点ALL→仅ALL聚合；all_only 再点→回到所有Site
-    if (v === 'all_only') {
-      tab.options.site_view = 'all'
-    } else if (v === 'site') {
-      tab.options.site_view = 'all' // 子集状态点ALL → 显示所有Site
-    } else {
-      tab.options.site_view = 'all_only' // 默认状态点ALL → 仅ALL聚合
-    }
-  } else if (v !== 'site') {
-    // 从 all / all_only 进入选择模式：只选当前 Site，隐藏ALL聚合
-    tab.options.site_view = 'site'
-    tab.options.active_sites = [siteNum]
-  } else {
-    // 多选：切换该 Site 的选中状态
-    const set = new Set<number>(tab.options.active_sites ?? [])
-    if (set.has(siteNum)) {
-      set.delete(siteNum)
-    } else {
-      set.add(siteNum)
-    }
-    if (set.size === 0) {
-      // 全部取消 → 回到 all（所有Site，不含ALL聚合）
-      tab.options.site_view = 'all'
+  const isTrim = !!tab.options.trim_step_mode
+  const v = tab.options.site_view ?? (isTrim ? 'all_only' : 'all')
+
+  if (isTrim) {
+    if (siteNum === 0) {
+      tab.options.site_view = 'all_only'
       tab.options.active_sites = []
+    } else if (v !== 'site') {
+      tab.options.site_view = 'site'
+      tab.options.active_sites = [siteNum]
     } else {
-      tab.options.active_sites = [...set].sort((a, b) => a - b)
+      const set = new Set<number>(tab.options.active_sites ?? [])
+      if (set.has(siteNum)) {
+        set.delete(siteNum)
+      } else {
+        set.add(siteNum)
+      }
+      if (set.size === 0) {
+        tab.options.site_view = 'all_only'
+        tab.options.active_sites = []
+      } else {
+        tab.options.active_sites = [...set].sort((a, b) => a - b)
+      }
+    }
+  } else {
+    if (siteNum === 0) {
+      // ALL chip 两态切换：默认/子集点ALL→仅ALL聚合；all_only 再点→回到所有Site
+      if (v === 'all_only') {
+        tab.options.site_view = 'all'
+      } else if (v === 'site') {
+        tab.options.site_view = 'all'
+      } else {
+        tab.options.site_view = 'all_only'
+      }
+    } else if (v !== 'site') {
+      tab.options.site_view = 'site'
+      tab.options.active_sites = [siteNum]
+    } else {
+      const set = new Set<number>(tab.options.active_sites ?? [])
+      if (set.has(siteNum)) {
+        set.delete(siteNum)
+      } else {
+        set.add(siteNum)
+      }
+      if (set.size === 0) {
+        tab.options.site_view = 'all'
+        tab.options.active_sites = []
+      } else {
+        tab.options.active_sites = [...set].sort((a, b) => a - b)
+      }
     }
   }
   const tid = tab.id
@@ -1347,7 +1691,7 @@ function getTabById(tabId: string): Tab | null {
 }
 
 // VS mode toggle
-function toggleVsMode() {
+async function toggleVsMode() {
   if (vsMode.value) {
     vsMode.value = false
     vsTab.value = null
@@ -1364,6 +1708,8 @@ function toggleVsMode() {
       }
       delete waferMapState[VS_TAB_ID]
     }
+    await nextTick()
+    resizeAllCharts()
   } else {
     vsMode.value = true
     const src = currentTab.value
@@ -1378,7 +1724,18 @@ function toggleVsMode() {
       options: src ? JSON.parse(JSON.stringify(src.options)) : { ...draftOptions.value },
       data: null,
     }
-    loadVsData()
+    await loadVsData()
+    await nextTick()
+    resizeAllCharts()
+  }
+}
+
+function resizeAllCharts() {
+  for (const key in chartInstances) {
+    const inst = chartInstances[key]
+    if (inst && typeof inst.resize === 'function') {
+      inst.resize()
+    }
   }
 }
 
@@ -1515,10 +1872,14 @@ function setChartRef(tabId: string | undefined, type: string, el: any) {
       }
       nextTick(() => renderWaferMap(tabId, el))
     } else {
-      if (chartInstances[key]?.dispose) {
-        chartInstances[key].dispose()
+      let chart = echarts.getInstanceByDom(el)
+      if (!chart) {
+        if (chartInstances[key]?.dispose) {
+          chartInstances[key].dispose()
+        }
+        chart = echarts.init(el)
       }
-      chartInstances[key] = echarts.init(el)
+      chartInstances[key] = chart
       nextTick(() => {
         if (type === 'hist') renderHistogram(tabId)
         if (type === 'scatter') renderScatter(tabId)
@@ -1634,23 +1995,32 @@ async function fetchParamData(paramName: string, options: any): Promise<any> {
 }
 
 async function fetchTrimStepData(baseParam: string, options: any): Promise<any> {
-  const group = trimGroupList.value.find(g => g.base_param === baseParam || g.steps.some(s => s.item_name === baseParam))
-  const stepNames = group ? group.steps.map(s => s.item_name).join(',') : undefined
-  const actualBase = group ? group.base_param : baseParam
+  const group = trimGroupList.value.find(g => g.base_param === baseParam || g.pre_param === baseParam || (g.scan_steps && g.scan_steps.some(s => s.item_name === baseParam)))
+  const stepMode = options.trim_step_type || 'scan'
 
-  return (await api.get(`/analysis/lot/${lotId.value}/trim_step_data`, {
-    params: {
-      base_param: actualBase,
-      param_names: stepNames,
-      filter_type: options.filter_type,
-      sigma: options.sigma,
-      data_range: options.data_range,
-      custom_min: options.filter_type === 'custom' ? options.custom_min : undefined,
-      custom_max: options.filter_type === 'custom' ? options.custom_max : undefined,
-      custom_ll: options.filter_type === 'custom' ? options.custom_ll : undefined,
-      custom_ul: options.filter_type === 'custom' ? options.custom_ul : undefined,
-    }
-  })) as any
+  const params: any = {
+    base_param: group ? group.base_param : baseParam,
+    step_mode: stepMode,
+    filter_type: options.filter_type,
+    sigma: options.sigma,
+    data_range: options.data_range,
+    custom_min: options.filter_type === 'custom' ? options.custom_min : undefined,
+    custom_max: options.filter_type === 'custom' ? options.custom_max : undefined,
+    custom_ll: options.filter_type === 'custom' ? options.custom_ll : undefined,
+    custom_ul: options.filter_type === 'custom' ? options.custom_ul : undefined,
+  }
+
+  if (stepMode === 'actual' && group) {
+    params.pre_param = group.pre_param
+    params.pre_bit_param = group.pre_bit_param
+    params.post_param = group.post_param
+    params.post_bit_param = group.post_bit_param
+    params.target_param = group.target_param
+  } else if (stepMode === 'scan' && group?.scan_steps && group.scan_steps.length > 0) {
+    params.param_names = group.scan_steps.map(s => s.item_name).join(',')
+  }
+
+  return (await api.get(`/analysis/lot/${lotId.value}/trim_step_data`, { params })) as any
 }
 
 function addTab() {
@@ -1675,7 +2045,7 @@ function addTab() {
   }
 
   if (optionsToUse.trim_step_mode) {
-    const group = trimGroupList.value.find(g => g.base_param === paramName || g.steps.some(s => s.item_name === paramName))
+    const group = trimGroupList.value.find(g => g.base_param === paramName || g.pre_param === paramName || (g.scan_steps && g.scan_steps.some(s => s.item_name === paramName)))
     itemNumber = group?.item_number ?? ''
     title = `${itemNumber}:${paramName} [Trim] #${tabCounter.value}`
   } else {
@@ -1716,8 +2086,8 @@ async function loadTabData(tabId: string) {
     }
 
     // Initialize Trim Calculator values
-    const baseClean = tab.param_name.replace(/_pre\d*$/i, '').replace(/pre\d*$/i, '')
-    const targetItem = paramList.value.find(p => p.item_name.toLowerCase().includes('target') && p.item_name.toLowerCase().includes(baseClean.toLowerCase()))
+    const group = trimGroupList.value.find(g => g.base_param === tab.param_name || g.pre_param === tab.param_name)
+    const targetItem = group?.target_param ? paramList.value.find(p => p.item_name === group.target_param) : null
     const defaultTarget = trimData.target_value ?? targetItem?.lower_limit ?? targetItem?.upper_limit ?? null
     trimCalc.value.targetVal = defaultTarget
     trimCalc.value.preCode = 0
@@ -1775,7 +2145,7 @@ function prevParam() {
   if (currentTab.value?.options?.trim_step_mode) {
     const list = trimGroupList.value
     const cur = currentParamName.value
-    const idx = list.findIndex(g => g.base_param === cur || g.steps.some(s => s.item_name === cur))
+    const idx = list.findIndex(g => g.base_param === cur || g.pre_param === cur || (g.scan_steps && g.scan_steps.some(s => s.item_name === cur)))
     if (idx > 0 && list[idx - 1]) {
       const prevGroup = list[idx - 1]
       currentParamName.value = prevGroup.base_param
@@ -1798,7 +2168,7 @@ function nextParam() {
   if (currentTab.value?.options?.trim_step_mode) {
     const list = trimGroupList.value
     const cur = currentParamName.value
-    const idx = list.findIndex(g => g.base_param === cur || g.steps.some(s => s.item_name === cur))
+    const idx = list.findIndex(g => g.base_param === cur || g.pre_param === cur || (g.scan_steps && g.scan_steps.some(s => s.item_name === cur)))
     if (idx >= 0 && idx < list.length - 1 && list[idx + 1]) {
       const nextGroup = list[idx + 1]
       currentParamName.value = nextGroup.base_param
@@ -1954,6 +2324,7 @@ function renderHistogram(tabId: string) {
   if (!tab?.data) return
   const chart = chartInstances[`${tabId}_hist`]
   if (!chart) return
+  chart.resize()
 
   const { sites, param_name, unit, lower_limit: ll, upper_limit: ul,
           global_edges, exceeds_limit, ll_bin_index, ul_bin_index } = tab.data
@@ -2272,9 +2643,10 @@ function renderHistogram(tabId: string) {
 
 // ── Trim Step 折线图渲染 ────────────────────────────────
 function renderTrimScatter(tabId: string, tab: Tab, chart: any) {
+  chart.resize()
   const trimData = tab.data.trim_data
   const stepCount = trimData.step_count || trimData.steps?.length || 1
-  const maxStep = stepCount - 1
+  const maxStep = Math.max(...(trimData.steps || []).map((s: any) => s.step_index), stepCount - 1, 1)
   const curves = trimData.curves || []
 
   const isShift = !!tab.options?.trim_shift
@@ -2283,56 +2655,120 @@ function renderTrimScatter(tabId: string, tab: Tab, chart: any) {
   const step0 = trimData.steps?.[0]
   const allMean0 = step0?.stats_all?.mean
 
+  const isActualMode = tab.options?.trim_step_type === 'actual'
+
   // Calculate Invert Step Mapping (分半区物理连续性排序)
   const sortedStepIndices: number[] = []
   const origToNewStepMap: Record<number, number> = {}
 
   if (isInvert && trimData.steps && trimData.steps.length >= 2) {
-    const N = trimData.steps.length
-    const M = Math.floor(N / 2) // 1/2 max step 分界点
+    if (isActualMode) {
+      const stepIndices = (trimData.steps || []).map((s: any) => s.step_index)
+      const stepMeans: Record<number, number> = {}
+      ;(trimData.steps || []).forEach((s: any) => {
+        let rawVal = s.all_mean ?? s.delta_mean ?? (
+          s.post_mean != null && s.pre_mean != null ? s.post_mean - s.pre_mean : 0
+        )
+        if (s.step_index === 0) rawVal = 0
+        stepMeans[s.step_index] = rawVal
+      })
 
-    const getMean = (idx: number) => {
-      const st = trimData.steps?.[idx]
-      return (getTrimStepAllMean(tab, st) ?? st?.stats_all?.mean ?? 0)
+      const maxStepVal = Math.max(...stepIndices, 1)
+      const halfBoundary = maxStepVal / 2.0
+
+      let h1: number[] = []
+      let h2: number[] = []
+      stepIndices.forEach((idx: number) => {
+        if (idx <= halfBoundary) {
+          h1.push(idx)
+        } else {
+          h2.push(idx)
+        }
+      })
+
+      if (h1.length === 0 || h2.length === 0) {
+        const mid = Math.floor(stepIndices.length / 2)
+        h1 = stepIndices.slice(0, mid)
+        h2 = stepIndices.slice(mid)
+      }
+
+      // 1. 以前半区/后半区趋势校准各半区方向：若首点 > 尾点，则倒序为递增
+      if (h1.length >= 2 && stepMeans[h1[0]] > stepMeans[h1[h1.length - 1]]) {
+        h1.reverse()
+      }
+      if (h2.length >= 2 && stepMeans[h2[0]] > stepMeans[h2[h2.length - 1]]) {
+        h2.reverse()
+      }
+
+      // 2. 比较两半区均值大小，偏负半区放左边，偏正半区放右边
+      const h1Avg = h1.reduce((sum, idx) => sum + (stepMeans[idx] || 0), 0) / (h1.length || 1)
+      const h2Avg = h2.reduce((sum, idx) => sum + (stepMeans[idx] || 0), 0) / (h2.length || 1)
+
+      const ordered = (h1Avg <= h2Avg) ? [...h1, ...h2] : [...h2, ...h1]
+      ordered.forEach((origIdx, newIdx) => {
+        sortedStepIndices[newIdx] = origIdx
+        origToNewStepMap[origIdx] = newIdx
+      })
+    } else {
+      // 扫描模式下的 Invert (100% 原始逻辑)
+      const N = trimData.steps.length
+      const M = Math.floor(N / 2) // 1/2 max step 分界点
+
+      const getMean = (idx: number) => {
+        const st = trimData.steps?.[idx]
+        return (getTrimStepAllMean(tab, st) ?? st?.stats_all?.mean ?? 0)
+      }
+
+      // 前半区 (0 ~ M-1)
+      const half1Indices: number[] = []
+      for (let i = 0; i < M; i++) half1Indices.push(i)
+      if (getMean(0) > getMean(M - 1)) {
+        half1Indices.reverse()
+      }
+
+      // 后半区 (M ~ N-1)
+      const half2Indices: number[] = []
+      for (let i = M; i < N; i++) half2Indices.push(i)
+      if (getMean(M) > getMean(N - 1)) {
+        half2Indices.reverse()
+      }
+
+      const h1Avg = half1Indices.reduce((sum, idx) => sum + getMean(idx), 0) / (half1Indices.length || 1)
+      const h2Avg = half2Indices.reduce((sum, idx) => sum + getMean(idx), 0) / (half2Indices.length || 1)
+
+      const combined = (h1Avg <= h2Avg)
+        ? [...half1Indices, ...half2Indices]
+        : [...half2Indices, ...half1Indices]
+
+      combined.forEach((origIdx, newIdx) => {
+        sortedStepIndices[newIdx] = origIdx
+        origToNewStepMap[origIdx] = newIdx
+      })
     }
-
-    // 前半区 (0 ~ M-1)
-    const half1Indices: number[] = []
-    for (let i = 0; i < M; i++) half1Indices.push(i)
-    if (getMean(0) > getMean(M - 1)) {
-      half1Indices.reverse() // 下降趋势 -> 倒序为连续递增 [M-1, M-2, ..., 0]
-    }
-
-    // 后半区 (M ~ N-1)
-    const half2Indices: number[] = []
-    for (let i = M; i < N; i++) half2Indices.push(i)
-    if (getMean(M) > getMean(N - 1)) {
-      half2Indices.reverse() // 下降趋势 -> 倒序为连续递增 [N-1, N-2, ..., M]
-    }
-
-    // 比较两半区整体均值以决定排列顺序
-    const h1Avg = half1Indices.reduce((sum, idx) => sum + getMean(idx), 0) / (half1Indices.length || 1)
-    const h2Avg = half2Indices.reduce((sum, idx) => sum + getMean(idx), 0) / (half2Indices.length || 1)
-
-    const combined = (h1Avg <= h2Avg)
-      ? [...half1Indices, ...half2Indices]
-      : [...half2Indices, ...half1Indices]
-
-    combined.forEach((origIdx, newIdx) => {
-      sortedStepIndices[newIdx] = origIdx
-      origToNewStepMap[origIdx] = newIdx
-    })
   } else {
-    for (let i = 0; i < stepCount; i++) {
-      sortedStepIndices[i] = i
-      origToNewStepMap[i] = i
+    if (isActualMode) {
+      (trimData.steps || []).forEach((s: any, i: number) => {
+        sortedStepIndices[i] = s.step_index
+        origToNewStepMap[s.step_index] = s.step_index
+      })
+    } else {
+      for (let i = 0; i < stepCount; i++) {
+        sortedStepIndices[i] = i
+        origToNewStepMap[i] = i
+      }
     }
   }
 
-  const v = tab.options?.site_view ?? 'all'
-  let visibleSites: number[] = trimData.sites || []
-  if (v === 'site') {
-    visibleSites = tab.options?.active_sites || []
+  const v = tab.options?.site_view ?? (isActualMode ? 'all_only' : 'all')
+  let visibleSites: number[] = []
+  if (isActualMode) {
+    if (v === 'site') {
+      visibleSites = tab.options?.active_sites || []
+    } else if (v === 'all') {
+      visibleSites = trimData.sites || []
+    }
+  } else {
+    visibleSites = v === 'site' ? (tab.options?.active_sites || []) : (trimData.sites || [])
   }
 
   const filteredCurves = curves.filter((c: any) => visibleSites.includes(c.site))
@@ -2340,93 +2776,178 @@ function renderTrimScatter(tabId: string, tab: Tab, chart: any) {
   let allVals: number[] = []
   const allFitPoints: { x: number; y: number }[] = []
 
-  visibleSites.forEach(siteNum => {
-    const siteCurves = filteredCurves.filter((c: any) => c.site === siteNum)
-    if (siteCurves.length === 0) return
+  const { unit: deltaUnit, factor } = trimDeltaUnitInfo(tab)
 
-    // Global Step 0 baseline for Shift
-    let all0 = step0?.stats_all?.mean
-    if (isShift && isRobust) {
-      const sites = tab.data.trim_data.sites || []
-      const site0RobustMeans = sites
-        .map((s: number) => calcTrimStepRobustMean(tab, 0, s))
-        .filter((v: number | null): v is number => v !== null && !isNaN(v))
-      if (site0RobustMeans.length > 0) {
-        all0 = site0RobustMeans.reduce((a: number, b: number) => a + b, 0) / site0RobustMeans.length
-      }
+  if (isActualMode) {
+    // ── 1. ALL Mean Series ── (仅在 all_only 或 all 模式下显示)
+    if (v === 'all_only' || v === 'all') {
+      const allMeanPoints: [number, number | null, any][] = []
+      ;(trimData.steps || []).forEach((st: any) => {
+        const origX = st.step_index
+        const newX = origToNewStepMap[origX] ?? origX
+        let rawVal = st.all_mean ?? st.delta_mean ?? (
+          st.post_mean != null && st.pre_mean != null ? st.post_mean - st.pre_mean : null
+        )
+        if (st.step_index === 0) rawVal = 0
+        const plotVal = (rawVal != null && !isNaN(rawVal)) ? rawVal * factor : null
+        if (plotVal != null) {
+          allVals.push(plotVal)
+          allMeanPoints.push([newX, plotVal, st])
+          allFitPoints.push({ x: newX, y: plotVal })
+        }
+      })
+      allMeanPoints.sort((a, b) => a[0] - b[0])
+
+      series.push({
+        name: 'ALL Mean',
+        type: 'line',
+        data: allMeanPoints.map(p => [p[0], p[1], p[2]]),
+        symbol: 'circle',
+        symbolSize: 8,
+        lineStyle: {
+          color: '#1890ff',
+          width: 2.8
+        },
+        itemStyle: {
+          color: '#1890ff'
+        },
+        z: 10
+      })
     }
 
-    const plotData: any[] = []
-
-    siteCurves.forEach((c: any, dieIdx: number) => {
-      if (dieIdx > 0) {
-        plotData.push([null, null])
-      }
-
-      // Find this specific die's raw value at Step 0 to calculate per-die Shift Delta
-      let dieDelta = 0
-      if (isShift && all0 != null) {
-        const diePt0 = c.points?.find((p: any) => p[0] === 0)
-        const dieRaw0 = (diePt0 && diePt0[1] !== null && typeof diePt0[1] === 'number') ? diePt0[1] : null
-        if (dieRaw0 != null) {
-          dieDelta = all0 - dieRaw0
-        }
-      }
-
-      const diePoints: { newX: number; origX: number; plotVal: number | null; rawVal: number | null; delta: number }[] = []
-      c.points.forEach((pt: [number, number | null]) => {
-        const origStepIdx = pt[0]
-        const newX = origToNewStepMap[origStepIdx] ?? origStepIdx
-        const rawVal = pt[1]
-        let plotVal: number | null = rawVal
-        if (rawVal !== null && typeof rawVal === 'number') {
-          if (isShift) {
-            plotVal = rawVal + dieDelta
+    // ── 2. Per-Site Mean Series ── (仅在 site 或 all 模式下显示选中的 Site)
+    if (v === 'site' || v === 'all') {
+      visibleSites.forEach(siteNum => {
+        const sitePoints: [number, number | null, any][] = []
+        ;(trimData.steps || []).forEach((st: any) => {
+          const origX = st.step_index
+          const newX = origToNewStepMap[origX] ?? origX
+          let siteRaw = st.stats_by_site?.[siteNum]?.all_mean ?? st.stats_by_site?.[siteNum]?.delta_mean ?? (
+            st.stats_by_site?.[siteNum]?.post_mean != null && st.stats_by_site?.[siteNum]?.pre_mean != null
+              ? st.stats_by_site[siteNum].post_mean - st.stats_by_site[siteNum].pre_mean
+              : null
+          )
+          if (st.step_index === 0) siteRaw = 0
+          const sitePlot = (siteRaw != null && !isNaN(siteRaw)) ? siteRaw * factor : null
+          if (sitePlot != null) {
+            allVals.push(sitePlot)
+            sitePoints.push([newX, sitePlot, st])
+            if (v === 'site') {
+              allFitPoints.push({ x: newX, y: sitePlot })
+            }
           }
-          allVals.push(plotVal)
-        }
-        diePoints.push({ newX, origX: origStepIdx, plotVal, rawVal, delta: dieDelta })
+        })
+        sitePoints.sort((a, b) => a[0] - b[0])
+
+        series.push({
+          name: `S${siteNum}`,
+          type: 'line',
+          data: sitePoints.map(p => [p[0], p[1], p[2]]),
+          symbol: 'circle',
+          symbolSize: 6,
+          lineStyle: {
+            color: siteColor(siteNum),
+            width: 2.0,
+            opacity: 0.85
+          },
+          itemStyle: {
+            color: siteColor(siteNum),
+            opacity: 1
+          },
+          z: 5
+        })
       })
+    }
+  } else {
+    // Scan mode
+    visibleSites.forEach(siteNum => {
+      const siteCurves = filteredCurves.filter((c: any) => c.site === siteNum)
+      if (siteCurves.length === 0) return
 
-      // Sort points by newX (0 ~ maxStep) so curves connect monotonically
-      diePoints.sort((a, b) => a.newX - b.newX)
-
-      diePoints.forEach(p => {
-        plotData.push([p.newX, p.plotVal, p.rawVal, p.delta, p.origX])
-        if (p.plotVal !== null && typeof p.plotVal === 'number') {
-          allFitPoints.push({ x: p.newX, y: p.plotVal })
-        }
-      })
-    })
-
-    series.push({
-      name: `S${siteNum}`,
-      type: 'line',
-      data: plotData,
-      connectNulls: false,
-      showSymbol: true,
-      symbol: 'circle',
-      symbolSize: 3,
-      lineStyle: {
-        color: siteColor(siteNum),
-        width: 1.2,
-        opacity: 0.55
-      },
-      itemStyle: {
-        color: siteColor(siteNum),
-        opacity: 0.75
-      },
-      emphasis: {
-        lineStyle: {
-          width: 2.5,
-          opacity: 1
+      // Global Step 0 baseline for Shift
+      let all0 = step0?.stats_all?.mean
+      if (isShift && isRobust) {
+        const sites = tab.data.trim_data.sites || []
+        const site0RobustMeans = sites
+          .map((s: number) => calcTrimStepRobustMean(tab, 0, s))
+          .filter((v: number | null): v is number => v !== null && !isNaN(v))
+        if (site0RobustMeans.length > 0) {
+          all0 = site0RobustMeans.reduce((a: number, b: number) => a + b, 0) / site0RobustMeans.length
         }
       }
+
+      const plotData: any[] = []
+
+      siteCurves.forEach((c: any, dieIdx: number) => {
+        if (dieIdx > 0) {
+          plotData.push([null, null])
+        }
+
+        let dieDelta = 0
+        if (isShift && all0 != null) {
+          const diePt0 = c.points?.find((p: any) => p[0] === 0)
+          const dieRaw0 = (diePt0 && diePt0[1] !== null && typeof diePt0[1] === 'number') ? diePt0[1] : null
+          if (dieRaw0 != null) {
+            dieDelta = all0 - dieRaw0
+          }
+        }
+
+        const diePoints: { newX: number; origX: number; plotVal: number | null; rawVal: number | null; delta: number }[] = []
+        c.points.forEach((pt: [number, number | null]) => {
+          const origStepIdx = pt[0]
+          const newX = origToNewStepMap[origStepIdx] ?? origStepIdx
+          const rawVal = pt[1]
+          let plotVal: number | null = rawVal
+          if (rawVal !== null && typeof rawVal === 'number') {
+            if (isShift) {
+              plotVal = rawVal + dieDelta
+            }
+            allVals.push(plotVal)
+          }
+          diePoints.push({ newX, origX: origStepIdx, plotVal, rawVal, delta: dieDelta })
+        })
+
+        diePoints.sort((a, b) => a.newX - b.newX)
+
+        diePoints.forEach(p => {
+          plotData.push([p.newX, p.plotVal, p.rawVal, p.delta, p.origX])
+          if (p.plotVal !== null && typeof p.plotVal === 'number') {
+            allFitPoints.push({ x: p.newX, y: p.plotVal })
+          }
+        })
+      })
+
+      series.push({
+        name: `S${siteNum}`,
+        type: 'line',
+        data: plotData,
+        connectNulls: false,
+        showSymbol: true,
+        symbol: 'circle',
+        symbolSize: 3,
+        lineStyle: {
+          color: siteColor(siteNum),
+          width: 1.2,
+          opacity: 0.55
+        },
+        itemStyle: {
+          color: siteColor(siteNum),
+          opacity: 0.75
+        },
+        emphasis: {
+          lineStyle: {
+            width: 2.5,
+            opacity: 1
+          }
+        }
+      })
     })
-  })
+  }
 
   // Linear Regression (y = ax + b) for Invert mode
   let formulaText = ''
+  let fitA = 0
+  let fitB = 0
   if (isInvert && allFitPoints.length >= 2) {
     const M = allFitPoints.length
     const sumX = allFitPoints.reduce((acc, p) => acc + p.x, 0)
@@ -2441,28 +2962,30 @@ function renderTrimScatter(tabId: string, tab: Tab, chart: any) {
       den += (p.x - meanX) * (p.x - meanX)
     })
 
-    const a = den !== 0 ? num / den : 0
-    const b = meanY - a * meanX
+    fitA = den !== 0 ? num / den : 0
+    fitB = meanY - fitA * meanX
 
     let ssTot = 0
     let ssRes = 0
     allFitPoints.forEach(p => {
-      const pred = a * p.x + b
+      const pred = fitA * p.x + fitB
       ssTot += (p.y - meanY) * (p.y - meanY)
       ssRes += (p.y - pred) * (p.y - pred)
     })
     const r2 = ssTot > 0 ? Math.max(0, 1 - (ssRes / ssTot)) : 1
 
-    const sign = b >= 0 ? '+' : '-'
-    const absB = Math.abs(b)
-    formulaText = `📈 Trend: y = ${a.toFixed(5)}x ${sign} ${absB.toFixed(4)} (R² = ${r2.toFixed(4)})`
+    const sign = fitB >= 0 ? '+' : '-'
+    const absB = Math.abs(fitB)
+    formulaText = `📈 Trend: y = ${fitA.toFixed(5)}x ${sign} ${absB.toFixed(4)} (R² = ${r2.toFixed(4)})`
+
+    const lastX = isInvert ? Math.max(0, sortedStepIndices.length - 1) : maxStep
 
     series.push({
       name: 'y = ax + b',
       type: 'line',
       data: [
-        [0, parseFloat(b.toFixed(6))],
-        [maxStep, parseFloat((a * maxStep + b).toFixed(6))]
+        [0, parseFloat(fitB.toFixed(6))],
+        [lastX, parseFloat((fitA * lastX + fitB).toFixed(6))]
       ],
       showSymbol: false,
       lineStyle: {
@@ -2482,16 +3005,24 @@ function renderTrimScatter(tabId: string, tab: Tab, chart: any) {
     })
   }
 
-  let yMin = allVals.length > 0 ? Math.min(...allVals) : 0
-  let yMax = allVals.length > 0 ? Math.max(...allVals) : 1
-
-  if (yMin === yMax) {
-    yMin -= 1
-    yMax += 1
-  } else {
-    const pad = (yMax - yMin) * 0.05
-    yMin -= pad
-    yMax += pad
+  const validVals = allVals.filter((v): v is number => typeof v === 'number' && !isNaN(v) && isFinite(v))
+  let yMin: number | undefined = undefined
+  let yMax: number | undefined = undefined
+  if (validVals.length > 0) {
+    let min = validVals[0]
+    let max = validVals[0]
+    for (let i = 1; i < validVals.length; i++) {
+      if (validVals[i] < min) min = validVals[i]
+      if (validVals[i] > max) max = validVals[i]
+    }
+    if (min === max) {
+      yMin = min - 1
+      yMax = max + 1
+    } else {
+      const pad = (max - min) * 0.05
+      yMin = min - pad
+      yMax = max + pad
+    }
   }
 
   const baseParam = trimData.base_param || tab.param_name
@@ -2501,6 +3032,8 @@ function renderTrimScatter(tabId: string, tab: Tab, chart: any) {
   if (isShift) modeInfo += ' | ⚡ [Shift Active]'
   if (isRobust) modeInfo += ' | 🛡️ [Robust (10% Trimmed)]'
   if (isInvert) modeInfo += ' | 🔄 [Invert]'
+
+  const lastX = isInvert ? Math.max(0, sortedStepIndices.length - 1) : maxStep
 
   chart.setOption({
     title: {
@@ -2528,13 +3061,15 @@ function renderTrimScatter(tabId: string, tab: Tab, chart: any) {
         lineStyle: { color: '#9254de', type: 'dashed', width: 1.5 }
       },
       formatter: (params: any) => {
-        if (!params || !params.length) return ''
-        const first = params.find((p: any) => p.data && p.data[0] !== null && p.data[0] !== undefined)
+        const paramArr = Array.isArray(params) ? params : [params]
+        if (!paramArr || !paramArr.length) return ''
+        const first = paramArr.find((p: any) => p.data && p.data[0] !== null && p.data[0] !== undefined)
         if (!first) return ''
+        const d = first.data
 
-        const stepX = Math.round(first.data[0])
-        const origStepIdx = (first.data[4] !== undefined) ? first.data[4] : sortedStepIndices[stepX]
-        const stepInfo = trimData.steps?.[origStepIdx]
+        const stepX = Math.round(d[0])
+        const origStepIdx = isInvert ? (sortedStepIndices[stepX] ?? stepX) : stepX
+        const stepInfo = trimData.steps?.find((s: any) => s.step_index === origStepIdx) || trimData.steps?.[origStepIdx]
         const origStepName = stepInfo?.param_name ?? `Step ${origStepIdx}`
 
         let header = `<div style="font-size:13px;font-weight:bold;margin-bottom:4px;border-bottom:1px solid #f0f0f0;padding-bottom:2px">
@@ -2543,27 +3078,50 @@ function renderTrimScatter(tabId: string, tab: Tab, chart: any) {
         if (isInvert) {
           header = `<div style="font-size:13px;font-weight:bold;margin-bottom:4px;border-bottom:1px solid #f0f0f0;padding-bottom:2px">
             原始 Step ${origStepIdx} <span style="font-size:11px;color:#1890ff">(${origStepName})</span>
-            <div style="font-size:11px;color:#888;font-weight:normal">从小到大排列序号: ${stepX}</div>
+            <div style="font-size:11px;color:#888;font-weight:normal">从小到大排序序号: ${stepX}</div>
           </div>`
         }
 
         // Step Mean summary
-        const stepAllMean = getTrimStepAllMean(tab, stepInfo)
-        let content = `<div style="margin-bottom:4px"><b>ALL Mean:</b> <span style="color:#722ed1;font-weight:bold">${stepAllMean != null ? stepAllMean.toFixed(4) : '-'}</span> ${trimData.unit || ''}</div>`
+        let content = ''
+        if (isActualMode) {
+          const stepAllMean = getTrimStepAllMeanDisplay(tab, stepInfo)
+          const stepPreMean = getTrimStepPreMeanDisplay(tab, stepInfo)
+          const stepPostMean = getTrimStepPostMeanDisplay(tab, stepInfo)
+          const stepQty = getTrimStepQty(tab, stepInfo)
+          content = `<div style="margin-bottom:4px">
+            <div><b>all_mean (Post-Pre):</b> <span style="color:#722ed1;font-weight:bold">${stepAllMean}</span> ${deltaUnit || ''}</div>
+            <div style="font-size:11px;color:#666;margin-top:2px">Pre_mean: <b>${stepPreMean}</b> | Post_mean: <b>${stepPostMean}</b> | Qty: <b>${stepQty}</b></div>
+          </div>`
+        } else {
+          const stepAllMean = getTrimStepAllMean(tab, stepInfo)
+          content = `<div style="margin-bottom:4px"><b>ALL Mean:</b> <span style="color:#722ed1;font-weight:bold">${stepAllMean != null ? stepAllMean.toFixed(4) : '-'}</span> ${trimData.unit || ''}</div>`
+        }
 
         // Site means for visible sites
         const siteMeansHtml = visibleSites.map(s => {
-          const sMean = getTrimStepSiteMean(tab, stepInfo, s)
           const color = siteColor(s)
-          return `<span style="margin-right:8px"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};margin-right:2px"></span>S${s}: <b>${sMean != null ? sMean.toFixed(4) : '-'}</b></span>`
+          if (isActualMode) {
+            let sVal = stepInfo?.stats_by_site?.[s]?.all_mean ?? (
+              stepInfo?.stats_by_site?.[s]?.post_mean != null && stepInfo?.stats_by_site?.[s]?.pre_mean != null
+                ? stepInfo.stats_by_site[s].post_mean - stepInfo.stats_by_site[s].pre_mean
+                : null
+            )
+            if (stepInfo?.step_index === 0) sVal = 0
+            const sDisp = sVal != null ? (sVal * factor).toFixed(4) : '-'
+            return `<span style="margin-right:8px"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};margin-right:2px"></span>S${s}: <b>${sDisp}</b></span>`
+          } else {
+            const sMean = getTrimStepSiteMean(tab, stepInfo, s)
+            return `<span style="margin-right:8px"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};margin-right:2px"></span>S${s}: <b>${sMean != null ? sMean.toFixed(4) : '-'}</b></span>`
+          }
         }).join('')
 
         content += `<div style="font-size:11px;color:#555;margin-bottom:4px">${siteMeansHtml}</div>`
 
         // If Invert trend line value
         if (isInvert && allFitPoints.length >= 2) {
-          const fitted = a * stepX + b
-          content += `<div style="font-size:11px;color:#ff4d4f;margin-top:2px;border-top:1px dashed #ffd666;padding-top:2px"><b>趋势拟合值 (y=ax+b):</b> ${fitted.toFixed(6)} ${trimData.unit || ''}</div>`
+          const fitted = fitA * stepX + fitB
+          content += `<div style="font-size:11px;color:#ff4d4f;margin-top:2px;border-top:1px dashed #ffd666;padding-top:2px"><b>趋势拟合值 (y=ax+b):</b> ${fitted.toFixed(6)} ${isActualMode ? (deltaUnit || '') : (trimData.unit || '')}</div>`
         }
 
         return header + content
@@ -2575,8 +3133,8 @@ function renderTrimScatter(tabId: string, tab: Tab, chart: any) {
       type: 'value',
       name: 'Step',
       min: 0,
-      max: maxStep,
-      interval: maxStep > 32 ? 4 : (maxStep > 16 ? 2 : 1),
+      max: lastX,
+      interval: lastX > 32 ? 4 : (lastX > 16 ? 2 : 1),
       axisTick: { show: true },
       splitLine: { show: true, lineStyle: { type: 'dashed' } },
       axisLabel: {
@@ -2593,9 +3151,10 @@ function renderTrimScatter(tabId: string, tab: Tab, chart: any) {
     },
     yAxis: {
       type: 'value',
-      name: trimData.unit || '',
-      min: parseFloat(yMin.toFixed(6)),
-      max: parseFloat(yMax.toFixed(6)),
+      scale: true,
+      name: isActualMode ? `all_mean${deltaUnit ? ` (${deltaUnit})` : ''}` : (trimData.unit || ''),
+      min: yMin !== undefined ? parseFloat(yMin.toFixed(6)) : undefined,
+      max: yMax !== undefined ? parseFloat(yMax.toFixed(6)) : undefined,
       splitLine: { lineStyle: { type: 'dashed' } }
     },
     series
@@ -2608,6 +3167,7 @@ function renderScatter(tabId: string) {
   if (!tab?.data) return
   const chart = chartInstances[`${tabId}_scatter`]
   if (!chart) return
+  chart.resize()
 
   if (tab.options?.trim_step_mode && tab.data.trim_data) {
     renderTrimScatter(tabId, tab, chart)
@@ -3056,9 +3616,14 @@ function formatDate(d: string) {
 }
 
 onMounted(async () => {
+  window.addEventListener('resize', resizeAllCharts)
   await fetchParamList()
   await fetchLotInfo()
   addTab()
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', resizeAllCharts)
 })
 </script>
 
@@ -3261,19 +3826,29 @@ onMounted(async () => {
 }
 
 .charts-area {
-  width: 840px;
+  width: 1100px;
+  max-width: 100%;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  box-sizing: border-box;
 }
 
 .vs-right-panel {
-  width: 840px;
+  width: 1100px;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   gap: 12px;
   flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.charts-area.vs-active, .vs-right-panel.vs-active {
+  width: calc(50% - 14px) !important;
+  min-width: 580px;
+  flex: 1 1 0;
 }
 
 .stats-table table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -3285,6 +3860,8 @@ onMounted(async () => {
 .stats-table th { background: #fafafa; color: #666; }
 
 .chart-container {
+  width: 100%;
+  box-sizing: border-box;
   background: #fafafa;
   border-radius: 4px;
   padding: 8px;
@@ -3557,5 +4134,32 @@ onMounted(async () => {
   font-weight: 600;
   padding: 2px 6px;
   border-radius: 4px;
+}
+
+/* Step 模式切换按钮 (实际 / 扫描) */
+.step-mode-switch {
+  display: inline-flex;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid #d9d9d9;
+}
+.step-mode-btn {
+  padding: 1px 6px;
+  font-size: 11px;
+  background: #fff;
+  border: none;
+  cursor: pointer;
+  color: #666;
+  line-height: 1.4;
+  transition: all 0.15s ease;
+}
+.step-mode-btn:hover {
+  background: #f0f5ff;
+  color: #1890ff;
+}
+.step-mode-btn.active {
+  background: #1890ff;
+  color: #fff;
+  font-weight: bold;
 }
 </style>
