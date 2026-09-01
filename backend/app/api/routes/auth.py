@@ -20,6 +20,7 @@ from app.services.email import (
     send_reset_link, store_reset_token, verify_reset_token,
     is_login_locked, record_login_fail, clear_login_fail,
 )
+from app.core.ip_utils import extract_client_ip
 from app.services.activity import record_user_activity
 from app.api.deps import get_current_user
 
@@ -32,14 +33,14 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 @router.post("/send-verify-code")
 def send_code(body: SendVerifyCodeRequest, db: Session = Depends(get_db)):
     if db.query(User).filter(User.username == body.username).first():
-        raise HTTPException(status_code=400, detail="??????")
+        raise HTTPException(status_code=400, detail="Username already exists")
     if db.query(User).filter(User.email == body.email).first():
-        raise HTTPException(status_code=400, detail="??????")
+        raise HTTPException(status_code=400, detail="Email already registered")
 
     result = send_verify_code(body.email)
     if "error" in result:
         raise HTTPException(status_code=429, detail=result["error"])
-    return {"message": "????????????"}
+    return {"message": "Verification code sent"}
 
 
 # ------------------------------------------
@@ -48,12 +49,12 @@ def send_code(body: SendVerifyCodeRequest, db: Session = Depends(get_db)):
 @router.post("/register", response_model=UserResponse)
 def register(user_in: UserCreate, db: Session = Depends(get_db)):
     if db.query(User).filter(User.username == user_in.username).first():
-        raise HTTPException(status_code=400, detail="??????")
+        raise HTTPException(status_code=400, detail="Username already exists")
     if db.query(User).filter(User.email == user_in.email).first():
-        raise HTTPException(status_code=400, detail="??????")
+        raise HTTPException(status_code=400, detail="Email already registered")
 
     if not check_verify_code(user_in.email, user_in.code):
-        raise HTTPException(status_code=400, detail="?????????")
+        raise HTTPException(status_code=400, detail="Invalid verification code")
 
     user = User(
         username=user_in.username,
@@ -77,16 +78,14 @@ def login(user_in: UserLogin, request: Request, db: Session = Depends(get_db)):
     if not user or not verify_password(user_in.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="????????????"
+            detail="Incorrect username or password"
         )
 
     if not user.is_active:
-        raise HTTPException(status_code=400, detail="?????????????")
+        raise HTTPException(status_code=400, detail="User account is deactivated")
 
-    # Extract client IP address
-    client_ip = request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP") or (request.client.host if request.client else None)
-    if client_ip and "," in client_ip:
-        client_ip = client_ip.split(",")[0].strip()
+    # Extract client IP address accurately
+    client_ip = extract_client_ip(request)
 
     # Update last login time and IP address in database
     user.last_login_at = datetime.now(timezone.utc)
@@ -114,21 +113,25 @@ def login(user_in: UserLogin, request: Request, db: Session = Depends(get_db)):
 def refresh_token(body: RefreshRequest, request: Request, db: Session = Depends(get_db)):
     user_id = verify_refresh_token(body.refresh_token)
     if not user_id:
-        raise HTTPException(status_code=401, detail="Refresh Token ????????????")
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="?????????")
+        raise HTTPException(status_code=401, detail="User account not found or inactive")
 
     # Revoke old refresh token and generate new one
     revoke_refresh_token(body.refresh_token)
     access_token  = create_access_token({"sub": str(user.id)})
     new_refresh   = create_refresh_token(user.id)
 
-    # Extract client IP address and record activity in Redis
-    client_ip = request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP") or (request.client.host if request.client else None)
-    if client_ip and "," in client_ip:
-        client_ip = client_ip.split(",")[0].strip()
+    # Extract client IP address and record activity in Redis & DB
+    client_ip = extract_client_ip(request)
+    now_utc = datetime.now(timezone.utc)
+    user.last_login_at = now_utc
+    if client_ip:
+        user.last_login_ip = client_ip
+    db.commit()
+
     record_user_activity(user.id, client_ip)
 
     return {
@@ -137,6 +140,7 @@ def refresh_token(body: RefreshRequest, request: Request, db: Session = Depends(
         "token_type":    "bearer",
         "user":          user,
     }
+
 
 
 # ------------------------------------------

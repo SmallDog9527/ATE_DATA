@@ -203,7 +203,7 @@ def list_users(
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
-    users = db.query(User).order_by(User.created_at.desc()).all()
+    users = db.query(User).order_by(User.last_login_at.desc().nullslast(), User.created_at.desc()).all()
     result = []
     for u in users:
         lot_count = db.query(Lot).filter(Lot.user_id == u.id).count()

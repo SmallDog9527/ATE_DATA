@@ -1,5 +1,10 @@
 [
   {
+    "version": "V02_20260901",
+    "content": "1. 小工具集新增「参数表生成STS8300空程序」功能：\n   - 支持上传 Excel 测试参数表（.xlsx / .xls）一键转换为完整的 8-Site AccoTEST STS8300 空测试程序工程；\n   - 自动计算并生成包含官方加盐 MD5 校验码的 .PGS 流程配置文件；\n   - 自动生成全套 C++ 测试源码及跨版本 IDE 工程文件（VS2013+ .sln / .vcxproj、VS2005 .vcproj、VC6 .dsp / .dsw）；\n   - 自动集成 8-Site PinPlanner 硬件绑定、SOT/EOT 钩子及函数耗时统计（TTR / time.csv）；\n   - 深度集成 Trim 寄存器解析引擎（treg builder），自动解析 Excel 中的 Trim_reg 工作表（支持 16 位纯名称合并、8 位范围括号、8 位独立索引等多种格式），动态生成完整的 <工程名>.treg 文件存放在工程根目录下；\n   - 支持一键下载标准 Excel 模版文件（HL9785X_102SX_B00_V01.xlsx）；\n   - 生成完成后自动打包为 Zip 压缩包并触发浏览器自动下载。\n2. 后端新增工具专用接口：\n   - `POST /api/tools/build-acco-pgm/process`：处理 Excel 转换并返回工程 Zip；\n   - `GET /api/tools/build-acco-pgm/download-template`：提供标准模版下载。\n3. 登录与客户端真实 IP 记录增强：完善多级反向代理与 CDN 环境下的 Client IP 探测与鉴权日志记录。",
+    "updated_at": "2026-09-01 17:38:00"
+  },
+  {
     "version": "V01_20260901",
     "content": "1. 新增 Trim 全量良率智能寻优与目标预测算法模块：\n   - 支持根据 Pre/Post 及 Bit 步进数据，自动拟合斜率与物理模型并计算全量良率最优步进（Global Optimal Step）；\n   - 支持输入 Target、LSL/USL、Search Range（搜索邻域半径）等条件进行多策略（Target 优先、良率优先）寻优；\n   - 自动生成仿真良率对比矩阵与失效 Die 溯源明细；\n   - 支持一键导出包含 6 个详细 Sheet（汇总、逐 Die 寻优详情、各 Step 仿真良率分布等）的专业 Trim 优化 Excel 分析报告。\n2. 前端单批次与多批次视图集成 Trim 优化面板（TrimOptimizerPanel）：\n   - 在 ParamView（单 LOT）与 MultiParamView（多 LOT）的 Trim Step 模式中全面集成统一的智能寻优面板；\n   - 支持参数联动、多 LOT 汇总计算、失效 Die 动态标红与 Excel 一键导出下载。\n3. 后端接口升级：新增 `/analysis/trim_optimization/analyze` 与 `/analysis/trim_optimization/export` 专用接口。",
     "updated_at": "2026-09-01 14:55:00"

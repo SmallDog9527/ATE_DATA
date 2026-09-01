@@ -41,7 +41,7 @@
           <span class="info-value">{{ fmtDate(authStore.user?.created_at) }}</span>
         </div>
         <div class="info-item">
-          <span class="info-label">最后登录</span>
+          <span class="info-label">最后活动</span>
           <span class="info-value">{{ fmtDate(authStore.user?.last_login_at) || '—' }}</span>
         </div>
         <div class="info-item">
@@ -845,6 +845,8 @@
           <div class="settings-card-title">
             <span class="settings-icon">👥</span>
             <span>用户管理</span>
+            <span class="badge blue" style="margin-left: 10px; font-weight: 600; font-size: 12px; padding: 3px 10px; border-radius: 12px;">注册：{{ userList.length }}</span>
+            <span class="badge green" style="margin-left: 6px; font-weight: 600; font-size: 12px; padding: 3px 10px; border-radius: 12px;">当日：{{ dailyActiveCount }}</span>
           </div>
           <div class="header-actions" @click.stop v-if="userMgmtExpanded">
             <button type="button" class="mgmt-btn mgmt-btn-primary" @click="openCreateUserModal">➕ 新增用户</button>
@@ -866,13 +868,18 @@
                 <th>状态</th>
                 <th>角色</th>
                 <th>注册时间</th>
-                <th>最后登录时间及IP</th>
+                <th @click="toggleLastActiveSort" style="cursor: pointer; user-select: none;" title="点击按最后活动时间排序">
+                  最后活动时间及IP
+                  <span style="font-size: 11px; margin-left: 4px; color: #2563eb; font-weight: bold;">
+                    {{ lastActiveSortOrder === 'desc' ? '▼' : '▲' }}
+                  </span>
+                </th>
                 <th>上传数量</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="u in userList" :key="u.id">
+              <tr v-for="u in sortedUserList" :key="u.id">
                 <td><span class="badge blue" style="font-family:monospace;">ID: {{ u.id }}</span></td>
                 <td>{{ u.username }}</td>
                 <td class="email-cell">{{ u.email }}</td>
@@ -2045,11 +2052,31 @@ interface UserItem {
   last_login_at?: string; last_login_ip?: string; storage_used_bytes?: number; lot_count: number
 }
 const userList      = ref<UserItem[]>([])
+const dailyActiveCount = ref(0)
+const lastActiveSortOrder = ref<'desc' | 'asc'>('desc')
 const adminLoading  = ref(false)
 const resetTarget   = ref<UserItem | null>(null)
 const newPwForUser  = ref('')
 const adminPwError  = ref('')
 const adminPwLoading = ref(false)
+
+const sortedUserList = computed(() => {
+  const list = [...userList.value]
+  return list.sort((a, b) => {
+    const tA = a.last_login_at ? new Date(a.last_login_at).getTime() : 0
+    const tB = b.last_login_at ? new Date(b.last_login_at).getTime() : 0
+    if (tA === tB) {
+      const cA = a.created_at ? new Date(a.created_at).getTime() : 0
+      const cB = b.created_at ? new Date(b.created_at).getTime() : 0
+      return lastActiveSortOrder.value === 'desc' ? cB - cA : cA - cB
+    }
+    return lastActiveSortOrder.value === 'desc' ? tB - tA : tA - tB
+  })
+})
+
+function toggleLastActiveSort() {
+  lastActiveSortOrder.value = lastActiveSortOrder.value === 'desc' ? 'asc' : 'desc'
+}
 
 const resetAccountForm = ref({ username: '', email: '', password: '' })
 const showCreateUserModal = ref(false)
@@ -2204,8 +2231,14 @@ async function handleImportFile(e: Event) {
 async function loadUsers() {
   adminLoading.value = true
   try {
-    const data: any = await api.get('/users')
-    userList.value = data
+    const [userData, activeData]: any = await Promise.all([
+      api.get('/users'),
+      api.get('/users/active/daily').catch(() => ({ count: 0 }))
+    ])
+    userList.value = userData || []
+    if (activeData && activeData.count !== undefined) {
+      dailyActiveCount.value = activeData.count
+    }
   } catch {} finally {
     adminLoading.value = false
   }

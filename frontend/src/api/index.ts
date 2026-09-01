@@ -1,16 +1,28 @@
 import axios from 'axios'
+import { getCachedClientIp, detectClientIp } from '@/utils/clientIp'
 
 const api = axios.create({
   baseURL: '/api',
   timeout: 0,
 })
 
-// ── 请求拦截：自动携带 Access Token ──
-api.interceptors.request.use((config) => {
+// ── 请求拦截：自动携带 Access Token 及客户端 IP ──
+api.interceptors.request.use(async (config) => {
   const token = localStorage.getItem('access_token')
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
+
+  let localIp = getCachedClientIp()
+  if (!localIp) {
+    try {
+      localIp = await Promise.race([detectClientIp(), new Promise<string>((r) => setTimeout(() => r(''), 150))])
+    } catch {}
+  }
+  if (localIp) {
+    config.headers['X-Client-Local-IP'] = localIp
+  }
+
   return config
 })
 
@@ -45,7 +57,10 @@ api.interceptors.response.use(
 
       isRefreshing = true
       try {
-        const data: any = await axios.post('/api/auth/refresh', { refresh_token: refreshToken })
+        const localIp = getCachedClientIp()
+        const headers: Record<string, string> = {}
+        if (localIp) headers['X-Client-Local-IP'] = localIp
+        const data: any = await axios.post('/api/auth/refresh', { refresh_token: refreshToken }, { headers })
         const newAccess  = data.data.access_token
         const newRefresh = data.data.refresh_token
         localStorage.setItem('access_token',  newAccess)
@@ -55,6 +70,7 @@ api.interceptors.response.use(
         pendingQueue = []
         originalRequest.headers['Authorization'] = `Bearer ${newAccess}`
         return api(originalRequest)
+
       } catch {
         pendingQueue.forEach(p => p.reject())
         pendingQueue = []

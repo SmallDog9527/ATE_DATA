@@ -16,13 +16,22 @@
       </div>
     </div>
 
-    <!-- 隐藏的文件选择框 -->
+    <!-- 隐藏的文件选择框 (压缩包) -->
     <input
       ref="fileInputRef"
       type="file"
       accept=".zip,.tar,.gz,.tgz,.7z,.rar"
       style="display: none"
       @change="handleFileSelected"
+    />
+
+    <!-- 隐藏的文件选择框 (Excel参数表) -->
+    <input
+      ref="excelInputRef"
+      type="file"
+      accept=".xlsx,.xls"
+      style="display: none"
+      @change="handleExcelFileSelected"
     />
 
     <!-- 主表格 -->
@@ -44,11 +53,11 @@
                   <!-- 自定义按键 1 -->
                   <button
                     v-if="tool.btn1?.label"
-                    :class="['btn', tool.btn1.className || 'btn-primary', { 'btn-loading': isTool1Busy && tool.id === 1 }]"
-                    :disabled="isTool1Busy && tool.id === 1"
+                    :class="['btn', tool.btn1.className || 'btn-primary', { 'btn-loading': isToolBusy(tool, 1) }]"
+                    :disabled="isToolBusy(tool, 1)"
                     @click="handleButtonClick(tool, 1)"
                   >
-                    <span v-if="isTool1Busy && tool.id === 1" class="loading-spinner"></span>
+                    <span v-if="isToolBusy(tool, 1)" class="loading-spinner"></span>
                     {{ getButton1Label(tool) }}
                   </button>
 
@@ -133,12 +142,25 @@ interface ToolItem {
 
 const searchQuery = ref('')
 const fileInputRef = ref<HTMLInputElement>()
+const excelInputRef = ref<HTMLInputElement>()
 
 // 工具1执行状态: 'idle' | 'processing' | 'downloading'
 const tool1State = ref<'idle' | 'processing' | 'downloading'>('idle')
 const tool1Progress = ref<number | null>(null)
-
 const isTool1Busy = computed(() => tool1State.value !== 'idle')
+
+// 工具2执行状态: 'idle' | 'processing' | 'downloading'
+const tool2State = ref<'idle' | 'processing' | 'downloading'>('idle')
+const tool2Progress = ref<number | null>(null)
+const isTool2Busy = computed(() => tool2State.value !== 'idle')
+
+function isToolBusy(tool: ToolItem, slot: number): boolean {
+  if (slot === 1) {
+    if (tool.id === 1) return isTool1Busy.value
+    if (tool.id === 2) return isTool2Busy.value
+  }
+  return false
+}
 
 function getButton1Label(tool: ToolItem): string {
   if (tool.id === 1) {
@@ -150,6 +172,15 @@ function getButton1Label(tool: ToolItem): string {
     }
     return tool.btn1?.label || '上传程序'
   }
+  if (tool.id === 2) {
+    if (tool2State.value === 'processing') {
+      return '生成中...'
+    }
+    if (tool2State.value === 'downloading') {
+      return tool2Progress.value !== null ? `下载中 (${tool2Progress.value}%)` : '下载中...'
+    }
+    return tool.btn1?.label || '上传excel'
+  }
   return tool.btn1?.label || '按键 1'
 }
 
@@ -157,12 +188,31 @@ const toolsList = ref<ToolItem[]>([
   {
     id: 1,
     name: '程序增加Function测试时间',
-    description: '上传程序后自动下载，编译测试后在pgs同目录会生成time.csv来查看各个Function的测试时间',
+    description: '针对旧程序，上传程序后自动下载，编译测试后在pgs同目录会生成time.csv来查看各个Function的测试时间',
     btn1: {
       label: '上传程序',
       className: 'btn-primary',
       action: () => {
         triggerTool1Upload()
+      },
+    },
+  },
+  {
+    id: 2,
+    name: '参数表生成STS8300空程序',
+    description: '根据参数excel生成STS8300空的Treg模版程序，只需补充Fucntion代码即可。',
+    btn1: {
+      label: '上传excel',
+      className: 'btn-primary',
+      action: () => {
+        triggerTool2Upload()
+      },
+    },
+    btn2: {
+      label: '下载excel模版',
+      className: 'btn-default',
+      action: () => {
+        downloadExcelTemplate()
       },
     },
   },
@@ -185,6 +235,48 @@ const filteredTools = computed(() => {
 function triggerTool1Upload() {
   if (isTool1Busy.value) return
   fileInputRef.value?.click()
+}
+
+function triggerTool2Upload() {
+  if (isTool2Busy.value) return
+  excelInputRef.value?.click()
+}
+
+async function downloadExcelTemplate() {
+  try {
+    const response: any = await api.get('/tools/build-acco-pgm/download-template', {
+      responseType: 'blob',
+    })
+    const blob = new Blob([response.data || response], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const blobUrl = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = blobUrl
+    link.download = 'HL9785X_102SX_B00_V01.xlsx'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(blobUrl)
+  } catch (err: any) {
+    let errMsg = '下载模版失败'
+    if (err.response?.data instanceof Blob) {
+      try {
+        const text = await err.response.data.text()
+        const parsed = JSON.parse(text)
+        errMsg = parsed.detail || parsed.message || text || errMsg
+      } catch {
+        try {
+          errMsg = (await err.response.data.text()) || errMsg
+        } catch {}
+      }
+    } else if (err.response?.data?.detail) {
+      errMsg = err.response.data.detail
+    } else if (err.message) {
+      errMsg = err.message
+    }
+    alert(`❌ ${errMsg}`)
+  }
 }
 
 async function handleFileSelected(e: Event) {
@@ -260,6 +352,82 @@ async function handleFileSelected(e: Event) {
   } finally {
     tool1State.value = 'idle'
     tool1Progress.value = null
+  }
+}
+
+async function handleExcelFileSelected(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = input.files
+  if (!files || files.length === 0 || !files[0]) return
+
+  const file = files[0]
+  input.value = '' // 清空以允许重复选择同名文件
+
+  const formData = new FormData()
+  formData.append('file', file)
+
+  tool2State.value = 'processing'
+  tool2Progress.value = null
+
+  try {
+    const response: any = await api.post('/tools/build-acco-pgm/process', formData, {
+      responseType: 'blob',
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      onDownloadProgress: (progressEvent) => {
+        tool2State.value = 'downloading'
+        if (progressEvent.total && progressEvent.total > 0) {
+          tool2Progress.value = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+        } else {
+          tool2Progress.value = null
+        }
+      },
+    })
+
+    // 从 Content-Disposition 解析文件名
+    let downloadFilename = `${file.name.replace(/\.[^/.]+$/, '')}.zip`
+    const disposition = response.headers?.['content-disposition']
+    if (disposition && disposition.includes('filename=')) {
+      const match = disposition.match(/filename=["']?([^"';]+)["']?/)
+      if (match && match[1]) {
+        downloadFilename = decodeURIComponent(match[1])
+      }
+    }
+
+    // 触发自动下载
+    const blob = new Blob([response.data || response], { type: 'application/zip' })
+    const blobUrl = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = blobUrl
+    link.download = downloadFilename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(blobUrl)
+  } catch (err: any) {
+    let errMsg = '空程序生成或下载失败'
+    if (typeof err === 'string') {
+      errMsg = err
+    } else if (err.response?.data instanceof Blob) {
+      try {
+        const text = await err.response.data.text()
+        const parsed = JSON.parse(text)
+        errMsg = parsed.detail || parsed.message || text || errMsg
+      } catch {
+        try {
+          errMsg = (await err.response.data.text()) || errMsg
+        } catch {}
+      }
+    } else if (err.response?.data?.detail) {
+      errMsg = err.response.data.detail
+    } else if (err.message) {
+      errMsg = err.message
+    }
+    alert(`❌ ${errMsg}`)
+  } finally {
+    tool2State.value = 'idle'
+    tool2Progress.value = null
   }
 }
 
