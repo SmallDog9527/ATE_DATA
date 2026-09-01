@@ -1,5 +1,10 @@
 [
   {
+    "version": "V01_20260901",
+    "content": "1. 新增 Trim 全量良率智能寻优与目标预测算法模块：\n   - 支持根据 Pre/Post 及 Bit 步进数据，自动拟合斜率与物理模型并计算全量良率最优步进（Global Optimal Step）；\n   - 支持输入 Target、LSL/USL、Search Range（搜索邻域半径）等条件进行多策略（Target 优先、良率优先）寻优；\n   - 自动生成仿真良率对比矩阵与失效 Die 溯源明细；\n   - 支持一键导出包含 6 个详细 Sheet（汇总、逐 Die 寻优详情、各 Step 仿真良率分布等）的专业 Trim 优化 Excel 分析报告。\n2. 前端单批次与多批次视图集成 Trim 优化面板（TrimOptimizerPanel）：\n   - 在 ParamView（单 LOT）与 MultiParamView（多 LOT）的 Trim Step 模式中全面集成统一的智能寻优面板；\n   - 支持参数联动、多 LOT 汇总计算、失效 Die 动态标红与 Excel 一键导出下载。\n3. 后端接口升级：新增 `/analysis/trim_optimization/analyze` 与 `/analysis/trim_optimization/export` 专用接口。",
+    "updated_at": "2026-09-01 14:55:00"
+  },
+  {
     "version": "V01_20260831",
     "content": "1. 修复多数据分析页面（MultiParamView）直方图显示问题：\n   - 修复数据源字段读取（兼容 counts 与 histogram.counts），消除 undefined 异常；\n   - 补全超限模式（Category 轴）与正常模式（Value 轴）双向渲染支持，全面对齐单 LOT 视图标准；\n   - 统一 LL / UL 标签显示在红色虚线正中间（position: 'middle'），移除冗余的气泡（pin）标记。\n2. 修复 Trim Step 模式切换参数时 Scatter 折线图丢失问题：\n   - 修复 ECharts 实例在 DOM 动态销毁重建时的生命周期管理，解决切换参数后实例失效导致图表空白的问题；\n   - 优化数据加载与 DOM 挂载时机，确保在 DOM 渲染后稳定重绘折线图。\n3. 后端直方图接口规范对齐：`/analysis/multi/param_hist` 接口返回值中补齐 histogram 结构对象。",
     "updated_at": "2026-08-31 11:05:00"

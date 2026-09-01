@@ -2964,6 +2964,10 @@ def get_trim_step_data(
         return {
             "base_param": base_param,
             "step_mode": "actual",
+            "pre_param_name": pre_param or pre_col,
+            "pre_bit_param_name": pre_bit_param or pre_bit_col,
+            "post_param_name": post_param or post_col,
+            "post_bit_param_name": post_bit_param or post_bit_col,
             "unit": unit,
             "step_count": len(step_indices),
             "target_param_name": target_param_name,
@@ -3534,8 +3538,14 @@ def get_multi_trim_step_data(
 
         return {
             "unit": all_unit,
+            "lower_limit": all_ll,
+            "upper_limit": all_ul,
             "target_param_name": target_param,
             "target_value": all_target,
+            "pre_param_name": pre_param,
+            "pre_bit_param_name": pre_bit_param,
+            "post_param_name": post_param,
+            "post_bit_param_name": post_bit_param,
             "lots": result_lots,
             "all_steps": all_steps,
             "all_curves": all_curves,
@@ -4834,3 +4844,91 @@ def perform_corr_processing(
     db.commit()
 
     return {"id": new_lot.id, "filename": new_lot.filename}
+
+
+class TrimOptimizationRequest(BaseModel):
+    lot_ids: List[int]
+    param_name: Optional[str] = None
+    pre_param: Optional[str] = None
+    post_param: Optional[str] = None
+    post_bit_param: Optional[str] = None
+    target_param: Optional[str] = None
+    target: Optional[float] = None
+    lsl: Optional[float] = None
+    usl: Optional[float] = None
+    trim_min: int = 0
+    trim_max: int = 31
+    search_range: int = 3
+    data_range: str = "final"
+    filter_type: str = "all"
+
+
+@router.post("/trim_optimization/analyze")
+def analyze_trim_optimization(
+    req: TrimOptimizationRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Execute Trim Optimization analysis for single lot or multi lots.
+    """
+    from app.services.trim_optimization.service import run_trim_optimization
+    res = run_trim_optimization(
+        db=db,
+        lot_ids=req.lot_ids,
+        param_name=req.param_name,
+        pre_param=req.pre_param,
+        post_param=req.post_param,
+        post_bit_param=req.post_bit_param,
+        target_param=req.target_param,
+        target=req.target,
+        lsl=req.lsl,
+        usl=req.usl,
+        trim_min=req.trim_min,
+        trim_max=req.trim_max,
+        search_range=req.search_range,
+        data_range=req.data_range,
+        filter_type=req.filter_type,
+    )
+    if res.get("status") == "error":
+        raise HTTPException(status_code=400, detail="; ".join(res.get("errors", ["Optimization failed"])))
+    return res
+
+
+@router.post("/trim_optimization/export")
+def export_trim_optimization(
+    req: TrimOptimizationRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Export 6-sheet Trim Optimization Excel report.
+    """
+    from app.services.trim_optimization.service import run_trim_optimization
+    from app.services.trim_optimization.export import export_trim_optimization_excel
+    res = run_trim_optimization(
+        db=db,
+        lot_ids=req.lot_ids,
+        param_name=req.param_name,
+        pre_param=req.pre_param,
+        post_param=req.post_param,
+        post_bit_param=req.post_bit_param,
+        target_param=req.target_param,
+        target=req.target,
+        lsl=req.lsl,
+        usl=req.usl,
+        trim_min=req.trim_min,
+        trim_max=req.trim_max,
+        search_range=req.search_range,
+        data_range=req.data_range,
+        filter_type=req.filter_type,
+    )
+    if res.get("status") == "error":
+        raise HTTPException(status_code=400, detail="; ".join(res.get("errors", ["Optimization failed"])))
+
+    excel_buf = export_trim_optimization_excel(res)
+    filename = f"Trim_Optimization_{req.param_name or 'report'}.xlsx"
+    return StreamingResponse(
+        excel_buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{quote(filename)}"'},
+    )
+

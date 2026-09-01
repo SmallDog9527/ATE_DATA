@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="param-view">
     <!-- LOT基本信息栏 -->
     <div class="lot-info-bar" v-if="lotInfo">
@@ -354,111 +354,26 @@
               >{{ legendLabel(s.site) }}</span>
             </div>
 
-            <!-- Trim 5x2 目标步进计算预测框 -->
-            <div class="trim-calc-box" v-if="currentTab?.options.trim_step_mode && currentTab?.data?.trim_data">
-              <div class="trim-calc-header">
-                <span class="trim-calc-title">Trim 步进目标校准计算 (Trim Step Predictor)</span>
-                <span class="trim-calc-target-info" v-if="currentTab.data.trim_data.target_param_name">
-                  [ 关联目标参数: {{ currentTab.data.trim_data.target_param_name }} ]
-                </span>
-              </div>
-              <table class="trim-calc-table">
-                <thead>
-                  <tr>
-                    <th>Pre 值 (输入)</th>
-                    <th>Pre_code (输入)</th>
-                    <th>Target (目标值)</th>
-                    <th>Post 值 (计算)</th>
-                    <th>Post_code (最优Step)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>
-                      <input
-                        v-model.number="trimCalc.preVal"
-                        type="number"
-                        step="any"
-                        class="trim-calc-input"
-                        placeholder="Pre数值"
-                        @input="onTrimCalcInputChange"
-                      />
-                    </td>
-                    <td>
-                      <input
-                        v-model.number="trimCalc.preCode"
-                        type="number"
-                        min="0"
-                        :max="currentTab.data.trim_data.step_count - 1"
-                        class="trim-calc-input"
-                        style="width: 80px;"
-                        @input="onTrimCalcInputChange"
-                      />
-                    </td>
-                    <td>
-                      <input
-                        v-model.number="trimCalc.targetVal"
-                        type="number"
-                        step="any"
-                        class="trim-calc-input"
-                        placeholder="Target数值"
-                        @input="onTrimCalcInputChange"
-                      />
-                    </td>
-                    <td>
-                      <span class="trim-calc-result-val">
-                        {{ trimCalcResult.postVal != null ? trimCalcResult.postVal.toFixed(4) : '-' }}
-                      </span>
-                      <span class="trim-calc-diff" v-if="trimCalcResult.diff != null">
-                        (Δ: {{ trimCalcResult.diff >= 0 ? '+' : '' }}{{ trimCalcResult.diff.toFixed(4) }})
-                      </span>
-                    </td>
-                    <td>
-                      <span class="trim-calc-result-code">
-                        {{ trimCalcResult.postCode != null ? 'Step ' + trimCalcResult.postCode : '-' }}
-                      </span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-
-              <!-- 失效 Die 明细（超出 Limit 标红） -->
-              <div
-                class="trim-fail-box"
-                v-if="currentTab.data.trim_data.fail_dies && currentTab.data.trim_data.fail_dies.length > 0"
-              >
-                <div class="trim-calc-header" style="margin-top:10px">
-                  <span class="trim-calc-title">失效 Die 明细 (超出 Limit 标红)</span>
-                  <span class="trim-calc-target-info">共 {{ currentTab.data.trim_data.fail_dies.length }} 个</span>
-                </div>
-                <div style="max-height:260px;overflow:auto">
-                  <table class="trim-calc-table">
-                    <thead>
-                      <tr>
-                        <th>编号</th>
-                        <th>pre{{ currentTab.data.unit ? ` (${currentTab.data.unit})` : '' }}</th>
-                        <th>precode</th>
-                        <th>post{{ currentTab.data.unit ? ` (${currentTab.data.unit})` : '' }}</th>
-                        <th>post_code</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="fd in currentTab.data.trim_data.fail_dies" :key="fd.die_id">
-                        <td>{{ fd.die_id }}</td>
-                        <td :style="{ color: fd.pre_fail ? 'red' : '', fontWeight: fd.pre_fail ? 'bold' : '' }">
-                          {{ fd.pre != null ? fd.pre.toFixed(4) : '-' }}
-                        </td>
-                        <td>{{ fd.pre_code ?? '-' }}</td>
-                        <td :style="{ color: fd.post_fail ? 'red' : '', fontWeight: fd.post_fail ? 'bold' : '' }">
-                          {{ fd.post != null ? fd.post.toFixed(4) : '-' }}
-                        </td>
-                        <td>{{ fd.post_code ?? '-' }}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
+            <!-- Trim 步进预测与全量良率寻优智能面板 -->
+            <TrimOptimizerPanel
+              v-if="currentTab?.options.trim_step_mode && currentTab?.data?.trim_data"
+              :lot-ids="lotId"
+              :param-name="currentTrimGroup?.post_param || currentTab.data.trim_data.post_param_name || currentTrimGroup?.pre_param || currentTab.data.trim_data.pre_param_name || currentTab.param_name"
+              :pre-param="currentTrimGroup?.pre_param || currentTab.data.trim_data.pre_param_name"
+              :post-param="currentTrimGroup?.post_param || currentTab.data.trim_data.post_param_name"
+              :post-bit-param="currentTrimGroup?.post_bit_param || currentTab.data.trim_data.post_bit_param_name"
+              :target-param="currentTrimGroup?.target_param || currentTab.data.trim_data.target_param_name"
+              :target-value="currentTab.data.trim_data.target_value ?? currentTab.data.trim_data.target_val"
+              :lower-limit="currentTab.data.trim_data.steps?.[0]?.lower_limit ?? currentTab.data.lower_limit"
+              :upper-limit="currentTab.data.trim_data.steps?.[0]?.upper_limit ?? currentTab.data.upper_limit"
+              :unit="currentTab.data.trim_data.unit ?? currentTab.data.unit"
+              :data-type="lotInfo?.data_type"
+              :data-range="currentTab.options.data_range"
+              :filter-type="currentTab.options.filter_type"
+              :steps-data="currentTab.data.trim_data.steps"
+              :fail-dies="currentTab.data.trim_data.fail_dies"
+              :step-count="currentTab.data.trim_data.step_count"
+            />
           </div>
 
           <!-- Wafer Map -->
@@ -655,6 +570,7 @@ import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
 import api from '@/api'
 import { fmtDateTz } from '@/utils/dateUtils'
+import TrimOptimizerPanel from '@/components/TrimOptimizerPanel.vue'
 
 const route = useRoute()
 const lotId = ref(Number(route.params.id))

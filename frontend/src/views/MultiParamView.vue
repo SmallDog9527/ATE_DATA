@@ -215,75 +215,23 @@
                 >{{ trimLotName(lot) }}</span>
               </div>
 
-              <!-- Trim 5x2 目标步进计算预测框 -->
-              <div class="trim-calc-box">
-                <div class="trim-calc-header">
-                  <span class="trim-calc-title">Trim 步进目标校准计算 (Trim Step Predictor)</span>
-                  <span class="trim-calc-target-info" v-if="trimTargetParamName">
-                    [ 关联目标参数: {{ trimTargetParamName }} ]
-                  </span>
-                  <span class="trim-calc-target-info" style="margin-left:8px">[ 当前: {{ activeChipLabel }} ]</span>
-                </div>
-                <table class="trim-calc-table">
-                  <thead>
-                    <tr>
-                      <th>Pre 值 (输入)</th>
-                      <th>Pre_code (输入)</th>
-                      <th>Target (目标值)</th>
-                      <th>Post 值 (计算)</th>
-                      <th>Post_code (最优Step)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td>
-                        <input
-                          v-model.number="trimCalc.preVal"
-                          type="number"
-                          step="any"
-                          class="trim-calc-input"
-                          placeholder="Pre数值"
-                          @input="onTrimCalcInputChange"
-                        />
-                      </td>
-                      <td>
-                        <input
-                          v-model.number="trimCalc.preCode"
-                          type="number"
-                          min="0"
-                          :max="Math.max(0, currentTrimSteps.length - 1)"
-                          class="trim-calc-input"
-                          style="width: 80px;"
-                          @input="onTrimCalcInputChange"
-                        />
-                      </td>
-                      <td>
-                        <input
-                          v-model.number="trimCalc.targetVal"
-                          type="number"
-                          step="any"
-                          class="trim-calc-input"
-                          placeholder="Target数值"
-                          @input="onTrimCalcInputChange"
-                        />
-                      </td>
-                      <td>
-                        <span class="trim-calc-result-val">
-                          {{ trimCalcResult.postVal != null ? trimCalcResult.postVal.toFixed(4) : '-' }}
-                        </span>
-                        <span class="trim-calc-diff" v-if="trimCalcResult.diff != null">
-                          (Δ: {{ trimCalcResult.diff >= 0 ? '+' : '' }}{{ trimCalcResult.diff.toFixed(4) }})
-                        </span>
-                      </td>
-                      <td>
-                        <span class="trim-calc-result-code">
-                          {{ trimCalcResult.postCode != null ? 'Step ' + trimCalcResult.postCode : '-' }}
-                        </span>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+              <!-- Trim 步进预测与全量良率寻优智能面板 -->
+              <TrimOptimizerPanel
+                :lot-ids="lotIdsStr"
+                :param-name="currentParamName"
+                :pre-param="currentTrimParam?.pre_param"
+                :post-param="currentTrimParam?.post_param"
+                :post-bit-param="currentTrimParam?.post_bit_param"
+                :target-param="trimTargetParamName"
+                :target-value="trimTargetValue"
+                :lower-limit="trimLowerLimit ?? currentTab?.data?.lower_limit"
+                :upper-limit="trimUpperLimit ?? currentTab?.data?.upper_limit"
+                :unit="trimUnit || currentTab?.data?.unit"
+                :data-range="draftOptions.data_range"
+                :filter-type="draftOptions.filter_type"
+                :steps-data="currentTrimSteps"
+                :step-count="currentTrimSteps.length"
+              />
             </div>
           </template>
         </div>
@@ -359,6 +307,7 @@ import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
 import api from '@/api'
+import TrimOptimizerPanel from '@/components/TrimOptimizerPanel.vue'
 
 const route = useRoute()
 const lotIdsStr = route.query.lot_ids as string
@@ -413,11 +362,14 @@ const draftOptions = ref({
 const trimMode = ref(false)
 const trimGroups = ref<any[]>([])
 const selectedTrimGroup = ref('')
+const currentTrimParam = computed(() => trimGroups.value.find((g: any) => g.base_param === selectedTrimGroup.value))
 const trimLotsData = ref<any[]>([])
 const trimLoading = ref(false)
 const trimAllSteps = ref<any[]>([])
 const trimAllCurves = ref<any[]>([])
 const trimUnit = ref('')
+const trimLowerLimit = ref<number | null>(null)
+const trimUpperLimit = ref<number | null>(null)
 const trimTargetParamName = ref('')
 const trimTargetValue = ref<number | null>(null)
 const lot_view = ref<'all_only' | 'all' | 'lot'>('all')
@@ -1184,6 +1136,8 @@ async function loadTrimData() {
     trimAllSteps.value = data.all_steps || []
     trimAllCurves.value = data.all_curves || []
     trimUnit.value = data.unit || ''
+    trimLowerLimit.value = data.lower_limit ?? null
+    trimUpperLimit.value = data.upper_limit ?? null
     trimTargetParamName.value = data.target_param_name || ''
     trimTargetValue.value = data.target_value ?? null
     trimCalc.value.targetVal = data.target_value ?? null
