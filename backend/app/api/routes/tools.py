@@ -5,8 +5,10 @@ import zipfile
 import tarfile
 import tempfile
 import subprocess
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import FileResponse, Response
+from app.api.deps import require_admin
+from app.models.user import User
 from app.tools.add_function_time import process_directory
 from app.tools.build_acco_pgm import build_program_from_excel
 
@@ -179,10 +181,54 @@ async def process_build_acco_pgm(
         raise HTTPException(status_code=500, detail=f"Failed to generate project: {str(e)}")
 
 
+@router.post("/build-acco-pgm/upload-template")
+async def upload_acco_excel_template(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_admin),
+):
+    """
+    Uploads and replaces the standard Excel template file for STS8300 program generation.
+    Requires administrator privileges.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Missing upload filename")
+
+    lower_name = file.filename.lower()
+    if not (lower_name.endswith(".xlsx") or lower_name.endswith(".xls")):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only .xlsx / .xls files are supported as template.")
+
+    template_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "tools",
+        "build_acco_pgm",
+        "templates"
+    )
+    os.makedirs(template_dir, exist_ok=True)
+
+    # Remove existing template files to ensure only the latest template is stored
+    for old_file in os.listdir(template_dir):
+        if old_file.lower().endswith((".xlsx", ".xls")):
+            try:
+                os.remove(os.path.join(template_dir, old_file))
+            except Exception:
+                pass
+
+    safe_filename = os.path.basename(file.filename)
+    target_path = os.path.join(template_dir, safe_filename)
+    with open(target_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    return {
+        "success": True,
+        "filename": safe_filename,
+        "message": "Template uploaded successfully"
+    }
+
+
 @router.get("/build-acco-pgm/download-template")
 async def download_acco_excel_template():
     """
-    Downloads the standard Excel template file (HL9785X_102SX_B00_V01.xlsx) for STS8300 program generation.
+    Downloads the standard Excel template file for STS8300 program generation.
     """
     template_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -190,20 +236,29 @@ async def download_acco_excel_template():
         "build_acco_pgm",
         "templates"
     )
-    template_file = os.path.join(template_dir, "HL9785X_102SX_B00_V01.xlsx")
+    template_file = None
+    filename = "HL9785X_102SX_B00_V01.xlsx"
 
-    # Fallback to AccoTEST system directory if not present
-    if not os.path.exists(template_file):
+    if os.path.exists(template_dir):
+        xlsx_files = [f for f in os.listdir(template_dir) if f.lower().endswith((".xlsx", ".xls"))]
+        if xlsx_files:
+            xlsx_files.sort(key=lambda f: os.path.getmtime(os.path.join(template_dir, f)), reverse=True)
+            template_file = os.path.join(template_dir, xlsx_files[0])
+            filename = xlsx_files[0]
+
+    if not template_file or not os.path.exists(template_file):
+        # Fallback to AccoTEST system directory if not present
         fallback_path = r"C:\AccoTEST\AccoTEST System\TESTFILE\build_acco_pgm\HL9785X_102SX_B00_V01.xlsx"
         if os.path.exists(fallback_path):
             template_file = fallback_path
+            filename = "HL9785X_102SX_B00_V01.xlsx"
 
-    if not os.path.exists(template_file):
-        raise HTTPException(status_code=404, detail="Template file HL9785X_102SX_B00_V01.xlsx not found")
+    if not template_file or not os.path.exists(template_file):
+        raise HTTPException(status_code=404, detail="Template file not found")
 
     return FileResponse(
         path=template_file,
-        filename="HL9785X_102SX_B00_V01.xlsx",
+        filename=filename,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
             "Access-Control-Expose-Headers": "Content-Disposition, Content-Length"

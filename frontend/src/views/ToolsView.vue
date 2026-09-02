@@ -34,6 +34,15 @@
       @change="handleExcelFileSelected"
     />
 
+    <!-- 隐藏的文件选择框 (Excel模版上传 - Admin) -->
+    <input
+      ref="templateInputRef"
+      type="file"
+      accept=".xlsx,.xls"
+      style="display: none"
+      @change="handleTemplateFileSelected"
+    />
+
     <!-- 主表格 -->
     <div class="table-scroll">
       <table class="tools-table">
@@ -73,9 +82,11 @@
                   <!-- 自定义按键 3 -->
                   <button
                     v-if="tool.btn3?.label"
-                    :class="['btn', tool.btn3.className || 'btn-default']"
+                    :class="['btn', tool.btn3.className || 'btn-default', { 'btn-loading': isToolBusy(tool, 3) }]"
+                    :disabled="isToolBusy(tool, 3)"
                     @click="handleButtonClick(tool, 3)"
                   >
+                    <span v-if="isToolBusy(tool, 3)" class="loading-spinner"></span>
                     {{ tool.btn3.label }}
                   </button>
 
@@ -123,6 +134,9 @@
 <script setup lang="ts">
 import { ref, computed, reactive } from 'vue'
 import api from '@/api'
+import { useAuthStore } from '@/stores/auth'
+
+const authStore = useAuthStore()
 
 interface ToolButton {
   label: string
@@ -143,6 +157,7 @@ interface ToolItem {
 const searchQuery = ref('')
 const fileInputRef = ref<HTMLInputElement>()
 const excelInputRef = ref<HTMLInputElement>()
+const templateInputRef = ref<HTMLInputElement>()
 
 // 工具1执行状态: 'idle' | 'processing' | 'downloading'
 const tool1State = ref<'idle' | 'processing' | 'downloading'>('idle')
@@ -154,10 +169,16 @@ const tool2State = ref<'idle' | 'processing' | 'downloading'>('idle')
 const tool2Progress = ref<number | null>(null)
 const isTool2Busy = computed(() => tool2State.value !== 'idle')
 
+// 模版上传状态
+const isTemplateUploading = ref(false)
+
 function isToolBusy(tool: ToolItem, slot: number): boolean {
   if (slot === 1) {
     if (tool.id === 1) return isTool1Busy.value
     if (tool.id === 2) return isTool2Busy.value
+  }
+  if (slot === 3 && tool.id === 2) {
+    return isTemplateUploading.value
   }
   return false
 }
@@ -184,39 +205,54 @@ function getButton1Label(tool: ToolItem): string {
   return tool.btn1?.label || '按键 1'
 }
 
-const toolsList = ref<ToolItem[]>([
-  {
-    id: 1,
-    name: '程序增加Function测试时间',
-    description: '针对旧程序，上传程序后自动下载，编译测试后在pgs同目录会生成time.csv来查看各个Function的测试时间',
-    btn1: {
-      label: '上传程序',
-      className: 'btn-primary',
-      action: () => {
-        triggerTool1Upload()
+const toolsList = computed<ToolItem[]>(() => {
+  const items: ToolItem[] = [
+    {
+      id: 1,
+      name: '程序增加Function测试时间',
+      description: '针对旧程序，上传程序后自动下载，编译测试后在pgs同目录会生成time.csv来查看各个Function的测试时间',
+      btn1: {
+        label: '上传程序',
+        className: 'btn-primary',
+        action: () => {
+          triggerTool1Upload()
+        },
       },
     },
-  },
-  {
-    id: 2,
-    name: '参数表生成STS8300空程序',
-    description: '根据参数excel生成STS8300空的Treg模版程序，只需补充Fucntion代码即可。',
-    btn1: {
-      label: '上传excel',
-      className: 'btn-primary',
-      action: () => {
-        triggerTool2Upload()
+    {
+      id: 2,
+      name: '参数表生成STS8300空程序',
+      description: '根据参数excel生成STS8300空的Treg模版程序，只需补充Fucntion代码即可。',
+      btn1: {
+        label: '上传excel',
+        className: 'btn-primary',
+        action: () => {
+          triggerTool2Upload()
+        },
+      },
+      btn2: {
+        label: '下载excel模版',
+        className: 'btn-default',
+        action: () => {
+          downloadExcelTemplate()
+        },
       },
     },
-    btn2: {
-      label: '下载excel模版',
+  ]
+
+  // Admin 模式下在下载 excel 模版右侧增加上传 excel 模版
+  if (authStore.isAdmin) {
+    items[1].btn3 = {
+      label: isTemplateUploading.value ? '上传模版中...' : '上传excel模版',
       className: 'btn-default',
       action: () => {
-        downloadExcelTemplate()
+        triggerTemplateUpload()
       },
-    },
-  },
-])
+    }
+  }
+
+  return items
+})
 
 const activeDialog = reactive({
   show: false,
@@ -242,18 +278,71 @@ function triggerTool2Upload() {
   excelInputRef.value?.click()
 }
 
+function triggerTemplateUpload() {
+  if (isTemplateUploading.value) return
+  templateInputRef.value?.click()
+}
+
+async function handleTemplateFileSelected(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = input.files
+  if (!files || files.length === 0 || !files[0]) return
+
+  const file = files[0]
+  input.value = '' // 清空以允许重复选择同名文件
+
+  const lowerName = file.name.toLowerCase()
+  if (!lowerName.endsWith('.xlsx') && !lowerName.endsWith('.xls')) {
+    alert('❌ 请选择 .xlsx 或 .xls 格式的模版文件')
+    return
+  }
+
+  const formData = new FormData()
+  formData.append('file', file)
+
+  isTemplateUploading.value = true
+  try {
+    const res: any = await api.post('/tools/build-acco-pgm/upload-template', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    })
+    alert(`✅ Excel 模版上传成功！已更新为：${file.name}`)
+  } catch (err: any) {
+    let errMsg = '上传模版失败'
+    if (err.response?.data?.detail) {
+      errMsg = err.response.data.detail
+    } else if (err.message) {
+      errMsg = err.message
+    }
+    alert(`❌ ${errMsg}`)
+  } finally {
+    isTemplateUploading.value = false
+  }
+}
+
 async function downloadExcelTemplate() {
   try {
     const response: any = await api.get('/tools/build-acco-pgm/download-template', {
       responseType: 'blob',
     })
+
+    let downloadFilename = 'HL9785X_102SX_B00_V01.xlsx'
+    const disposition = response.headers?.['content-disposition']
+    if (disposition && disposition.includes('filename=')) {
+      const match = disposition.match(/filename=["']?([^"';]+)["']?/)
+      if (match && match[1]) {
+        downloadFilename = decodeURIComponent(match[1])
+      }
+    }
+
     const blob = new Blob([response.data || response], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     })
     const blobUrl = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = blobUrl
-    link.download = 'HL9785X_102SX_B00_V01.xlsx'
+    link.download = downloadFilename
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)

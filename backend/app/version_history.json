@@ -1,8 +1,13 @@
 [
   {
+    "version": "V01_20260902",
+    "content": "1. 小工具集 Excel 模版管理增强：\n   - 新增「上传excel模版」功能（仅 Admin 管理员模式可见），支持在线上传与热更新 .xlsx 模版文件并自动覆盖生效；\n   - 优化模版下载逻辑，动态读取最新模版文件；\n2. 后端废弃脚本与环境清理：\n   - 彻底清理后端根目录下 29 个历史一次性调试与补丁临时脚本；\n   - 新建 backend/temp 专用临时脚本工作目录并配置 .gitignore 忽略；\n   - 确立全局 Agent 临时脚本存放与隔离规范。\n",
+    "updated_at": "2026-09-02 09:45:00"
+  },
+  {
     "version": "V02_20260901",
-    "content": "1. 小工具集新增「参数表生成STS8300空程序」功能：\n   - 支持上传 Excel 测试参数表（.xlsx / .xls）一键转换为完整的 8-Site AccoTEST STS8300 空测试程序工程；\n   - 自动计算并生成包含官方加盐 MD5 校验码的 .PGS 流程配置文件；\n   - 自动生成全套 C++ 测试源码及跨版本 IDE 工程文件（VS2013+ .sln / .vcxproj、VS2005 .vcproj、VC6 .dsp / .dsw）；\n   - 自动集成 8-Site PinPlanner 硬件绑定、SOT/EOT 钩子及函数耗时统计（TTR / time.csv）；\n   - 深度集成 Trim 寄存器解析引擎（treg builder），自动解析 Excel 中的 Trim_reg 工作表（支持 16 位纯名称合并、8 位范围括号、8 位独立索引等多种格式），动态生成完整的 <工程名>.treg 文件存放在工程根目录下；\n   - 支持一键下载标准 Excel 模版文件（HL9785X_102SX_B00_V01.xlsx）；\n   - 生成完成后自动打包为 Zip 压缩包并触发浏览器自动下载。\n2. 后端新增工具专用接口：\n   - `POST /api/tools/build-acco-pgm/process`：处理 Excel 转换并返回工程 Zip；\n   - `GET /api/tools/build-acco-pgm/download-template`：提供标准模版下载。\n3. 登录与客户端真实 IP 记录增强：完善多级反向代理与 CDN 环境下的 Client IP 探测与鉴权日志记录。",
-    "updated_at": "2026-09-01 17:38:00"
+    "content": "1. 小工具集新增「参数表生成STS8300空程序」功能：\n   - 支持上传 Excel 测试参数表（.xlsx / .xls）一键转换为完整的 8-Site AccoTEST STS8300 空测试程序工程；\n   - 自动计算并生成包含官方加盐 MD5 校验码的 .PGS 流程配置文件；\n   - 自动生成全套 C++ 测试源码及跨版本 IDE 工程文件（VS2013+ .sln / .vcxproj、VS2005 .vcproj、VC6 .dsp / .dsw）；\n   - 自动集成 8-Site PinPlanner 硬件绑定、SOT/EOT 钩子及函数耗时统计（TTR / time.csv）；\n   - 深度集成 Trim 寄存器解析引擎（treg builder），自动解析 Excel 中的 Trim_reg 工作表（支持 16 位纯名称合并、8 位范围括号、8 位独立索引等多种格式），动态生成完整的 <工程名>.treg 文件存放在工程根目录下；\n   - 支持一键下载标准 Excel 模版文件（HL9785X_102SX_B00_V01.xlsx）；\n   - 生成完成后自动打包为 Zip 压缩包并触发浏览器自动下载。\n",
+    "updated_at": "2026-09-01 09:44:46"
   },
   {
     "version": "V01_20260901",
