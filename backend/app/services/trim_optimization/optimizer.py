@@ -149,13 +149,14 @@ def optimize_trim(
         })
 
     # 6. Rank Candidates to Select Best Shift
-    # Valid candidates first, then Yield DESC, CPK DESC, Target Error ASC, Margin DESC, |Shift| ASC
+    # Valid candidates first, then Yield DESC, Target Error ASC (align to target),
+    # CPK DESC, Margin DESC, |Shift| ASC
     def rank_key(c: Dict[str, Any]):
         return (
             1 if c["valid"] else 0,
             c["predicted_yield"] if c["predicted_yield"] is not None else -1.0,
-            c["predicted_cpk"] if c["predicted_cpk"] is not None else -999.0,
             -c["target_error"],
+            c["predicted_cpk"] if c["predicted_cpk"] is not None else -999.0,
             c["min_margin"],
             -abs(c["shift"]),
         )
@@ -294,23 +295,32 @@ def calculate_pre_trim_windows(
 ) -> List[Dict[str, Any]]:
     """
     Calculate Original vs Optimized Pre-trim decision windows and thresholds for each Code/Step
-    using actual physical delta mapping and continuous threshold partitions.
+    using actual physical delta mapping (all_mean) and optimal target positioning.
+    Steps not present in measured codes are left blank.
     """
     windows: List[Dict[str, Any]] = []
     if target is None or abs(step_val) < 1e-12:
         return windows
 
     total_dies = len(pre_values) if (pre_values is not None and len(pre_values) > 0) else 0
-    codes = list(range(trim_min, trim_max + 1))
 
-    # Helper to get delta for a given code
+    # Determine active codes present in measured data
+    if code_deltas and len(code_deltas) > 0:
+        active_codes = sorted([int(c) for c in code_deltas.keys()])
+        min_code = min(trim_min, min(active_codes))
+        max_code = max(trim_min, max(active_codes))
+        all_codes = list(range(min_code, max_code + 1))
+    else:
+        active_codes = list(range(trim_min, trim_max + 1))
+        all_codes = active_codes
+
     def get_delta(c: int) -> float:
         if code_deltas and c in code_deltas:
             return code_deltas[c]
         return c * step_val * direction
 
-    # 1. Original (Shift = 0)
-    items_orig = [{"code": c, "nominal": target - get_delta(c)} for c in codes]
+    # 1. Original Pre Windows (Target = target) for active codes only
+    items_orig = [{"code": c, "nominal": target - get_delta(c)} for c in active_codes]
     sorted_orig = sorted(items_orig, key=lambda x: x["nominal"])
     for i in range(len(sorted_orig)):
         low = None if i == 0 else (sorted_orig[i - 1]["nominal"] + sorted_orig[i]["nominal"]) / 2.0
@@ -325,11 +335,9 @@ def calculate_pre_trim_windows(
             sorted_orig[i]["range_str"] = f"> {low:.4f}"
     map_orig = {it["code"]: it for it in sorted_orig}
 
-    # 2. Optimized (Shift = recommended_shift)
-    items_opt = []
-    for c in codes:
-        c_shifted = max(trim_min, min(trim_max, c + recommended_shift))
-        items_opt.append({"code": c, "nominal": target - get_delta(c_shifted)})
+    # 2. Optimized Pre Windows for active codes only
+    opt_target = target + (recommended_shift * step_val * direction)
+    items_opt = [{"code": c, "nominal": opt_target - get_delta(c)} for c in active_codes]
     sorted_opt = sorted(items_opt, key=lambda x: x["nominal"])
     for i in range(len(sorted_opt)):
         low = None if i == 0 else (sorted_opt[i - 1]["nominal"] + sorted_opt[i]["nominal"]) / 2.0
@@ -344,13 +352,41 @@ def calculate_pre_trim_windows(
             sorted_opt[i]["range_str"] = f"> {low:.4f}"
     map_opt = {it["code"]: it for it in sorted_opt}
 
-    # 3. Assemble full result for each code in order
-    for code in codes:
+    active_set = set(active_codes)
+    min_active = sorted_opt[0]["code"] if sorted_opt else None
+    max_active = sorted_opt[-1]["code"] if sorted_opt else None
+
+    # 3. Assemble full result for all codes from min_code to max_code in numerical order
+    for code in all_codes:
+        if code not in active_set:
+            windows.append({
+                "step": code,
+                "delta": None,
+                "delta_str": "-",
+                "orig_pre_nominal": None,
+                "orig_pre_low": None,
+                "orig_pre_high": None,
+                "orig_pre_range_str": "-",
+                "opt_pre_nominal": None,
+                "opt_pre_low": None,
+                "opt_pre_high": None,
+                "opt_pre_range_str": "-",
+                "range_width": None,
+                "range_width_str": "-",
+                "expected_post": None,
+                "die_count": 0,
+                "die_ratio": 0.0,
+                "boundary_status": "UNUSED",
+            })
+            continue
+
         o = map_orig[code]
         op = map_opt[code]
+        delta_val = get_delta(code)
 
         die_count = 0
         die_ratio = 0.0
+        expected_post_val = None
         if total_dies > 0 and pre_values is not None:
             if op["low"] is None and op["high"] is not None:
                 mask = pre_values <= op["high"]
@@ -363,17 +399,28 @@ def calculate_pre_trim_windows(
             die_count = int(np.sum(mask))
             die_ratio = float(die_count / total_dies)
 
-        if code == trim_min:
+            step_dies = pre_values[mask]
+            if len(step_dies) > 0:
+                die_pre_mean = float(np.mean(step_dies))
+                expected_post_val = round(die_pre_mean + delta_val, 6)
+            else:
+                expected_post_val = None
+
+        if code == min_active:
             boundary_status = "MIN_BOUNDARY"
-        elif code == trim_max:
+        elif code == max_active:
             boundary_status = "MAX_BOUNDARY"
         elif die_count > 0:
             boundary_status = "ACTIVE"
         else:
             boundary_status = "NORMAL"
 
+        range_width = (op["high"] - op["low"]) if (op["low"] is not None and op["high"] is not None) else None
+
         windows.append({
             "step": code,
+            "delta": round(delta_val, 6),
+            "delta_str": f"{delta_val * 1000:+.2f} mV" if abs(delta_val) < 1.0 else f"{delta_val:+.4f}",
             "orig_pre_nominal": round(o["nominal"], 6),
             "orig_pre_low": round(o["low"], 6) if o["low"] is not None else None,
             "orig_pre_high": round(o["high"], 6) if o["high"] is not None else None,
@@ -382,7 +429,9 @@ def calculate_pre_trim_windows(
             "opt_pre_low": round(op["low"], 6) if op["low"] is not None else None,
             "opt_pre_high": round(op["high"], 6) if op["high"] is not None else None,
             "opt_pre_range_str": op["range_str"],
-            "expected_post": round(target, 6),
+            "range_width": round(range_width, 6) if range_width is not None else None,
+            "range_width_str": f"{range_width * 1000:.1f} mV" if range_width is not None else "-",
+            "expected_post": expected_post_val,
             "die_count": die_count,
             "die_ratio": round(die_ratio, 4),
             "boundary_status": boundary_status,

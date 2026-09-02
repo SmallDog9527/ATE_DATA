@@ -1136,8 +1136,11 @@ async function loadTrimData() {
     trimAllSteps.value = data.all_steps || []
     trimAllCurves.value = data.all_curves || []
     trimUnit.value = data.unit || ''
-    trimLowerLimit.value = data.lower_limit ?? null
-    trimUpperLimit.value = data.upper_limit ?? null
+    // Shift Optimizer 的 LSL/USL 必须用 Post (Trim 后) 参数的 Spec，而非 Pre 参数 (范围过宽会失真)
+    const postName = g.post_param
+    const postItem = postName ? paramList.value.find((p: any) => p.item_name === postName) : null
+    trimLowerLimit.value = (postItem?.lower_limit ?? data.lower_limit) ?? null
+    trimUpperLimit.value = (postItem?.upper_limit ?? data.upper_limit) ?? null
     trimTargetParamName.value = data.target_param_name || ''
     trimTargetValue.value = data.target_value ?? null
     trimCalc.value.targetVal = data.target_value ?? null

@@ -288,21 +288,23 @@
               📐 推荐 Step 优化后 Pre 值判定区间与阈值表 (Optimized Pre-Trim Windows Table)
               <span class="step-count-badge">{{ optResult.pre_trim_windows.length }} Steps</span>
             </div>
-            <button class="btn-copy-code" @click="copyLookupArray">
-              📋 复制 ATE 阈值数组 (C++)
+            <button class="btn-download-table" @click="downloadPreWindowsCsv" title="一键下载判定区间表格 CSV 文件">
+              📥 下载表格
             </button>
           </div>
           <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
             <table class="candidate-table pre-window-table">
               <thead>
                 <tr>
-                  <th>Trim Step / Code</th>
-                  <th>原始 Pre 中心值</th>
-                  <th>原始 Pre 判定区间</th>
-                  <th style="background:#f9f0ff;color:#722ed1">优化后 Pre 中心值</th>
-                  <th style="background:#f9f0ff;color:#722ed1">优化后 Pre 判定区间 (推荐)</th>
-                  <th>预期 Post 输出</th>
-                  <th>实测覆盖 Die 颗数</th>
+                  <th>Step</th>
+                  <th style="background:#f9f0ff;color:#722ed1">实测 Δ</th>
+                  <th>原Pre中心</th>
+                  <th>原Pre区间</th>
+                  <th style="background:#f9f0ff;color:#722ed1">优化Pre中心</th>
+                  <th style="background:#f9f0ff;color:#722ed1">优化Pre区间</th>
+                  <th>区间宽度</th>
+                  <th>预期Post</th>
+                  <th>实测覆盖Die数</th>
                   <th>覆盖占比 (%)</th>
                   <th>边界状态</th>
                 </tr>
@@ -314,10 +316,12 @@
                   :class="{ 'row-active-code': w.die_count > 0, 'row-boundary-code': w.boundary_status === 'MIN_BOUNDARY' || w.boundary_status === 'MAX_BOUNDARY' }"
                 >
                   <td style="font-weight:700">Step {{ w.step }}</td>
+                  <td style="font-weight:600;color:#722ed1">{{ w.delta_str || (w.delta != null ? `${(w.delta * 1000).toFixed(2)} mV` : '-') }}</td>
                   <td>{{ w.orig_pre_nominal != null ? w.orig_pre_nominal.toFixed(4) : '-' }}</td>
                   <td style="color:#666">{{ w.orig_pre_range_str }}</td>
                   <td style="font-weight:700;color:#722ed1">{{ w.opt_pre_nominal != null ? w.opt_pre_nominal.toFixed(4) : '-' }}</td>
                   <td style="font-weight:700;color:#1890ff;background:#f0f5ff">{{ w.opt_pre_range_str }}</td>
+                  <td style="color:#666;font-weight:600">{{ w.range_width_str || (w.range_width != null ? `${(w.range_width * 1000).toFixed(1)} mV` : '-') }}</td>
                   <td><b>{{ w.expected_post != null ? w.expected_post.toFixed(4) : '-' }}</b></td>
                   <td :style="{ fontWeight: w.die_count > 0 ? '700' : 'normal', color: w.die_count > 0 ? '#389e0d' : '#999' }">
                     {{ w.die_count }}
@@ -569,47 +573,100 @@ async function runOptimization() {
   }
 }
 
-function copyLookupArray() {
+function downloadPreWindowsCsv() {
   const windows = optResult.value?.pre_trim_windows
   if (!windows || !windows.length) return
 
-  const lines: string[] = []
-  lines.push('// ========================================================')
-  lines.push(`// ATE Trim Pre-Voltage Decision Table (Optimized Shift: ${optResult.value.recommended_shift >= 0 ? '+' : ''}${optResult.value.recommended_shift})`)
-  lines.push(`// Target: ${optTarget.value} | LSL: ${optLsl.value} | USL: ${optUsl.value}`)
-  lines.push('// ========================================================')
-  lines.push('struct TrimStepThreshold {')
-  lines.push('    int step;')
-  lines.push('    double pre_nominal;')
-  lines.push('    double pre_low;')
-  lines.push('    double pre_high;')
-  lines.push('};')
-  lines.push('')
-  lines.push('const TrimStepThreshold TRIM_TABLE[] = {')
-  windows.forEach((w: any) => {
-    const lowStr = w.opt_pre_low != null ? w.opt_pre_low.toFixed(6) : '-1e9'
-    const highStr = w.opt_pre_high != null ? w.opt_pre_high.toFixed(6) : '1e9'
-    const nomStr = w.opt_pre_nominal != null ? w.opt_pre_nominal.toFixed(6) : '0.0'
-    lines.push(`    { ${w.step}, ${nomStr}, ${lowStr}, ${highStr} }, // Step ${w.step}: ${w.opt_pre_range_str}`)
-  })
-  lines.push('};')
-  lines.push('')
-  lines.push('// Selection helper')
-  lines.push('int select_trim_step(double v_pre) {')
-  lines.push('    for (int i = 0; i < sizeof(TRIM_TABLE)/sizeof(TRIM_TABLE[0]); i++) {')
-  lines.push('        if (v_pre > TRIM_TABLE[i].pre_low && v_pre <= TRIM_TABLE[i].pre_high) {')
-  lines.push('            return TRIM_TABLE[i].step;')
-  lines.push('        }')
-  lines.push('    }')
-  lines.push('    return TRIM_TABLE[0].step;')
-  lines.push('}')
+  const row1 = [
+    'Trim Step / Code',
+    '实测 Δ (all_mean)',
+    '原始 Pre 中心值',
+    '原始 Pre 判定区间',
+    '',
+    '优化后 Pre 中心值',
+    '优化后 Pre 判定区间 (推荐)',
+    '',
+    '区间宽度',
+    '预期 Post 输出',
+    '实测覆盖 Die 颗数',
+    '覆盖占比 (%)',
+    '边界状态'
+  ]
 
-  const codeText = lines.join('\n')
-  navigator.clipboard.writeText(codeText).then(() => {
-    alert('已成功复制 ATE C++ 阈值判定数组与查找函数到剪贴板！')
-  }).catch(() => {
-    alert('复制失败，请手动选择复制')
+  const row2 = [
+    '',
+    '',
+    '',
+    'Low (L)',
+    'High (H)',
+    '',
+    'Low (L)',
+    'High (H)',
+    '',
+    '',
+    '',
+    '',
+    ''
+  ]
+
+  const lines: string[] = [
+    '\uFEFF' + row1.map(c => `"${c}"`).join(','),
+    row2.map(c => `"${c}"`).join(',')
+  ]
+
+  windows.forEach((w: any) => {
+    if (w.delta == null) {
+      const row = [
+        `"Step ${w.step}"`,
+        '-',
+        '-',
+        '-',
+        '-',
+        '-',
+        '-',
+        '-',
+        '-',
+        '-',
+        '-',
+        '-',
+        '-'
+      ]
+      lines.push(row.join(','))
+      return
+    }
+
+    const origLowStr = w.orig_pre_low != null ? w.orig_pre_low.toFixed(4) : ''
+    const origHighStr = w.orig_pre_high != null ? w.orig_pre_high.toFixed(4) : ''
+    const optLowStr = w.opt_pre_low != null ? w.opt_pre_low.toFixed(4) : ''
+    const optHighStr = w.opt_pre_high != null ? w.opt_pre_high.toFixed(4) : ''
+
+    const row = [
+      `"Step ${w.step}"`,
+      `"${w.delta_str || (w.delta != null ? `${(w.delta * 1000).toFixed(2)} mV` : '-')}"`,
+      w.orig_pre_nominal != null ? w.orig_pre_nominal.toFixed(4) : '-',
+      origLowStr ? `"${origLowStr}"` : '""',
+      origHighStr ? `"${origHighStr}"` : '""',
+      w.opt_pre_nominal != null ? w.opt_pre_nominal.toFixed(4) : '-',
+      optLowStr ? `"${optLowStr}"` : '""',
+      optHighStr ? `"${optHighStr}"` : '""',
+      `"${w.range_width_str || (w.range_width != null ? `${(w.range_width * 1000).toFixed(1)} mV` : '-')}"`,
+      w.expected_post != null ? w.expected_post.toFixed(4) : '-',
+      w.die_count ?? 0,
+      `"${((w.die_ratio || 0) * 100).toFixed(1)}%"`,
+      `"${w.die_count > 0 ? `命中 (${w.die_count})` : (w.boundary_status === 'MIN_BOUNDARY' ? 'Min 边界' : (w.boundary_status === 'MAX_BOUNDARY' ? 'Max 边界' : '未命中'))}"`
+    ]
+    lines.push(row.join(','))
   })
+
+  const csvBlob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+  const url = window.URL.createObjectURL(csvBlob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `Pre_Trim_Windows_${props.paramName || 'report'}.csv`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  window.URL.revokeObjectURL(url)
 }
 
 async function exportExcel() {
@@ -1249,6 +1306,11 @@ function drawWaferMaps() {
   margin-left: 6px;
   font-weight: normal;
 }
+.btn-group-right {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
 .btn-copy-code {
   padding: 3px 10px;
   font-size: 12px;
@@ -1263,6 +1325,31 @@ function drawWaferMaps() {
 .btn-copy-code:hover {
   background: #722ed1;
   color: #fff;
+}
+.btn-copy-code.btn-outline {
+  border-color: #d9d9d9;
+  color: #555;
+}
+.btn-copy-code.btn-outline:hover {
+  background: #f5f5f5;
+  color: #333;
+  border-color: #bfbfbf;
+}
+.btn-download-table {
+  padding: 3px 10px;
+  font-size: 12px;
+  background: #f6ffed;
+  border: 1px solid #b7eb8f;
+  color: #389e0d;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+.btn-download-table:hover {
+  background: #52c41a;
+  color: #fff;
+  border-color: #52c41a;
 }
 
 .pre-window-table th {

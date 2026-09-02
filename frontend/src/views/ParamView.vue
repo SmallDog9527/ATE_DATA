@@ -364,8 +364,8 @@
               :post-bit-param="currentTrimGroup?.post_bit_param || currentTab.data.trim_data.post_bit_param_name"
               :target-param="currentTrimGroup?.target_param || currentTab.data.trim_data.target_param_name"
               :target-value="currentTab.data.trim_data.target_value ?? currentTab.data.trim_data.target_val"
-              :lower-limit="currentTab.data.trim_data.steps?.[0]?.lower_limit ?? currentTab.data.lower_limit"
-              :upper-limit="currentTab.data.trim_data.steps?.[0]?.upper_limit ?? currentTab.data.upper_limit"
+              :lower-limit="postTrimLimits.ll ?? currentTab.data.trim_data.steps?.[0]?.lower_limit ?? currentTab.data.lower_limit"
+              :upper-limit="postTrimLimits.ul ?? currentTab.data.trim_data.steps?.[0]?.upper_limit ?? currentTab.data.upper_limit"
               :unit="currentTab.data.trim_data.unit ?? currentTab.data.unit"
               :data-type="lotInfo?.data_type"
               :data-range="currentTab.options.data_range"
@@ -787,6 +787,18 @@ const currentTrimGroup = computed<TrimGroup | null>(() => {
   ) || null
 })
 
+// Post (Trim 后) 参数的 Spec Limits —— Shift Optimizer 的 LSL/USL 必须用 Post 参数的判定区间，
+// 而不能用 Pre 参数的 (Pre 的 spec 是 Trim 前的原始范围，宽得多，会导致 CPK/Yield 失真)
+const postTrimLimits = computed<{ ll: number | null; ul: number | null }>(() => {
+  const postName = currentTrimGroup.value?.post_param || currentTab.value?.data?.trim_data?.post_param_name
+  if (!postName) return { ll: null, ul: null }
+  const it = paramList.value.find((p: any) => p.item_name === postName)
+  return {
+    ll: it?.lower_limit ?? null,
+    ul: it?.upper_limit ?? null,
+  }
+})
+
 // Available site chips helper for both normal and Trim Step modes
 function availableSiteChips(tab: Tab | null | undefined) {
   if (!tab?.data) return []
@@ -1122,7 +1134,7 @@ async function toggleTrimStepMode() {
   
   if (willBeTrim) {
     currentTab.value.options.show_histogram = false
-    currentTab.value.options.site_view = 'all'
+    currentTab.value.options.site_view = 'all_only'
     currentTab.value.options.active_sites = []
     const curName = currentParamName.value
     let group = trimGroupList.value.find(g => g.base_param === curName || g.pre_param === curName || (g.scan_steps && g.scan_steps.some(s => s.item_name === curName)))

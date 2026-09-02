@@ -159,36 +159,86 @@ def export_trim_optimization_excel(result_data: Dict[str, Any]) -> io.BytesIO:
     pre_windows = result_data.get("pre_trim_windows", [])
     if pre_windows:
         ws_pw = wb.create_sheet(title="Pre_Trim_Windows")
-        pw_headers = [
+        pw_headers_row1 = [
             "Trim Step / Code",
+            "Measured Delta (all_mean)",
             "Original Pre Nominal",
             "Original Pre Range",
+            "",
             "Optimized Pre Nominal",
             "Optimized Pre Range",
+            "",
+            "Range Width",
             "Expected Post",
             "Die Count",
             "Die Ratio (%)",
             "Boundary Status",
         ]
-        ws_pw.append(pw_headers)
-        for col_idx in range(1, len(pw_headers) + 1):
-            cell = ws_pw.cell(row=1, column=col_idx)
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.alignment = align_center
+        pw_headers_row2 = [
+            "",
+            "",
+            "",
+            "Low (L)",
+            "High (H)",
+            "",
+            "Low (L)",
+            "High (H)",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ]
+        ws_pw.append(pw_headers_row1)
+        ws_pw.append(pw_headers_row2)
+
+        ws_pw.merge_cells("D1:E1")
+        ws_pw.merge_cells("G1:H1")
+
+        for r_idx in [1, 2]:
+            for col_idx in range(1, len(pw_headers_row1) + 1):
+                cell = ws_pw.cell(row=r_idx, column=col_idx)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = align_center
 
         for w in pre_windows:
-            ws_pw.append([
-                w.get("step", 0),
-                w.get("orig_pre_nominal", "-"),
-                w.get("orig_pre_range_str", "-"),
-                w.get("opt_pre_nominal", "-"),
-                w.get("opt_pre_range_str", "-"),
-                w.get("expected_post", "-"),
-                w.get("die_count", 0),
-                f"{w.get('die_ratio', 0) * 100:.2f}%",
-                w.get("boundary_status", "-"),
-            ])
+            if w.get("delta") is None:
+                ws_pw.append([
+                    f"Step {w.get('step', 0)}",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                ])
+            else:
+                orig_low = w.get("orig_pre_low")
+                orig_high = w.get("orig_pre_high")
+                opt_low = w.get("opt_pre_low")
+                opt_high = w.get("opt_pre_high")
+                ws_pw.append([
+                    f"Step {w.get('step', 0)}",
+                    w.get("delta_str", "-"),
+                    w.get("orig_pre_nominal", "-"),
+                    orig_low if orig_low is not None else "-",
+                    orig_high if orig_high is not None else "-",
+                    w.get("opt_pre_nominal", "-"),
+                    opt_low if opt_low is not None else "-",
+                    opt_high if opt_high is not None else "-",
+                    w.get("range_width_str", "-"),
+                    w.get("expected_post", "-"),
+                    w.get("die_count", 0),
+                    f"{w.get('die_ratio', 0) * 100:.2f}%",
+                    w.get("boundary_status", "-"),
+                ])
 
     # Auto-adjust column widths
     for sheet in wb.worksheets:

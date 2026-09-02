@@ -50,8 +50,23 @@ def run_trim_optimization(
         try:
             avail_cols = list(pd.read_parquet(first_parquet, engine="pyarrow").columns)
             base_prefix = param_name or ""
-            # If post_param or pre_param are not provided, or meas_col not in columns, try prefix/suffix matching
-            if (not post_param and not pre_param) or (meas_col and meas_col not in avail_cols):
+            if "." in base_prefix:
+                base_prefix = base_prefix.split(".", 1)[-1]
+            if "_" in base_prefix and base_prefix.split("_", 1)[0].isdigit():
+                base_prefix = base_prefix.split("_", 1)[-1]
+
+            # Strip number prefixes from params if needed
+            if pre_param and pre_param not in avail_cols and "." in pre_param:
+                pre_param = pre_param.split(".", 1)[-1]
+            if post_param and post_param not in avail_cols and "." in post_param:
+                post_param = post_param.split(".", 1)[-1]
+            if post_bit_param and post_bit_param not in avail_cols and "." in post_bit_param:
+                post_bit_param = post_bit_param.split(".", 1)[-1]
+            if target_param and target_param not in avail_cols and "." in target_param:
+                target_param = target_param.split(".", 1)[-1]
+
+            # If post_param or pre_param are not provided, or param_name not in columns, try prefix/suffix matching
+            if (not post_param and not pre_param) or (param_name and param_name not in avail_cols):
                 matching_cols = [c for c in avail_cols if base_prefix.lower() in c.lower() or (len(base_prefix) >= 3 and c.lower().startswith(base_prefix.lower()[:4]))]
                 if not pre_param:
                     pre_cand = next((c for c in matching_cols if c.lower().endswith(('_pre', 'pre', '_pre1')) and 'bit' not in c.lower() and 'code' not in c.lower()), None)
@@ -74,6 +89,14 @@ def run_trim_optimization(
 
     # Resolve target column and primary measurement column
     meas_col = post_param or pre_param or param_name
+    if meas_col and "." in meas_col and first_parquet:
+        try:
+            avail_cols = list(pd.read_parquet(first_parquet, engine="pyarrow").columns)
+            if meas_col not in avail_cols and meas_col.split(".", 1)[-1] in avail_cols:
+                meas_col = meas_col.split(".", 1)[-1]
+        except Exception:
+            pass
+
     if not meas_col:
         return {"status": "error", "errors": ["No valid measurement parameter specified."]}
 
