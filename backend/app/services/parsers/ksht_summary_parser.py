@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from app.models.lot import Lot, DataSource, ProcessStatus
 from app.models.bin_summary import BinSummary
+from app.services.parsers.identity import normalize_lot_id, normalize_wafer_id
 
 def parse_ksht_date(val):
     if not val:
@@ -85,11 +86,21 @@ def parse_and_save_ksht_summary(filepath: str, db: Session, user_id: int = None,
                 continue
             
             wafer_key_str = str(wafer_key).strip()
+            
+            # Extract and normalize lot_id and wafer_id
             m = re.match(r"^([^-]+)-(\d+)", wafer_key_str)
-            if not m:
+            if m:
+                raw_lot = m.group(1).strip()
+                raw_wafer = m.group(2).strip()
+            else:
+                raw_lot = ""
+                raw_wafer = wafer_key_str
+                
+            lot_id = normalize_lot_id(raw_lot) or raw_lot
+            wafer_id = normalize_wafer_id(raw_wafer) or (raw_wafer.zfill(2) if raw_wafer.isdigit() else raw_wafer)
+            
+            if not lot_id or not wafer_id:
                 continue
-            lot_id = m.group(1).strip()
-            wafer_id = str(int(m.group(2).strip()))
             
             mp_tester = sh_sum.cell(r, c_tester + 1).value if c_tester >= 0 else None
             probecard = sh_sum.cell(r, c_probercard + 1).value if c_probercard >= 0 else None
@@ -185,24 +196,35 @@ def parse_and_save_ksht_summary(filepath: str, db: Session, user_id: int = None,
                 
             wafer_key_str = str(wafer_key).strip()
             
-            # Read lot_id and wafer_id
-            if c_lot >= 0:
-                lot_val = sh_sum.cell(r, c_lot + 1).value
-                if not lot_val or str(lot_val).strip().lower() in ("total", "average", "percentage"):
-                    continue
-                lot_id = str(lot_val).strip()
-                suffix = wafer_key_str.replace(lot_id, "").strip("-_Ff")
-                if suffix.isdigit():
-                    wafer_id = str(int(suffix))
-                else:
-                    wafer_id = suffix
-            else:
-                m = re.match(r"^([^-]+)-(\d+)", wafer_key_str)
-                if not m:
-                    continue
-                lot_id = m.group(1).strip()
-                wafer_id = str(int(m.group(2).strip()))
+            # Read and normalize lot_id and wafer_id
+            raw_lot = str(sh_sum.cell(r, c_lot + 1).value).strip() if c_lot >= 0 and sh_sum.cell(r, c_lot + 1).value else ""
+            if raw_lot.lower() in ("total", "average", "percentage"):
+                continue
                 
+            lot_id = normalize_lot_id(raw_lot) if raw_lot else None
+            wafer_id = normalize_wafer_id(wafer_key_str)
+            
+            if not lot_id and "-" in wafer_key_str:
+                lot_id = normalize_lot_id(wafer_key_str.split("-")[0].strip())
+            if not lot_id and raw_lot:
+                lot_id = raw_lot
+                
+            if not wafer_id:
+                if raw_lot and raw_lot in wafer_key_str:
+                    suffix = wafer_key_str.replace(raw_lot, "").strip("-_Ff")
+                    if suffix.isdigit():
+                        wafer_id = str(int(suffix)).zfill(2)
+                    else:
+                        wafer_id = suffix
+                elif "-" in wafer_key_str:
+                    m = re.match(r"^([^-]+)-(\d+)", wafer_key_str)
+                    if m:
+                        wafer_id = m.group(2).strip().zfill(2)
+                    else:
+                        wafer_id = wafer_key_str.split("-")[-1].strip()
+                else:
+                    wafer_id = wafer_key_str.zfill(2) if wafer_key_str.isdigit() else wafer_key_str
+                    
             if not lot_id or not wafer_id:
                 continue
                 

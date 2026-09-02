@@ -1,9 +1,11 @@
 import os
+import re
 import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import Session
 from app.models.lot import Lot, DataSource, ProcessStatus
 from app.models.bin_summary import BinSummary
+from app.services.parsers.identity import normalize_lot_id, normalize_wafer_id
 
 def parse_xls_date(date_str: str) -> datetime:
     """
@@ -51,12 +53,22 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
             val = df0.iloc[r, c]
             if pd.notna(val):
                 val_str = str(val).strip().lower()
-                if val_str == "device name":
-                    if c + 1 < df0.shape[1]:
-                        device_name = str(df0.iloc[r, c + 1]).strip()
-                elif val_str == "test date":
-                    if c + 1 < df0.shape[1]:
-                        global_test_date = parse_xls_date(df0.iloc[r, c + 1])
+                if "device name" in val_str or val_str == "device":
+                    for next_c in range(c + 1, df0.shape[1]):
+                        c_val = df0.iloc[r, next_c]
+                        if pd.notna(c_val):
+                            c_str = str(c_val).strip()
+                            if c_str and c_str.lower() not in ('nan', 'none', ''):
+                                device_name = c_str
+                                break
+                elif "test date" in val_str:
+                    for next_c in range(c + 1, df0.shape[1]):
+                        c_val = df0.iloc[r, next_c]
+                        if pd.notna(c_val):
+                            c_str = str(c_val).strip()
+                            if c_str and c_str.lower() not in ('nan', 'none', ''):
+                                global_test_date = parse_xls_date(c_str)
+                                break
                         
     # Find the header row (starting with LotID-waferID)
     header_row_idx = None
@@ -86,8 +98,11 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
             continue
             
         parts = wafer_key.split('-')
-        lot_id = parts[0].strip()
-        wafer_id = parts[1].strip()
+        raw_lot = parts[0].strip()
+        raw_wafer = parts[1].strip()
+        
+        lot_id = normalize_lot_id(raw_lot) or raw_lot
+        wafer_id = normalize_wafer_id(raw_wafer) or raw_wafer
         
         # Read parameters from current row in df0
         yield_rate = None
@@ -118,50 +133,76 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
                 mp_tester = str(val).strip() if val else None
             elif col_name == "test program":
                 program = str(val).strip() if val else None
-            elif col_name.startswith('c') and col_name[1:].isdigit():
-                c_num = int(col_name[1:])
-                if 1 <= c_num <= 130:
-                    sbin_counts[c_num] = int(val) if val is not None else 0
+            elif col_name.startswith("sbin") or col_name.startswith("bin") or col_name.startswith("s-bin"):
+                try:
+                    num_str = ''.join([ch for ch in col_name if ch.isdigit()])
+                    if num_str:
+                        bin_no = int(num_str)
+                        if 1 <= bin_no <= 130:
+                            sbin_counts[bin_no] = int(val) if val is not None else 0
+                except ValueError:
+                    pass
                     
-        # Read details from individual wafer sheet
-        total_tested = None
-        test_finish_time = None
+        # Now read details from the per-wafer sheet named after raw_wafer or wafer_key
+        target_sheet = None
+        for sname in xl.sheet_names:
+            if sname in (raw_wafer, wafer_id, wafer_key):
+                target_sheet = sname
+                break
+                
         test_start_time = None
+        test_finish_time = None
+        total_tested = None
         pass_count = None
         
-        if wafer_key in xl.sheet_names:
-            df_wafer = xl.parse(wafer_key, header=None)
-            for wr in range(df_wafer.shape[0]):
-                for wc in range(df_wafer.shape[1]):
-                    wval = df_wafer.iloc[wr, wc]
-                    if pd.notna(wval):
-                        wval_str = str(wval).strip().lower()
-                        if wval_str == "total tested":
-                            if wc + 1 < df_wafer.shape[1]:
-                                raw_tot = df_wafer.iloc[wr, wc + 1]
-                                try:
-                                    total_tested = int(float(str(raw_tot).strip()))
-                                except ValueError:
-                                    pass
-                        elif wval_str == "test finish time":
-                            if wc + 1 < df_wafer.shape[1]:
-                                raw_time = df_wafer.iloc[wr, wc + 1]
-                                test_finish_time = parse_xls_date(raw_time)
-                        elif wval_str == "test start time":
-                            if wc + 1 < df_wafer.shape[1]:
-                                raw_start = df_wafer.iloc[wr, wc + 1]
-                                test_start_time = parse_xls_date(raw_start)
-                        elif wval_str == "pass":
-                            if wc + 1 < df_wafer.shape[1]:
-                                raw_pass = df_wafer.iloc[wr, wc + 1]
-                                try:
-                                    pass_count = int(float(str(raw_pass).strip()))
-                                except ValueError:
-                                    pass
-                                    
-        # Default pass calculation: bin1 + bin2
+        if target_sheet:
+            df_w = xl.parse(target_sheet, header=None)
+            
+            # Map key-values in first few rows
+            for wr in range(min(15, df_w.shape[0])):
+                for wc in range(df_w.shape[1] - 1):
+                    k_val = df_w.iloc[wr, wc]
+                    if pd.notna(k_val):
+                        k_str = str(k_val).strip().lower()
+                        v_val = df_w.iloc[wr, wc + 1]
+                        
+                        if "start time" in k_str:
+                            test_start_time = parse_xls_date(v_val)
+                        elif "finish time" in k_str or "end time" in k_str:
+                            test_finish_time = parse_xls_date(v_val)
+                        elif k_str in ("total tested", "total dice", "gross dice"):
+                            try:
+                                total_tested = int(v_val)
+                            except (ValueError, TypeError):
+                                pass
+                        elif k_str in ("pass dice", "pass count"):
+                            try:
+                                pass_count = int(v_val)
+                            except (ValueError, TypeError):
+                                pass
+                                
+            # If sbin_counts empty, parse sbin from df_w
+            if not sbin_counts:
+                # Look for SBIN rows
+                for wr in range(df_w.shape[0]):
+                    k_val = df_w.iloc[wr, 0]
+                    if pd.notna(k_val):
+                        k_str = str(k_val).strip().lower()
+                        if k_str.startswith("sbin") or k_str.startswith("bin"):
+                            try:
+                                num_str = ''.join([ch for ch in k_str if ch.isdigit()])
+                                if num_str:
+                                    bin_no = int(num_str)
+                                    if 1 <= bin_no <= 130:
+                                        sbin_counts[bin_no] = int(df_w.iloc[wr, 1]) if pd.notna(df_w.iloc[wr, 1]) else 0
+                            except (ValueError, TypeError):
+                                pass
+
+        # Default pass_count from sbin1
         if pass_count is None:
-            pass_count = sbin_counts.get(1, 0) + sbin_counts.get(2, 0)
+            pass_count = sbin_counts.get(1, 0)
+        if total_tested is None:
+            total_tested = sum(sbin_counts.values()) if sbin_counts else (pass_count if pass_count else 0)
             
         # Default test time fallback to global test date
         if test_finish_time is None:
@@ -231,7 +272,7 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
                 data_range="final"
             )
             db.add(bin_sum)
-            
+                
         db.commit()
         created_lots.append(lot)
         
