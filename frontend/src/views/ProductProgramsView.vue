@@ -612,19 +612,21 @@ async function openCompare(lotId: number) {
 
 // ─── PGS 参数页面跳转 ───
 function goPgsParam(row: any) {
-  router.push({
+  const routeUrl = router.resolve({
     name: 'pgs-param',
     params: { productName: productName.value, id: row.id },
   })
+  window.open(routeUrl.href, '_blank')
 }
 
-// ─── PGS Upload ───
+// ─── Data 参数页面跳转 ───
 function goDataParam(row: any) {
-  router.push({
+  const routeUrl = router.resolve({
     name: 'data-program-param',
     params: { productName: productName.value, id: row.id ?? row.lot_id },
     query: { days: dataMonthsToDays(dataMonthsInput.value) },
   })
+  window.open(routeUrl.href, '_blank')
 }
 
 function dataMonthsToDays(value: string): number {

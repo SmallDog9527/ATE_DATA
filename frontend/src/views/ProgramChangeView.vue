@@ -303,11 +303,13 @@ function fmtHours(s: number | null | undefined): string {
 }
 
 function goToProduct(name: string) {
-  router.push({ name: 'product-programs', params: { productName: name } })
+  const routeUrl = router.resolve({ name: 'product-programs', params: { productName: name } })
+  window.open(routeUrl.href, '_blank')
 }
 
 function openPgmProgram(productName: string, prog: any) {
-  router.push({ name: 'product-programs', params: { productName } })
+  const routeUrl = router.resolve({ name: 'product-programs', params: { productName } })
+  window.open(routeUrl.href, '_blank')
 }
 
 function getHigherVersion(pgmProg: string, dataProg: string): string {

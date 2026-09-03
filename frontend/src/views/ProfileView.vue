@@ -927,6 +927,131 @@
         </div>
       </div>
 
+      <!-- ═══════════════════════════════════════ -->
+      <!-- 用户操作日志 (仅管理员可见)              -->
+      <!-- ═══════════════════════════════════════ -->
+      <div v-if="authStore.isAdmin" class="settings-card">
+        <div class="settings-card-header" @click="userLogExpanded = !userLogExpanded">
+          <div class="settings-card-title">
+            <span class="settings-icon">📋</span>
+            <span>用户操作日志</span>
+            <span class="badge blue" style="margin-left: 10px; font-weight: 600; font-size: 12px; padding: 3px 10px; border-radius: 12px;">总记录：{{ userLogTotal }}</span>
+          </div>
+          <span class="collapse-arrow">{{ userLogExpanded ? '▲' : '▼' }}</span>
+        </div>
+        <div v-if="userLogExpanded" class="settings-card-body">
+          <!-- 筛选工具栏 -->
+          <div class="user-log-filter-bar">
+            <div class="filter-item">
+              <label>操作类型</label>
+              <select v-model="userLogFilter.action" @change="loadUserLogs(1)">
+                <option value="">全部类型</option>
+                <option value="UPLOAD">⬆️ 手动上传</option>
+                <option value="DOWNLOAD">⬇️ 手动下载</option>
+                <option value="DELETE">🗑️ 手动删除</option>
+              </select>
+            </div>
+            <div class="filter-item">
+              <label>对象类型</label>
+              <select v-model="userLogFilter.target_type" @change="loadUserLogs(1)">
+                <option value="">全部对象</option>
+                <option value="LOT_DATA">数据批次</option>
+                <option value="PROGRAM_DATA">测试程序</option>
+                <option value="REPORT">分析报表</option>
+                <option value="DATASHEET">规格书</option>
+                <option value="USER">用户管理</option>
+              </select>
+            </div>
+            <div class="filter-item">
+              <label>操作人</label>
+              <input v-model="userLogFilter.username" @keyup.enter="loadUserLogs(1)" placeholder="按用户名搜索" />
+            </div>
+            <div class="filter-item">
+              <label>关键词</label>
+              <input v-model="userLogFilter.keyword" @keyup.enter="loadUserLogs(1)" placeholder="文件名/详情/IP" />
+            </div>
+            <div class="filter-actions">
+              <button type="button" class="btn-primary btn-sm" @click="loadUserLogs(1)" :disabled="userLogLoading">
+                {{ userLogLoading ? '查询中...' : '🔍 查询' }}
+              </button>
+              <button type="button" class="btn-sm" @click="resetUserLogFilter" :disabled="userLogLoading">
+                🔄 重置
+              </button>
+            </div>
+          </div>
+
+          <!-- 日志表格 -->
+          <div v-if="userLogLoading" class="loading">加载日志中...</div>
+          <div v-else-if="userLogList.length === 0" class="empty-tip" style="padding: 24px 0; text-align: center; color: #94a3b8;">
+            暂无操作日志记录
+          </div>
+          <div v-else class="table-responsive" style="margin-top: 14px; overflow-x: auto;">
+            <table class="user-table user-log-table">
+              <thead>
+                <tr>
+                  <th style="width: 70px;">ID</th>
+                  <th style="width: 160px;">操作时间</th>
+                  <th style="width: 120px;">操作人</th>
+                  <th style="width: 110px;">操作类型</th>
+                  <th style="width: 110px;">对象类型</th>
+                  <th>目标名称 / 文件名</th>
+                  <th style="width: 140px;">客户端 IP</th>
+                  <th>详细说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="log in userLogList" :key="log.id">
+                  <td><span class="badge blue" style="font-family:monospace;">#{{ log.id }}</span></td>
+                  <td style="white-space: nowrap; font-size: 13px; color: #64748b;">{{ fmtDate(log.created_at) }}</td>
+                  <td><strong>{{ log.username || 'System' }}</strong></td>
+                  <td>
+                    <span v-if="log.action === 'UPLOAD'" class="badge green">⬆️ 上传</span>
+                    <span v-else-if="log.action === 'DOWNLOAD'" class="badge blue">⬇️ 下载</span>
+                    <span v-else-if="log.action === 'DELETE'" class="badge red">🗑️ 删除</span>
+                    <span v-else class="badge gray">{{ log.action }}</span>
+                  </td>
+                  <td>
+                    <span v-if="log.target_type === 'LOT_DATA'" class="badge gray">数据批次</span>
+                    <span v-else-if="log.target_type === 'PROGRAM_DATA'" class="badge purple">测试程序</span>
+                    <span v-else-if="log.target_type === 'REPORT'" class="badge orange">分析报表</span>
+                    <span v-else-if="log.target_type === 'DATASHEET'" class="badge gold">规格书</span>
+                    <span v-else-if="log.target_type === 'USER'" class="badge blue">用户管理</span>
+                    <span v-else class="badge gray">{{ log.target_type }}</span>
+                  </td>
+                  <td class="log-target-cell" :title="log.target_name">
+                    <span class="target-name-text">{{ log.target_name || '-' }}</span>
+                  </td>
+                  <td>
+                    <span v-if="log.ip_address" style="font-family: monospace; font-size: 12px; color: #475569;">{{ log.ip_address }}</span>
+                    <span v-else style="color: #94a3b8;">-</span>
+                  </td>
+                  <td class="log-detail-cell" :title="log.detail">
+                    <span class="detail-text">{{ log.detail || '-' }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- 分页控件 -->
+          <div class="user-log-pagination" v-if="userLogTotal > 0">
+            <span class="page-info">
+              共 <strong>{{ userLogTotal }}</strong> 条记录，第 {{ userLogPage }} / {{ Math.ceil(userLogTotal / userLogPageSize) || 1 }} 页
+            </span>
+            <div class="page-controls" style="display: flex; align-items: center; gap: 8px;">
+              <button class="btn-sm" :disabled="userLogPage <= 1 || userLogLoading" @click="loadUserLogs(userLogPage - 1)">上一页</button>
+              <button class="btn-sm" :disabled="userLogPage >= Math.ceil(userLogTotal / userLogPageSize) || userLogLoading" @click="loadUserLogs(userLogPage + 1)">下一页</button>
+              <select v-model.number="userLogPageSize" @change="loadUserLogs(1)" class="btn-sm" style="padding: 3px 8px;">
+                <option :value="10">10 条/页</option>
+                <option :value="20">20 条/页</option>
+                <option :value="50">50 条/页</option>
+                <option :value="100">100 条/页</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- 重置帐号弹窗 -->
       <div v-if="resetTarget" class="modal-overlay" @click.self="resetTarget = null">
         <div class="modal">
@@ -1157,6 +1282,7 @@ const smtpExpanded    = ref(false)
 const osatExpanded    = ref(false)
 const ftpLogExpanded  = ref(false)
 const userMgmtExpanded = ref(false)
+const userLogExpanded  = ref(false)
 const tzExpanded      = ref(false)
 
 // ── 时区设置 ──
@@ -2268,7 +2394,77 @@ async function setRole(u: UserItem) {
   }
 }
 
+// ── Admin：用户操作日志 ──
+interface UserLogRecord {
+  id: number
+  user_id?: number
+  username?: string
+  action: string
+  target_type: string
+  target_name?: string
+  detail?: string
+  ip_address?: string
+  created_at?: string
+}
 
+const userLogList = ref<UserLogRecord[]>([])
+const userLogLoading = ref(false)
+const userLogTotal = ref(0)
+const userLogPage = ref(1)
+const userLogPageSize = ref(20)
+
+const userLogFilter = ref({
+  action: '',
+  target_type: '',
+  username: '',
+  keyword: '',
+  start_date: '',
+  end_date: '',
+})
+
+async function loadUserLogs(page = 1) {
+  if (!authStore.isAdmin) return
+  userLogPage.value = page
+  userLogLoading.value = true
+  try {
+    const params: any = {
+      page: userLogPage.value,
+      page_size: userLogPageSize.value,
+    }
+    if (userLogFilter.value.action) params.action = userLogFilter.value.action
+    if (userLogFilter.value.target_type) params.target_type = userLogFilter.value.target_type
+    if (userLogFilter.value.username.trim()) params.username = userLogFilter.value.username.trim()
+    if (userLogFilter.value.keyword.trim()) params.keyword = userLogFilter.value.keyword.trim()
+    if (userLogFilter.value.start_date) params.start_date = userLogFilter.value.start_date
+    if (userLogFilter.value.end_date) params.end_date = userLogFilter.value.end_date
+
+    const res: any = await api.get('/settings/user-logs', { params })
+    userLogList.value = res.items || []
+    userLogTotal.value = res.total || 0
+  } catch (err: any) {
+    console.error('Failed to load user logs:', err)
+  } finally {
+    userLogLoading.value = false
+  }
+}
+
+function resetUserLogFilter() {
+  userLogFilter.value = {
+    action: '',
+    target_type: '',
+    username: '',
+    keyword: '',
+    start_date: '',
+    end_date: '',
+  }
+  loadUserLogs(1)
+}
+
+watch(userLogExpanded, (expanded) => {
+  if (expanded && userLogList.value.length === 0) {
+    loadUserLogs(1)
+  }
+})
 
 const summaryOsats = ref<any[]>([])
 const summaryRows = ref<any[]>([])
@@ -2376,6 +2572,7 @@ onMounted(async () => {
   }
   if (authStore.isAdmin) {
     await loadUsers()
+    await loadUserLogs()
   }
 })
 </script>
@@ -2722,5 +2919,113 @@ onMounted(async () => {
   display: inline-block;
   min-width: 20px;
   text-align: right;
+}
+
+/* ── 用户操作日志样式 ── */
+.user-log-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin-bottom: 16px;
+  background: #f8fafc;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+.user-log-filter-bar .filter-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.user-log-filter-bar .filter-item label {
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 500;
+}
+.user-log-filter-bar .filter-item input,
+.user-log-filter-bar .filter-item select {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 13px;
+  background: white;
+  color: #1e293b;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.user-log-filter-bar .filter-item input:focus,
+.user-log-filter-bar .filter-item select:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+.user-log-filter-bar .filter-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+}
+.user-log-filter-bar .filter-actions button {
+  margin-top: 0 !important;
+  height: 34px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  box-sizing: border-box;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.user-log-filter-bar .filter-actions .btn-primary {
+  border: none;
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  color: white;
+}
+.user-log-filter-bar .filter-actions .btn-primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+.user-log-filter-bar .filter-actions .btn-sm {
+  border: 1px solid #cbd5e1;
+  background: white;
+  color: #475569;
+}
+.user-log-filter-bar .filter-actions .btn-sm:hover:not(:disabled) {
+  border-color: #3b82f6;
+  color: #3b82f6;
+  background: #f8fafc;
+}
+.user-log-table th,
+.user-log-table td {
+  padding: 10px 12px;
+  font-size: 13px;
+  vertical-align: middle;
+}
+.user-log-table .log-target-cell,
+.user-log-table .log-detail-cell {
+  max-width: 260px;
+}
+.user-log-table .target-name-text,
+.user-log-table .detail-text {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-log-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #f1f5f9;
+  font-size: 13px;
+  color: #64748b;
 }
 </style>

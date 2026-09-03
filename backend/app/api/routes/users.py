@@ -1,9 +1,10 @@
 """
 Admin User Management API Routes
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
+from app.services.user_log_service import record_user_log
 
 from app.core.database import get_db
 from app.core.security import get_password_hash
@@ -52,8 +53,9 @@ def search_users(
 # ------------------------------------------
 @router.get("/export", response_model=List[UserExportItem])
 def export_users(
+    request: Request,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin_user: User = Depends(require_admin),
 ):
     """Export all user data into JSON format for backup and recovery."""
     users = db.query(User).order_by(User.id.asc()).all()
@@ -72,6 +74,15 @@ def export_users(
                 created_at=u.created_at,
             )
         )
+    record_user_log(
+        db=db,
+        action="DOWNLOAD",
+        target_type="USER",
+        target_name="users_export.json",
+        user=admin_user,
+        request=request,
+        detail=f"Exported {len(result)} user records",
+    )
     return result
 
 
@@ -81,8 +92,9 @@ def export_users(
 @router.post("/import", response_model=UserImportResponse)
 def import_users(
     items: List[UserImportItem],
+    request: Request,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin_user: User = Depends(require_admin),
 ):
     """Import user records into database based on database ID or username/email."""
     created_count = 0
@@ -142,6 +154,16 @@ def import_users(
         db.commit()
     except Exception:
         db.rollback()
+
+    record_user_log(
+        db=db,
+        action="UPLOAD",
+        target_type="USER",
+        target_name="users_import.json",
+        user=admin_user,
+        request=request,
+        detail=f"Imported {len(items)} users (created: {created_count}, updated: {updated_count})",
+    )
 
     return UserImportResponse(
         imported_count=len(items),
@@ -245,6 +267,7 @@ def get_daily_active_users_endpoint(
 @router.put("/{user_id}/toggle-active")
 def toggle_active(
     user_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
@@ -255,6 +278,18 @@ def toggle_active(
         raise HTTPException(status_code=400, detail="Cannot disable your own account")
     user.is_active = not user.is_active
     db.commit()
+
+    action_type = "DELETE" if not user.is_active else "UPLOAD"
+    status_text = "Disabled" if not user.is_active else "Enabled"
+    record_user_log(
+        db=db,
+        action=action_type,
+        target_type="USER",
+        target_name=user.username,
+        user=current_user,
+        request=request,
+        detail=f"{status_text} user account {user.username} (id={user.id})",
+    )
     return {"id": user.id, "is_active": user.is_active}
 
 

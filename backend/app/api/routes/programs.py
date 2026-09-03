@@ -26,13 +26,14 @@ from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 
 from dateutil.relativedelta import relativedelta
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.services.user_log_service import record_user_log
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.bin_summary import BinSummary
@@ -1373,6 +1374,7 @@ def get_lot_compare(lot_id: int, db: Session = Depends(get_db)):
 
 @router.post("/upload_pgs")
 async def upload_pgs(
+    request: Request,
     file: UploadFile = File(...),
     product_name: str = Form(...),
     tester: Optional[str] = Form(None),
@@ -1596,6 +1598,15 @@ async def upload_pgs(
 
 
     invalidate_program_list_cache()
+    record_user_log(
+        db=db,
+        action="UPLOAD",
+        target_type="PROGRAM_DATA",
+        target_name=record.filename,
+        user=current_user,
+        request=request,
+        detail=f"Uploaded PGS program for product {product_name} (status: {parse_status})",
+    )
     return {
         "id": record.id,
         "filename": record.filename,
@@ -1610,6 +1621,7 @@ async def upload_pgs(
 @router.get("/pgs/{upload_id}/download")
 def download_pgs_archive(
     upload_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1621,6 +1633,15 @@ def download_pgs_archive(
         raise HTTPException(status_code=404, detail="文件不存在")
 
     download_name = rec.filename or os.path.basename(rec.storage_path)
+    record_user_log(
+        db=db,
+        action="DOWNLOAD",
+        target_type="PROGRAM_DATA",
+        target_name=download_name,
+        user=current_user,
+        request=request,
+        detail=f"Downloaded PGS program archive for upload_id={upload_id} ({download_name})",
+    )
     ext = os.path.splitext(download_name)[1].lower()
     if ext in {".zip", ".rar", ".7z"}:
         return FileResponse(
@@ -1644,6 +1665,7 @@ def download_pgs_archive(
 @router.delete("/pgs/{upload_id}")
 def delete_pgs_upload(
     upload_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1663,6 +1685,15 @@ def delete_pgs_upload(
     rec.parse_status = "deleted"
     db.commit()
     invalidate_program_list_cache()
+    record_user_log(
+        db=db,
+        action="DELETE",
+        target_type="PROGRAM_DATA",
+        target_name=rec.filename or f"upload_id_{upload_id}",
+        user=current_user,
+        request=request,
+        detail=f"Deleted PGS program record upload_id={upload_id} (product: {rec.product_name})",
+    )
     return {"success": True}
 
 

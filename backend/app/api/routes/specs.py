@@ -3,11 +3,12 @@ import json
 import shutil
 import tempfile
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Request
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.api.deps import get_current_user
+from app.services.user_log_service import record_user_log
 from app.models.user import User
 from app.models.datasheet_spec import Datasheet, DatasheetParameter, ParameterMapping
 from app.models.pgs_upload import PgsUpload
@@ -157,6 +158,7 @@ def compare_limits_status(
 
 @router.post("/upload-checklist")
 def upload_checklist(
+    request: Request,
     product_name: str = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -179,6 +181,15 @@ def upload_checklist(
 
     try:
         res = import_checklist_specs(db, tmp_path, product_name)
+        record_user_log(
+            db=db,
+            action="UPLOAD",
+            target_type="DATASHEET",
+            target_name=file.filename,
+            user=current_user,
+            request=request,
+            detail=f"Uploaded Excel checklist for product {product_name}",
+        )
         return {
             "status": "success",
             "message": f"Successfully imported checklist for product {product_name}",
@@ -196,6 +207,7 @@ def upload_checklist(
 
 @router.post("/upload-datasheet")
 def upload_datasheet(
+    request: Request,
     product_name: str = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -217,6 +229,15 @@ def upload_datasheet(
 
     try:
         res = import_docx_datasheet(db, tmp_path, product_name)
+        record_user_log(
+            db=db,
+            action="UPLOAD",
+            target_type="DATASHEET",
+            target_name=file.filename,
+            user=current_user,
+            request=request,
+            detail=f"Uploaded Word datasheet for product {product_name}",
+        )
         return {
             "status": "success",
             "message": f"Successfully imported datasheet for product {product_name}",
@@ -511,6 +532,7 @@ from fastapi.responses import FileResponse
 
 @router.post("/upload-datasheet-to-pgs")
 async def upload_datasheet_to_pgs(
+    request: Request,
     upload_id: int = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -553,6 +575,16 @@ async def upload_datasheet_to_pgs(
     rec.datasheet_filename = base_name
     rec.datasheet_path = save_path
     db.commit()
+
+    record_user_log(
+        db=db,
+        action="UPLOAD",
+        target_type="DATASHEET",
+        target_name=base_name,
+        user=current_user,
+        request=request,
+        detail=f"Uploaded datasheet {base_name} linked to upload_id={upload_id} (product: {rec.product_name})",
+    )
     
     # Also trigger import if it's docx
     if base_name.endswith(".docx"):
@@ -575,6 +607,7 @@ async def upload_datasheet_to_pgs(
 @router.get("/download-datasheet/{upload_id}")
 def download_datasheet(
     upload_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -587,6 +620,16 @@ def download_datasheet(
         
     if not os.path.exists(rec.datasheet_path):
         raise HTTPException(status_code=404, detail="Datasheet file does not exist on server storage")
+
+    record_user_log(
+        db=db,
+        action="DOWNLOAD",
+        target_type="DATASHEET",
+        target_name=rec.datasheet_filename,
+        user=current_user,
+        request=request,
+        detail=f"Downloaded datasheet for upload_id={upload_id} ({rec.datasheet_filename})",
+    )
         
     return FileResponse(
         path=rec.datasheet_path,
@@ -598,6 +641,7 @@ def download_datasheet(
 @router.delete("/delete-datasheet/{upload_id}")
 def delete_datasheet(
     upload_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -608,6 +652,7 @@ def delete_datasheet(
     if not rec:
         raise HTTPException(status_code=404, detail="Program version not found")
         
+    deleted_filename = rec.datasheet_filename or f"upload_id_{upload_id}"
     if rec.datasheet_path:
         if os.path.exists(rec.datasheet_path):
             try:
@@ -617,6 +662,16 @@ def delete_datasheet(
         rec.datasheet_path = None
         rec.datasheet_filename = None
         db.commit()
+
+        record_user_log(
+            db=db,
+            action="DELETE",
+            target_type="DATASHEET",
+            target_name=deleted_filename,
+            user=current_user,
+            request=request,
+            detail=f"Deleted datasheet for upload_id={upload_id} ({deleted_filename})",
+        )
         
     return {"status": "success", "message": "Datasheet file successfully deleted"}
 

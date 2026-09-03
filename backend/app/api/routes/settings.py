@@ -3,7 +3,7 @@ from sqlalchemy import or_
 settings.py  —  系统设置 API（仅管理员）
 包含：SMTP邮箱配置、OSAT/FTP管理、上传日志查询
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 import os
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -17,15 +17,18 @@ from app.models.osat_config import OsatConfig
 from app.models.ftp_upload_log import FtpUploadLog
 from app.models.lot import Lot
 from app.models.pgs_upload import PgsUpload
+from app.models.user_log import UserLog
 from app.schemas.settings import (
     SmtpConfigIn, SmtpConfigOut, SmtpTestRequest,
     OsatConfigIn, OsatConfigOut,
     FtpLogItem, FtpLogPage,
     FtpExtractedLogItem, FtpExtractedLogPage,
     ManualLogItem, ManualLogPage,
+    UserLogItem, UserLogPage,
     VersionUpdateIn,
 )
 from app.services.smtp_dynamic import encrypt_password, decrypt_password, send_test_email
+from app.services.user_log_service import record_user_log
 from sqlalchemy import literal, desc, cast, String
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -1090,6 +1093,76 @@ def get_manual_operators(
     return usernames
 
 
+# ══════════════════════════════════════════
+# User Action Logs (Audit) - Admin Only
+# ══════════════════════════════════════════
+
+@router.get("/user-logs", response_model=UserLogPage)
+def get_user_logs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    action: Optional[str] = None,
+    username: Optional[str] = None,
+    target_type: Optional[str] = None,
+    keyword: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    admin_user: User = Depends(require_admin),
+):
+    """
+    Retrieve manual user action audit logs (upload, download, delete).
+    Strictly restricted to admin users.
+    """
+    query = db.query(UserLog)
+
+    if action:
+        query = query.filter(UserLog.action == action.upper())
+
+    if target_type:
+        query = query.filter(UserLog.target_type == target_type.upper())
+
+    if username:
+        query = query.filter(UserLog.username.ilike(f"%{username.strip()}%"))
+
+    if keyword:
+        kw = f"%{keyword.strip()}%"
+        query = query.filter(
+            or_(
+                UserLog.target_name.ilike(kw),
+                UserLog.detail.ilike(kw),
+                UserLog.username.ilike(kw),
+                UserLog.ip_address.ilike(kw),
+            )
+        )
+
+    if start_date:
+        try:
+            sd = datetime.fromisoformat(start_date)
+            query = query.filter(UserLog.created_at >= sd)
+        except Exception:
+            pass
+
+    if end_date:
+        try:
+            ed = datetime.fromisoformat(end_date)
+            if len(end_date) <= 10:
+                ed = ed.replace(hour=23, minute=59, second=59)
+            query = query.filter(UserLog.created_at <= ed)
+        except Exception:
+            pass
+
+    total = query.count()
+    items = query.order_by(desc(UserLog.created_at)).offset((page - 1) * page_size).limit(page_size).all()
+
+    return UserLogPage(
+        total=total,
+        page=page,
+        page_size=page_size,
+        items=items,
+    )
+
+
 def _resolve_manual_file_path(path: Optional[str]) -> Optional[str]:
     """Resolve file storage path across container, host mounts, and auto-zipped archives."""
     if not path:
@@ -1295,6 +1368,7 @@ def retry_manual_upload_log(
 def download_manual_upload_log(
     upload_type: str,
     log_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1321,6 +1395,16 @@ def download_manual_upload_log(
         encoded_name = quote(download_name)
         disposition = f"attachment; filename=\"{download_name}\"; filename*=UTF-8''{encoded_name}"
 
+        record_user_log(
+            db=db,
+            action="DOWNLOAD",
+            target_type="LOT_DATA",
+            target_name=download_name,
+            user=current_user,
+            request=request,
+            detail=f"Downloaded manual upload data file (lot_id={log_id}, filename={download_name})",
+        )
+
         return FileResponse(
             real_path,
             filename=download_name,
@@ -1339,6 +1423,15 @@ def download_manual_upload_log(
             raise HTTPException(status_code=404, detail="Original program package file not found on disk")
 
         download_name = rec.filename or os.path.basename(real_path)
+        record_user_log(
+            db=db,
+            action="DOWNLOAD",
+            target_type="PROGRAM_DATA",
+            target_name=download_name,
+            user=current_user,
+            request=request,
+            detail=f"Downloaded manual upload program file (pgs_id={log_id}, filename={download_name})",
+        )
         ext = os.path.splitext(download_name)[1].lower()
         if ext in {".zip", ".rar", ".7z"}:
             encoded_name = quote(download_name)

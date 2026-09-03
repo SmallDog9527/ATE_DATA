@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from app.services.user_log_service import record_user_log
 from datetime import datetime, timedelta
 import re
 from sqlalchemy.orm import Session, joinedload
@@ -341,6 +342,7 @@ def update_report(
 @router.delete("/{report_id}")
 def delete_report(
     report_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -348,7 +350,7 @@ def delete_report(
     if not report:
         raise HTTPException(status_code=404, detail="报表未找到")
         
-    # 鉴权：仅管理员 (admin) 或报表所有者本人可以删除报表（ENG 角色仅可查看他人报表，无权删除他人内容）
+    # Permission check: admin or owner can delete
     role = (current_user.role or "").lower().strip()
     is_admin = role == "admin"
     is_owner = report.user_id == current_user.id
@@ -356,6 +358,16 @@ def delete_report(
     if not is_admin and not is_owner:
         raise HTTPException(status_code=403, detail="无权删除他人报表")
         
+    report_title = report.title or f"Report #{report_id}"
     db.delete(report)
     db.commit()
+    record_user_log(
+        db=db,
+        action="DELETE",
+        target_type="REPORT",
+        target_name=report_title,
+        user=current_user,
+        request=request,
+        detail=f"Deleted report id={report_id} ({report_title})",
+    )
     return {"message": "报表删除成功"}

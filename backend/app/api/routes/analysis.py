@@ -1,5 +1,4 @@
-import os
-from fastapi import APIRouter, Depends, Query, HTTPException, Body
+from fastapi import APIRouter, Depends, Query, HTTPException, Body, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from typing import Optional, List
@@ -11,6 +10,7 @@ from pydantic import BaseModel
 import pandas as pd
 import numpy as np
 from app.core.database import get_db
+from app.models.user import User
 from app.models.test_item import TestItem
 from app.models.bin_summary import BinSummary
 from app.models.lot import Lot
@@ -28,7 +28,7 @@ _plot_lock = threading.Lock()
 from datetime import datetime, timedelta, timezone
 from app.core.config import settings
 from app.api.deps import get_current_user
-from app.models.user import User
+from app.services.user_log_service import record_user_log
 
 UPLOAD_DIR = os.path.expanduser(settings.UPLOAD_DIR)
 PERSIST_EXPORT_DIR = os.path.join(os.path.dirname(UPLOAD_DIR), "export_results")
@@ -780,7 +780,12 @@ def get_export_status(task_id: str):
     }
 
 @router.get("/export_items/download/{task_id}")
-def download_export_result(task_id: str):
+def download_export_result(
+    task_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """下载导出结果（兼容磁盘文件和内存BytesIO两种存储方式）"""
     if task_id not in export_tasks:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -791,6 +796,16 @@ def download_export_result(task_id: str):
 
     filename = task.get("filename", "Report.xlsx")
     encoded_filename = quote(filename)
+
+    record_user_log(
+        db=db,
+        action="DOWNLOAD",
+        target_type="REPORT",
+        target_name=filename,
+        user=current_user,
+        request=request,
+        detail=f"Downloaded test items analysis report ({filename})",
+    )
 
     # 方式1：磁盘文件（单LOT任务）— 可能是 zip 或 xlsx
     result_path = task.get("result_path")
@@ -4558,7 +4573,12 @@ def get_idle_check_export_status(task_id: str):
     }
 
 @router.get("/idle_check/export/download/{task_id}")
-def download_idle_check_export(task_id: str, db: Session = Depends(get_db)):
+def download_idle_check_export(
+    task_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     if task_id not in export_tasks or export_tasks[task_id]["status"] != "completed":
         raise HTTPException(status_code=404, detail="文件未就绪")
     
@@ -4566,6 +4586,16 @@ def download_idle_check_export(task_id: str, db: Session = Depends(get_db)):
     output = task["result"]
     filename = task.get("filename", "IdleCheck_Report.xlsx")
     
+    record_user_log(
+        db=db,
+        action="DOWNLOAD",
+        target_type="REPORT",
+        target_name=filename,
+        user=current_user,
+        request=request,
+        detail=f"Downloaded idle check export report ({filename})",
+    )
+
     # 重新包装为 BytesIO
     output.seek(0)
     encoded_filename = quote(filename)

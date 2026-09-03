@@ -4,9 +4,10 @@ import subprocess
 import zipfile
 import io
 import tempfile
-from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException, BackgroundTasks, Body
+from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException, BackgroundTasks, Body, Request
 from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
+from app.services.user_log_service import record_user_log
 from sqlalchemy import desc, or_, func
 from typing import Optional, List
 from datetime import datetime, timedelta
@@ -266,6 +267,7 @@ def _generate_unique_lot_name_and_path(base_filename: str, target_dir: str, db: 
 @router.post("/upload")
 async def upload_files(
     background_tasks: BackgroundTasks,
+    request: Request,
     files: List[UploadFile] = File(...),
     allow_duplicate: bool = Form(False),
     db: Session = Depends(get_db),
@@ -276,8 +278,26 @@ async def upload_files(
         try:
             batch = await _process_upload(file, db, background_tasks, current_user.id, allow_duplicate=allow_duplicate)
             results.extend(batch)
+            record_user_log(
+                db=db,
+                action="UPLOAD",
+                target_type="LOT_DATA",
+                target_name=file.filename,
+                user=current_user,
+                request=request,
+                detail=f"Uploaded manual lot file {file.filename}",
+            )
         except Exception as e:
             results.append({"filename": file.filename, "status": "failed", "error": str(e)})
+            record_user_log(
+                db=db,
+                action="UPLOAD",
+                target_type="LOT_DATA",
+                target_name=file.filename,
+                user=current_user,
+                request=request,
+                detail=f"Failed manual lot file upload ({file.filename}): {str(e)}",
+            )
     return {"results": results}
 
 
@@ -1681,6 +1701,7 @@ def get_mp_yield_syl_over(
 
 @router.get("/mp-yield/export")
 def export_mp_yield_excel(
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     lot_id: Optional[str] = None,
@@ -1853,6 +1874,15 @@ def export_mp_yield_excel(
         wb.save(buf)
         buf.seek(0)
         fname = "MP_Yield_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".xlsx"
+        record_user_log(
+            db=db,
+            action="DOWNLOAD",
+            target_type="REPORT",
+            target_name=fname,
+            user=current_user,
+            request=request,
+            detail="Exported MP yield Excel report",
+        )
         return StreamingResponse(
             buf,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2200,6 +2230,7 @@ def get_lots(
 
 @router.delete("")
 def delete_lots(
+    request: Request,
     data: dict = Body(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -2259,6 +2290,16 @@ def delete_lots(
             deleted_count += 1
     
     db.commit()
+    if deleted_count > 0:
+        record_user_log(
+            db=db,
+            action="DELETE",
+            target_type="LOT_DATA",
+            target_name=f"{deleted_count} lot(s)",
+            user=current_user,
+            request=request,
+            detail=f"Deleted {deleted_count} lots, IDs: {ids}",
+        )
     return {"deleted": deleted_count}
 
 
@@ -2730,7 +2771,12 @@ class DownloadRequest(BaseModel):
 
 
 @router.post("/download")
-def download_lots(data: DownloadRequest, db: Session = Depends(get_db)):
+def download_lots(
+    data: DownloadRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     下载选中LOT的原始数据文件。
     - 单条且原始文件为ZIP时，直接返回原ZIP不再套包。
@@ -2759,6 +2805,16 @@ def download_lots(data: DownloadRequest, db: Session = Depends(get_db)):
         download_name = lot.filename or os.path.basename(file_path)
         if not download_name.lower().endswith('.zip'):
             download_name = download_name + '.zip'
+
+        record_user_log(
+            db=db,
+            action="DOWNLOAD",
+            target_type="LOT_DATA",
+            target_name=download_name,
+            user=current_user,
+            request=request,
+            detail=f"Downloaded raw data for lot {lot.id} ({download_name})",
+        )
 
         from urllib.parse import quote
         encoded_name = quote(download_name)
@@ -2814,6 +2870,16 @@ def download_lots(data: DownloadRequest, db: Session = Depends(get_db)):
     from zoneinfo import ZoneInfo
     timestamp = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%m%d%H%M%S")
     zip_filename = f"ATE_DATA_{timestamp}.zip"
+
+    record_user_log(
+        db=db,
+        action="DOWNLOAD",
+        target_type="LOT_DATA",
+        target_name=zip_filename,
+        user=current_user,
+        request=request,
+        detail=f"Downloaded batch {len(lots)} lots in ZIP archive ({zip_filename})",
+    )
 
     return StreamingResponse(
         zip_buffer,

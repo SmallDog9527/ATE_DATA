@@ -149,7 +149,7 @@
               :class="sylOverOnly ? 'syl-over-active' : 'btn-secondary'"
               :disabled="sylJudging"
               @click="toggleSylOver"
-            >显示SYL超标{{ overCount !== null ? '（' + overCount + '）' : '' }}</button>
+            >{{ sylOverBtnText }}</button>
             <button class="btn btn-export" :disabled="exporting" @click="exportExcel">{{ exporting ? '导出中…' : '导出Excel' }}</button>
           </div>
           <div v-if="sylOverOnly" class="syl-over-hint">当前仅显示 SYL 超标 Wafer（{{ total }} 条）</div>
@@ -168,6 +168,7 @@
           :getRowStyle="detailRowStyle"
           @grid-ready="onGridReady"
           @sort-changed="onSortChanged"
+          @cell-double-clicked="onCellDoubleClicked"
           style="width: 100%; flex: 1; min-height: 0;"
           :suppressScrollOnNewData="true"
         />
@@ -744,6 +745,14 @@ const binDisplayMode = ref<'count' | 'pct'>('count')
 const sylOverOnly = ref(false)
 const sylJudging = ref(false)
 const overCount = ref<number | null>(null)
+const sylOverBtnText = computed(() => {
+  if (overCount.value !== null) {
+    const s = `（${overCount.value}）`
+    const pad = s.length < 5 ? '\u00A0'.repeat(5 - s.length) : ''
+    return `显示SYL超标${s}${pad}`
+  }
+  return '显示SYL超标\u00A0\u00A0\u00A0\u00A0\u00A0'
+})
 let suppressOverCount = false
 const exporting = ref(false)
 const detailGridRef = ref<any>(null)
@@ -765,6 +774,25 @@ function onSortChanged(e: any) {
   } catch (err) {
     sortBackup.value = null
   }
+}
+
+function onCellDoubleClicked(params: any) {
+  const field = params.colDef?.field
+  if (field !== 'product_name' && field !== 'lot_id') return
+
+  let el = params.event?.target as HTMLElement | null
+  while (el && !el.classList.contains('ag-cell-value') && !el.classList.contains('ag-cell')) {
+    el = el.parentElement
+  }
+  if (!el) el = params.event?.target as HTMLElement
+  if (!el) return
+
+  const selection = window.getSelection()
+  if (!selection) return
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  selection.removeAllRanges()
+  selection.addRange(range)
 }
 
 // Fallback that reads the sort arrows directly from the grid header DOM.
@@ -823,7 +851,7 @@ const detailColDefs = computed<any[]>(() => {
   const cols: any[] = [
     { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
     { field: 'osat_name', headerName: 'OSAT', width: 90, pinned: 'left' },
-    { field: 'product_name', headerName: 'Device', width: 140, pinned: 'left' },
+    { field: 'product_name', headerName: 'Device', width: 140, pinned: 'left', cellClass: 'selectable-cell' },
     { field: 'lot_id', headerName: 'LOT ID', width: 140, pinned: 'left', cellClass: 'selectable-cell' },
     { field: 'wafer_id', headerName: 'WAFER ID', width: 100, pinned: 'left' },
     { field: 'total', headerName: 'TOTAL', width: 90, type: 'numericColumn' },
@@ -2170,6 +2198,7 @@ onMounted(() => {
 :deep(.selectable-cell) {
   cursor: text;
   user-select: text;
+  -webkit-user-select: text;
 }
 
 /* 数量/百分比 与 SYL 超标 控件 */
@@ -2187,6 +2216,12 @@ onMounted(() => {
   background: #059669 !important;
   border: 1px solid #059669 !important;
   color: #fff !important;
+}
+.syl-over-btn {
+  margin-left: 2em;
+  white-space: pre;
+  min-width: 145px;
+  box-sizing: border-box;
 }
 .syl-over-btn.syl-over-active {
   background: #dc2626;

@@ -190,3 +190,29 @@ class FtpExtractedLogPage(BaseModel):
     page: int
     page_size: int
     items: list[FtpExtractedLogItem]
+
+
+# ----------------------------------------------
+# User Action Logs (Audit)
+# ----------------------------------------------
+
+class UserLogItem(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    username: Optional[str] = None
+    action: str
+    target_type: str
+    target_name: Optional[str] = None
+    detail: Optional[str] = None
+    ip_address: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class UserLogPage(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[UserLogItem]
