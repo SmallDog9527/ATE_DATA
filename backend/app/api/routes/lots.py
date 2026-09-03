@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from app.services.parsers import parse_file
 from app.models.bin_summary import BinSummary
 from app.models.test_item import TestItem
+from app.models.mp_yield_syl import MpYieldSylSession
 from app.api.deps import get_current_user
 
 router = APIRouter(prefix="/lots", tags=["lots"])
@@ -1295,86 +1296,20 @@ def get_mp_yield_list(
     test_date_to: Optional[str] = None,
     range_type: Optional[str] = None,
     range_value: Optional[int] = None,
+    include_syl: bool = Query(False),
+    syl_over_total: bool = Query(False),
 ):
     """
     Get a list of MP Yield records with horizontally pivoted sbin1-sbin130 values.
     """
     try:
-        # All users have read access to MP_Yield records
-        query = db.query(Lot).filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
-        
-        # Deduplicate wafer runs: only show the latest wafer run (highest ID) for each unique (lot_id, wafer_id) combination
-        latest_wafer_run_ids = (
-            db.query(func.max(Lot.id))
-            .filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
-            .group_by(Lot.lot_id, Lot.wafer_id)
-            .subquery()
+        query = _mp_yield_scope_query(
+            db,
+            lot_id=lot_id, wafer_id=wafer_id, product_name=product_name,
+            mp_tester=mp_tester, osat_name=osat_name, program=program,
+            test_date_from=test_date_from, test_date_to=test_date_to,
+            range_type=range_type, range_value=range_value,
         )
-        query = query.filter(Lot.id.in_(latest_wafer_run_ids))
-        
-        if lot_id:
-            query = query.filter(Lot.lot_id.ilike(f"%{lot_id}%"))
-        if wafer_id:
-            query = query.filter(Lot.wafer_id.ilike(f"%{wafer_id}%"))
-        if product_name:
-            query = query.filter(Lot.product_name.ilike(f"%{product_name}%"))
-        if osat_name:
-            if osat_name.upper() in ("HTKS", "HTJS", "KSHT"):
-                query = query.filter(or_(
-                    Lot.osat_name.ilike("%HTKS%"),
-                    Lot.osat_name.ilike("%HTJS%"),
-                    Lot.osat_name.ilike("%KSHT%")
-                ))
-            elif osat_name.lower() == "chipmore":
-                query = query.filter(or_(Lot.osat_name.ilike(f"%{osat_name}%"), Lot.osat_name.is_(None)))
-            else:
-                query = query.filter(Lot.osat_name.ilike(f"%{osat_name}%"))
-        if program:
-            query = query.filter(Lot.program.ilike(f"%{program}%"))
-        if mp_tester:
-            if mp_tester == "(unknown)":
-                query = query.filter(or_(Lot.mp_tester == "(unknown)", Lot.mp_tester.is_(None)))
-            else:
-                query = query.filter(Lot.mp_tester.ilike(f"%{mp_tester}%"))
-            
-        if range_type:
-            from app.models.lot import DataSource
-            if range_type == "month":
-                val = range_value if range_value is not None else 3
-                cutoff = datetime.now(timezone.utc) - timedelta(days=val * 30)
-                query = query.filter(Lot.test_date >= cutoff)
-            elif range_type == "year":
-                val = range_value if range_value is not None else 1
-                cutoff = datetime.now(timezone.utc) - timedelta(days=val * 365)
-                query = query.filter(Lot.test_date >= cutoff)
-            elif range_type == "lot":
-                val = range_value if range_value is not None else 20
-                recent_lots_q = (
-                    db.query(Lot.lot_id)
-                    .filter(
-                        Lot.data_source == DataSource.ftp,
-                        Lot.data_type == "MP_Yield",
-                        Lot.status != "deleted",
-                    )
-                )
-                if product_name:
-                    recent_lots_q = recent_lots_q.filter(Lot.product_name.ilike(f"%{product_name}%"))
-                recent_lots_results = (
-                    recent_lots_q.group_by(Lot.lot_id)
-                    .order_by(func.max(Lot.test_date).desc())
-                    .limit(val)
-                    .all()
-                )
-                recent_lot_ids = [r[0] for r in recent_lots_results] if recent_lots_results else []
-                query = query.filter(Lot.lot_id.in_(recent_lot_ids))
-            elif range_type == "all":
-                pass
-        else:
-            if test_date_from:
-                query = query.filter(Lot.test_date >= datetime.strptime(test_date_from, "%Y-%m-%d"))
-            if test_date_to:
-                query = query.filter(Lot.test_date < datetime.strptime(test_date_to, "%Y-%m-%d") + timedelta(days=1))
-            
         total = query.count()
         lots = query.order_by(desc(Lot.test_date), desc(Lot.id)).offset(
             (page - 1) * page_size
@@ -1389,6 +1324,12 @@ def get_mp_yield_list(
                     bin_summaries_map[b.lot_id] = {}
                 bin_summaries_map[b.lot_id][b.bin_number] = b.count
                 
+        # Load SYL sessions for page products (used only when include_syl=1)
+        syl_sessions_map = {}
+        if include_syl:
+            page_products = {(lot.product_name or "").strip().lower() for lot in lots if lot.product_name}
+            syl_sessions_map = _load_sessions_by_products(db, page_products)
+
         # 计算当前页各 Lot 在 OSAT_CP 中的已上传去重 wafer 数量
         cp_counts_map = {}
         lot_keys = list(set((lot.product_name, lot.lot_id) for lot in lots if lot.product_name and lot.lot_id))
@@ -1461,9 +1402,271 @@ def get_mp_yield_list(
             
             for sbin_idx in range(1, 131):
                 item[f"sbin{sbin_idx}"] = lot_bins.get(sbin_idx, 0)
+            if include_syl:
+                sess_list = syl_sessions_map.get((lot.product_name or "").strip().lower())
+                syl_res = _judge_lot_syl(lot, lot_bins, sess_list) if sess_list else None
+                item["syl"] = syl_res
+                item["syl_over"] = bool(syl_res and syl_res.get("over"))
                 
             items.append(item)
             
+        payload = {
+            "total": total,
+            "items": items,
+            "page": page,
+            "page_size": page_size
+        }
+        if include_syl and syl_over_total:
+            scope_q = _mp_yield_scope_query(
+                db,
+                lot_id=lot_id, wafer_id=wafer_id, product_name=product_name,
+                mp_tester=mp_tester, osat_name=osat_name, program=program,
+                test_date_from=test_date_from, test_date_to=test_date_to,
+                range_type=range_type, range_value=range_value,
+            )
+            scope_q = scope_q.order_by(desc(Lot.test_date), desc(Lot.id))
+            payload["syl_over_total"] = len(_collect_syl_over_ids(db, scope_q))
+        return payload
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── MP-Yield SYL/SBL setup sessions ─────────────────────────────────────────
+
+
+class SylRuleItem(BaseModel):
+    """One parsed SYL/SBL rule belonging to a session."""
+    label: str = ""
+    bins: List[int] = []
+    param: str = ""
+    pct: float = 0.0
+    direction: str = "lte"  # "gte": yield lower bound (e.g. Bin1), "lte": fail-bin upper bound
+
+
+class SylSessionCreate(BaseModel):
+    product_name: str
+    raw_text: str = ""
+    rules: List[SylRuleItem] = []
+
+
+def _syl_session_to_dict(s: MpYieldSylSession) -> dict:
+    return {
+        "id": s.id,
+        "product_name": s.product_name,
+        "setup_time": s.setup_time.isoformat() if s.setup_time else None,
+        "raw_text": s.raw_text or "",
+        "rules": s.rules or [],
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+    }
+
+
+@router.get("/mp-yield/syl")
+def get_mp_yield_syl_sessions(
+    product_name: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all SYL/SBL setup sessions of one product (Device), oldest first."""
+    name = (product_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="product_name is required")
+    sessions = (
+        db.query(MpYieldSylSession)
+        .filter(func.lower(MpYieldSylSession.product_name) == name.lower())
+        .order_by(MpYieldSylSession.setup_time.asc(), MpYieldSylSession.id.asc())
+        .all()
+    )
+    return {"sessions": [_syl_session_to_dict(s) for s in sessions]}
+
+
+@router.post("/mp-yield/syl")
+def create_mp_yield_syl_session(
+    payload: SylSessionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create a new SYL/SBL setup session for a product (admin/engineer only)."""
+    if current_user.role not in ("admin", "eng"):
+        raise HTTPException(status_code=403, detail="No permission to create SYL settings")
+    name = (payload.product_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="product_name is required")
+    rules = []
+    for r in payload.rules or []:
+        if not r.bins or r.pct < 0:
+            continue
+        rules.append({
+            "label": r.label or "",
+            "bins": list(dict.fromkeys(int(b) for b in r.bins if b >= 1)),
+            "param": r.param or "",
+            "pct": float(r.pct),
+            "direction": r.direction if r.direction in ("gte", "lte") else "lte",
+        })
+    if not rules:
+        raise HTTPException(status_code=400, detail="No valid SYL rules in payload")
+    sess = MpYieldSylSession(
+        product_name=name,
+        setup_time=datetime.now(timezone.utc).replace(tzinfo=None),
+        raw_text=payload.raw_text or "",
+        rules=rules,
+        created_by=current_user.id,
+    )
+    db.add(sess)
+    db.commit()
+    db.refresh(sess)
+    return _syl_session_to_dict(sess)
+
+
+@router.delete("/mp-yield/syl/{session_id}")
+def delete_mp_yield_syl_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a SYL/SBL setup session (admin/engineer or its creator only)."""
+    sess = db.query(MpYieldSylSession).filter(MpYieldSylSession.id == session_id).first()
+    if not sess:
+        raise HTTPException(status_code=404, detail="SYL session not found")
+    if current_user.role not in ("admin", "eng") and sess.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="No permission to delete this SYL session")
+
+    db.delete(sess)
+    db.commit()
+    return {"status": "success", "id": session_id}
+
+
+@router.get("/mp-yield/syl-over")
+def get_mp_yield_syl_over(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    lot_id: Optional[str] = None,
+    wafer_id: Optional[str] = None,
+    product_name: Optional[str] = None,
+    mp_tester: Optional[str] = None,
+    osat_name: Optional[str] = None,
+    program: Optional[str] = None,
+    test_date_from: Optional[str] = None,
+    test_date_to: Optional[str] = None,
+    range_type: Optional[str] = None,
+    range_value: Optional[int] = None,
+):
+    """
+    Paginated MP-Yield wafer list filtered server-side to rows that exceed the
+    most recent applicable SYL session (test date >= setup time of the session).
+    """
+    try:
+        query = _mp_yield_scope_query(
+            db,
+            lot_id=lot_id, wafer_id=wafer_id, product_name=product_name,
+            mp_tester=mp_tester, osat_name=osat_name, program=program,
+            test_date_from=test_date_from, test_date_to=test_date_to,
+            range_type=range_type, range_value=range_value,
+        )
+        base_q = query.order_by(desc(Lot.test_date), desc(Lot.id))
+
+        # Keep only rows whose applicable SYL session is exceeded.
+        hit_ids = _collect_syl_over_ids(db, base_q)
+        total = len(hit_ids)
+        page_ids = hit_ids[(page - 1) * page_size: (page - 1) * page_size + page_size]
+
+        lots = []
+        if page_ids:
+            lot_map = {l.id: l for l in db.query(Lot).filter(Lot.id.in_(page_ids)).all()}
+            lots = [lot_map[i] for i in page_ids if i in lot_map]
+
+        page_products = {(lot.product_name or "").strip().lower() for lot in lots if lot.product_name}
+        session_map = _load_sessions_by_products(db, page_products)
+
+        lot_ids = [lot.id for lot in lots]
+        bin_summaries_map = {}
+        if lot_ids:
+            bins = db.query(BinSummary).filter(BinSummary.lot_id.in_(lot_ids)).all()
+            for b in bins:
+                bin_summaries_map.setdefault(b.lot_id, {})[b.bin_number] = b.count
+
+        cp_counts_map = {}
+        lot_keys = list(set((lot.product_name, lot.lot_id) for lot in lots if lot.product_name and lot.lot_id))
+        if lot_keys:
+            lot_ids_in_page = [k[1] for k in lot_keys]
+            product_names_in_page = [k[0] for k in lot_keys]
+
+            from sqlalchemy import not_
+            counts_q = (
+                db.query(
+                    Lot.product_name,
+                    Lot.lot_id,
+                    func.count(func.distinct(Lot.wafer_id))
+                )
+                .filter(
+                    Lot.data_type == 'CP',
+                    Lot.status != 'deleted',
+                    Lot.lot_id.in_(lot_ids_in_page),
+                    Lot.product_name.in_(product_names_in_page),
+                    not_(Lot.filename.ilike("%qa%")),
+                    not_(Lot.filename.ilike("%cp_lot%")),
+                    not_(Lot.filename.ilike("%merged%")),
+                    not_(Lot.filename.ilike("%合并%"))
+                )
+                .group_by(Lot.product_name, Lot.lot_id)
+                .all()
+            )
+            for prod, lid, cnt in counts_q:
+                if prod and lid:
+                    cp_counts_map[(prod.strip().lower(), lid.strip().lower())] = cnt
+
+        items = []
+        for lot in lots:
+            lot_bins = bin_summaries_map.get(lot.id, {})
+            test_date_str = ""
+            if lot.test_date:
+                test_date_str = lot.test_date.strftime("%Y-%m-%d %H:%M:%S")
+
+            test_start_str = ""
+            if lot.beginning_time:
+                test_start_str = lot.beginning_time.strftime("%Y-%m-%d %H:%M:%S")
+
+            duration_h = None
+            if lot.beginning_time and lot.ending_time:
+                diff_s = (lot.ending_time - lot.beginning_time).total_seconds()
+                if diff_s > 0:
+                    duration_h = round(diff_s / 3600.0, 2)
+
+            prod_key = (lot.product_name.strip().lower() if lot.product_name else "",
+                        lot.lot_id.strip().lower() if lot.lot_id else "")
+            cp_wafer_count = cp_counts_map.get(prod_key, 0)
+
+            item = {
+                "id": lot.id,
+                "osat_name": lot.osat_name or "chipmore",
+                "test_start": test_start_str,
+                "test_date": test_date_str,
+                "duration_h": duration_h,
+                "product_name": lot.product_name or "",
+                "lot_id": lot.lot_id or "",
+                "wafer_id": lot.wafer_id or "",
+                "total": lot.die_count or 0,
+                "pass": lot.pass_count or 0,
+                "yield_rate": round((lot.yield_rate or 0.0) * 100.0, 2),
+                "program": lot.program or "",
+                "mp_tester": lot.mp_tester or "",
+                "probecard": lot.probecard or "",
+                "cp_wafer_count": cp_wafer_count,
+            }
+
+            for sbin_idx in range(1, 131):
+                item[f"sbin{sbin_idx}"] = lot_bins.get(sbin_idx, 0)
+
+            sess = session_map.get((lot.product_name or "").strip().lower())
+            syl_res = _judge_lot_syl(lot, lot_bins, sess) if sess else None
+            item["syl"] = syl_res
+            item["syl_over"] = bool(syl_res and syl_res.get("over"))
+
+            items.append(item)
+
         return {
             "total": total,
             "items": items,
@@ -1474,6 +1677,392 @@ def get_mp_yield_list(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/mp-yield/export")
+def export_mp_yield_excel(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    lot_id: Optional[str] = None,
+    wafer_id: Optional[str] = None,
+    product_name: Optional[str] = None,
+    mp_tester: Optional[str] = None,
+    osat_name: Optional[str] = None,
+    program: Optional[str] = None,
+    test_date_from: Optional[str] = None,
+    test_date_to: Optional[str] = None,
+    range_type: Optional[str] = None,
+    range_value: Optional[int] = None,
+    syl_over_only: bool = Query(False),
+    sort_col: Optional[str] = None,
+    sort_dir: Optional[str] = None,
+    req_id: Optional[str] = Query(None, alias="t"),
+):
+    """Export the filtered MP-Yield rows (same filters as the detail list) to
+    an Excel workbook with two sheets: raw bin counts and bin percentages.
+    When sort_col/sort_dir are given the rows follow that order (matching the
+    grid sort) instead of the default test-date order."""
+    try:
+        from functools import cmp_to_key
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+
+        query = _mp_yield_scope_query(
+            db,
+            lot_id=lot_id, wafer_id=wafer_id, product_name=product_name,
+            mp_tester=mp_tester, osat_name=osat_name, program=program,
+            test_date_from=test_date_from, test_date_to=test_date_to,
+            range_type=range_type, range_value=range_value,
+        )
+        base_q = query.order_by(desc(Lot.test_date), desc(Lot.id))
+
+        hit_ids = None
+        if syl_over_only:
+            hit_ids = _collect_syl_over_ids(db, base_q)
+
+        item_keys = ["osat_name", "product_name", "lot_id", "wafer_id", "total", "pass",
+                     "yield_rate", "program", "mp_tester", "probecard", "test_start",
+                     "test_date", "duration_h"]
+        numeric_keys = {"total", "pass", "yield_rate", "duration_h"}
+
+        rows: list = []
+
+        step = 1500
+        offset = 0
+        while True:
+            if hit_ids is not None:
+                chunk_ids = hit_ids[offset: offset + step]
+                if not chunk_ids:
+                    break
+                lot_map = {l.id: l for l in db.query(Lot).filter(Lot.id.in_(chunk_ids)).all()}
+                chunk_lots = [lot_map[i] for i in chunk_ids if i in lot_map]
+                offset += step
+            else:
+                chunk_lots = base_q.offset(offset).limit(step).all()
+                if not chunk_lots:
+                    break
+                offset += step
+            if not chunk_lots:
+                continue
+            cids = [l.id for l in chunk_lots]
+            bin_rows = db.query(BinSummary).filter(BinSummary.lot_id.in_(cids)).all()
+            bins_map: dict = {}
+            for b in bin_rows:
+                bins_map.setdefault(b.lot_id, {})[b.bin_number] = b.count
+            for lot in chunk_lots:
+                test_start = lot.beginning_time.strftime("%Y-%m-%d %H:%M:%S") if lot.beginning_time else ""
+                test_date = lot.test_date.strftime("%Y-%m-%d %H:%M:%S") if lot.test_date else ""
+                duration_h = ""
+                if lot.beginning_time and lot.ending_time:
+                    diff_s = (lot.ending_time - lot.beginning_time).total_seconds()
+                    if diff_s > 0:
+                        duration_h = round(diff_s / 3600.0, 2)
+                bins = bins_map.get(lot.id, {})
+                row = {
+                    "osat_name": lot.osat_name or "chipmore",
+                    "product_name": lot.product_name or "",
+                    "lot_id": lot.lot_id or "",
+                    "wafer_id": lot.wafer_id or "",
+                    "total": lot.die_count or 0,
+                    "pass": lot.pass_count or 0,
+                    "yield_rate": round((lot.yield_rate or 0.0) * 100.0, 2),
+                    "program": lot.program or "",
+                    "mp_tester": lot.mp_tester or "",
+                    "probecard": lot.probecard or "",
+                    "test_start": test_start,
+                    "test_date": test_date,
+                    "duration_h": duration_h,
+                }
+                for bi in range(1, 131):
+                    row[f"sbin{bi}"] = bins.get(bi, 0)
+                rows.append(row)
+
+        sort_field = (sort_col or "").strip()
+        sort_direction = (sort_dir or "").strip().lower()
+        print("mp_yield_export req", req_id, "sort_col=", sort_col, "sort_dir=", sort_dir)
+        if sort_field and sort_direction in ("asc", "desc"):
+            allowed = set(item_keys) | {f"sbin{i}" for i in range(1, 131)}
+            if sort_field in allowed:
+                desc_order = sort_direction == "desc"
+
+                def _num_val(v):
+                    try:
+                        return float(v)
+                    except (TypeError, ValueError):
+                        return None
+
+                def _row_key(row):
+
+                    raw = row.get(sort_field)
+                    if raw is None or raw == "":
+                        return (1, None)
+                    if sort_field in numeric_keys or sort_field.startswith("sbin"):
+                        return (0, _num_val(raw))
+                    return (0, str(raw))
+
+                _row_vals = [_row_key(r) for r in rows]
+
+                def _cmp_values(ka, kb, desc):
+                    if ka[0] != kb[0]:
+                        return -1 if ka[0] < kb[0] else 1
+                    if ka[1] is None and kb[1] is None:
+                        return 0
+                    if ka[1] is None:
+                        return 1
+                    if kb[1] is None:
+                        return -1
+                    if desc:
+                        return -1 if ka[1] > kb[1] else (1 if ka[1] < kb[1] else 0)
+                    return -1 if ka[1] < kb[1] else (1 if ka[1] > kb[1] else 0)
+
+                def _cmp(a, b):
+                    return _cmp_values(_row_vals[a], _row_vals[b], desc_order)
+
+                order = sorted(range(len(rows)), key=cmp_to_key(_cmp))
+                rows = [rows[i] for i in order]
+
+        wb = Workbook()
+        ws_count = wb.active
+        ws_count.title = "数量"
+        ws_pct = wb.create_sheet("百分比")
+        headers = ["OSAT", "Device", "LOT ID", "WAFER ID", "TOTAL", "PASS", "YIELD",
+                   "Test Program", "MP Tester", "Probe Card", "Test Start", "Test End", "Time(h)"]
+        bin_headers = [f"Sbin{i}" for i in range(1, 131)]
+        full_headers = headers + bin_headers
+
+        head_font = Font(bold=True, color="FFFFFF")
+        head_fill = PatternFill("solid", fgColor="2563EB")
+        for ws in (ws_count, ws_pct):
+            ws.append(full_headers)
+            for c_idx in range(1, len(full_headers) + 1):
+                cell = ws.cell(row=1, column=c_idx)
+                cell.font = head_font
+                cell.fill = head_fill
+                cell.alignment = Alignment(horizontal="center")
+            ws.freeze_panes = "A2"
+
+        for row in rows:
+            head = [row[k] for k in item_keys]
+            bin_vals = [row[f"sbin{i}"] for i in range(1, 131)]
+            ws_count.append(head + bin_vals)
+            die = row["total"] or 0
+            pct_vals = [round((v / die * 100.0), 2) if die > 0 and v else 0 for v in bin_vals]
+            ws_pct.append(head + pct_vals)
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        fname = "MP_Yield_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".xlsx"
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── MP-Yield SYL judgement helpers ───────────────────────────────────────────
+
+
+def _load_sessions_by_products(db: Session, product_names) -> dict:
+    """Load SYL sessions for products (case-insensitive) -> {lower_product: [asc sessions]}."""
+    out: dict = {}
+    names = {(p or "").strip().lower() for p in product_names if p and (p or "").strip()}
+    if not names:
+        return out
+    rows = (
+        db.query(MpYieldSylSession)
+        .filter(func.lower(MpYieldSylSession.product_name).in_(list(names)))
+        .order_by(MpYieldSylSession.setup_time.asc(), MpYieldSylSession.id.asc())
+        .all()
+    )
+    for row in rows:
+        out.setdefault((row.product_name or "").strip().lower(), []).append(row)
+    return out
+
+
+def _judge_lot_syl(lot: Lot, lot_bins: dict, sessions_asc) -> Optional[dict]:
+    """
+    Judge one wafer row against the most recent SYL session whose setup_time is
+    <= the row test date. Returns None when no session applies, otherwise a dict:
+      {session_id, setup_time, over, details:[...]}
+    Rule direction:
+      'gte' (Bin1 / yield rules): over spec when actual < pct
+      'lte' (fail-bin rules):     over spec when actual > pct
+    """
+    test_date = lot.test_date
+    if test_date is None or not sessions_asc:
+        return None
+    td = test_date
+    if getattr(td, "tzinfo", None) is not None:
+        td = td.replace(tzinfo=None)
+    chosen = None
+    for s in sessions_asc:
+        st = s.setup_time
+        if st is not None and st <= td:
+            chosen = s
+        else:
+            break
+    if chosen is None:
+        return None
+
+    die = lot.die_count or 0
+    details = []
+    for r in chosen.rules or []:
+        bins = r.get("bins") or []
+        if not bins:
+            continue
+        cnt = 0
+        for b in bins:
+            try:
+                cnt += int(lot_bins.get(int(b), 0) or 0)
+            except (TypeError, ValueError):
+                pass
+        ratio = (cnt / die * 100.0) if die > 0 else 0.0
+        pct = float(r.get("pct") or 0.0)
+        direction = r.get("direction") or ("gte" if 1 in bins else "lte")
+        if direction == "gte":
+            over = ratio < pct
+        else:
+            over = ratio > pct
+        if over:
+            details.append({
+                "label": r.get("label") or ("Bin" + "+".join(str(b) for b in bins)),
+                "param": r.get("param") or "",
+                "pct": round(pct, 4),
+                "actual": round(ratio, 4),
+                "direction": direction,
+            })
+    return {
+        "session_id": chosen.id,
+        "setup_time": chosen.setup_time.isoformat() if chosen.setup_time else None,
+        "over": len(details) > 0,
+        "details": details,
+    }
+
+
+def _mp_yield_scope_query(
+    db: Session,
+    *,
+    lot_id=None, wafer_id=None, product_name=None, mp_tester=None,
+    osat_name=None, program=None, test_date_from=None, test_date_to=None,
+    range_type=None, range_value=None,
+):
+    """Build the filtered, de-duplicated MP-Yield scope query (no ordering)."""
+    from app.models.lot import DataSource
+    query = db.query(Lot).filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
+
+    latest_wafer_run_ids = (
+        db.query(func.max(Lot.id))
+        .filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
+        .group_by(Lot.lot_id, Lot.wafer_id)
+        .subquery()
+    )
+    query = query.filter(Lot.id.in_(latest_wafer_run_ids))
+
+    if lot_id:
+        query = query.filter(Lot.lot_id.ilike(f"%{lot_id}%"))
+    if wafer_id:
+        query = query.filter(Lot.wafer_id.ilike(f"%{wafer_id}%"))
+    if product_name:
+        query = query.filter(Lot.product_name.ilike(f"%{product_name}%"))
+    if osat_name:
+        if osat_name.upper() in ("HTKS", "HTJS", "KSHT"):
+            query = query.filter(or_(
+                Lot.osat_name.ilike("%HTKS%"),
+                Lot.osat_name.ilike("%HTJS%"),
+                Lot.osat_name.ilike("%KSHT%")
+            ))
+        elif osat_name.lower() == "chipmore":
+            query = query.filter(or_(Lot.osat_name.ilike(f"%{osat_name}%"), Lot.osat_name.is_(None)))
+        else:
+            query = query.filter(Lot.osat_name.ilike(f"%{osat_name}%"))
+    if program:
+        query = query.filter(Lot.program.ilike(f"%{program}%"))
+    if mp_tester:
+        if mp_tester == "(unknown)":
+            query = query.filter(or_(Lot.mp_tester == "(unknown)", Lot.mp_tester.is_(None)))
+        else:
+            query = query.filter(Lot.mp_tester.ilike(f"%{mp_tester}%"))
+
+    if range_type:
+        if range_type == "month":
+            val = range_value if range_value is not None else 3
+            cutoff = datetime.now(timezone.utc) - timedelta(days=val * 30)
+            query = query.filter(Lot.test_date >= cutoff)
+        elif range_type == "year":
+            val = range_value if range_value is not None else 1
+            cutoff = datetime.now(timezone.utc) - timedelta(days=val * 365)
+            query = query.filter(Lot.test_date >= cutoff)
+        elif range_type == "lot":
+            val = range_value if range_value is not None else 20
+            recent_lots_q = (
+                db.query(Lot.lot_id)
+                .filter(
+                    Lot.data_source == DataSource.ftp,
+                    Lot.data_type == "MP_Yield",
+                    Lot.status != "deleted",
+                )
+            )
+            if product_name:
+                recent_lots_q = recent_lots_q.filter(Lot.product_name.ilike(f"%{product_name}%"))
+            recent_lots_results = (
+                recent_lots_q.group_by(Lot.lot_id)
+                .order_by(func.max(Lot.test_date).desc())
+                .limit(val)
+                .all()
+            )
+            recent_lot_ids = [r[0] for r in recent_lots_results] if recent_lots_results else []
+            query = query.filter(Lot.lot_id.in_(recent_lot_ids))
+        elif range_type == "all":
+            pass
+    else:
+        if test_date_from:
+            query = query.filter(Lot.test_date >= datetime.strptime(test_date_from, "%Y-%m-%d"))
+        if test_date_to:
+            query = query.filter(Lot.test_date < datetime.strptime(test_date_to, "%Y-%m-%d") + timedelta(days=1))
+    return query
+
+
+def _collect_syl_over_ids(db: Session, ordered_query) -> List[int]:
+    """Scan an ordered MP-Yield scope, returning ids of rows whose applicable
+    SYL session (test date >= setup time) is exceeded."""
+    session_map: dict = {}
+    hit_ids: List[int] = []
+
+    def _ensure_sessions(lots):
+        missing = {(l.product_name or "").strip().lower() for l in lots if l.product_name}
+        if missing:
+            for k, v in _load_sessions_by_products(db, missing).items():
+                session_map.setdefault(k, []).extend(v)
+
+    step = 1500
+    offset = 0
+    while True:
+        chunk = ordered_query.offset(offset).limit(step).all()
+        if not chunk:
+            break
+        _ensure_sessions(chunk)
+        chunk_ids = [c.id for c in chunk]
+        chunk_bin_rows = (
+            db.query(BinSummary)
+            .filter(BinSummary.lot_id.in_(chunk_ids))
+            .all()
+        )
+        bins_by_lot: dict = {}
+        for b in chunk_bin_rows:
+            bins_by_lot.setdefault(b.lot_id, {})[b.bin_number] = b.count
+        for lot in chunk:
+            sess = session_map.get((lot.product_name or "").strip().lower())
+            if not sess:
+                continue
+            res = _judge_lot_syl(lot, bins_by_lot.get(lot.id, {}), sess)
+            if res and res.get("over"):
+                hit_ids.append(lot.id)
+        offset += step
+    return hit_ids
 
 
 @router.get("", response_model=LotListResponse)

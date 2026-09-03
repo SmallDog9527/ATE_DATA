@@ -22,6 +22,7 @@ const router = createRouter({
       children: [
         { path: '',          name: 'home',          component: () => import('@/views/HomeView.vue'), meta: { title: 'Vite Data' } },
         { path: 'analysis',  name: 'data-analysis', component: () => import('@/views/DataAnalysisView.vue'), meta: { title: 'Vite Yield' } },
+        { path: 'mp-yield-syl', name: 'mp-yield-syl', component: () => import('@/views/MpYieldSylView.vue'), meta: { title: 'SYL/SBL 设定' } },
         { path: 'profile',   name: 'profile',       component: () => import('@/views/ProfileView.vue'), meta: { title: 'Vite Profile' } },
         { path: 'lot/:id/param/:param', name: 'param', component: () => import('@/views/ParamView.vue'), meta: { title: 'Vite Param' } },
         { path: 'lot/:id',   name: 'analysis',      component: () => import('@/views/AnalysisView.vue'), meta: { title: 'Vite Analysis' } },

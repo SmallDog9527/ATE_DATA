@@ -138,18 +138,36 @@
           <div class="filter-actions-inline">
             <button class="btn btn-secondary" @click="handleReset">重置</button>
             <button class="btn btn-primary" @click="handleSearch">查询</button>
+            <button
+              class="btn bin-mode-btn"
+              :class="{ 'bin-mode-pct': binDisplayMode === 'pct' }"
+              :title="binDisplayMode === 'count' ? '切换为百分比显示' : '切换为数量显示'"
+              @click="binDisplayMode = binDisplayMode === 'count' ? 'pct' : 'count'"
+            >{{ binDisplayMode === 'count' ? '数量' : '百分比' }}</button>
+            <button
+              class="btn syl-over-btn"
+              :class="sylOverOnly ? 'syl-over-active' : 'btn-secondary'"
+              :disabled="sylJudging"
+              @click="toggleSylOver"
+            >显示SYL超标{{ overCount !== null ? '（' + overCount + '）' : '' }}</button>
+            <button class="btn btn-export" :disabled="exporting" @click="exportExcel">{{ exporting ? '导出中…' : '导出Excel' }}</button>
           </div>
+          <div v-if="sylOverOnly" class="syl-over-hint">当前仅显示 SYL 超标 Wafer（{{ total }} 条）</div>
         </div>
       </div>
 
       <!-- Data Table Card (AG Grid) -->
       <div class="table-card" style="flex: 1; display: flex; flex-direction: column; min-height: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0;">
         <AgGridVue
+          ref="detailGridRef"
           class="ag-theme-alpine detail-grid"
           :theme="'legacy'"
           :rowData="items"
           :columnDefs="detailColDefs"
           :defaultColDef="defaultColDef"
+          :getRowStyle="detailRowStyle"
+          @grid-ready="onGridReady"
+          @sort-changed="onSortChanged"
           style="width: 100%; flex: 1; min-height: 0;"
           :suppressScrollOnNewData="true"
         />
@@ -295,12 +313,13 @@ export default {
 import { reactive, computed, onMounted, nextTick, watch } from 'vue'
 import * as echarts from 'echarts'
 import api from '@/api'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { AgGridVue } from 'ag-grid-vue3'
 import 'ag-grid-community/styles/ag-grid.css'
 import 'ag-grid-community/styles/ag-theme-alpine.css'
 
 const router = useRouter()
+const route = useRoute()
 
 // Bind global cache
 const ovLoaded = globalOvLoaded
@@ -467,6 +486,13 @@ const DeviceLinkRenderer = (p: any) => {
   return `<button class="device-link" onclick="if(window.goToDeviceDetail) window.goToDeviceDetail('${p.value}', '${osat}')">${p.value}</button>`;
 }
 
+const SylLinkRenderer = (p: any) => {
+  if (!p.value) return '';
+  const href = '/mp-yield-syl?product=' + encodeURIComponent(String(p.value));
+  return `<a class="syl-setup-link" target="_blank" rel="noopener" href="${href}"
+    style="color:#2563eb; text-decoration:underline; cursor:pointer; font-weight:500;">SYL</a>`;
+}
+
 const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#f97316'];
 
 // ══════════════════════════════════════════════════════════════════
@@ -495,6 +521,7 @@ for(let i=0; i<5; i++) {
 const ovColDefs = [
   { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
   { field: 'product_name', headerName: 'Device（产品名）', width: 180, pinned: 'left', cellRenderer: DeviceLinkRenderer },
+  { headerName: 'SYL设定', width: 90, pinned: 'left', valueGetter: (p: any) => p.data ? p.data.product_name : '', cellRenderer: SylLinkRenderer },
   { field: 'osat', headerName: 'OSAT', width: 110, pinned: 'left' },
   { field: 'wafers', headerName: 'Wafers', width: 90, type: 'numericColumn' },
   { field: 'avg_wafer_time_h', headerName: 'Time(h)', width: 90, type: 'numericColumn' },
@@ -713,36 +740,138 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(50)
 
-const detailColDefs = [
-  { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
-  { field: 'osat_name', headerName: 'OSAT', width: 90, pinned: 'left' },
-  { field: 'product_name', headerName: 'Device', width: 140, pinned: 'left' },
-  { field: 'lot_id', headerName: 'LOT ID', width: 140, pinned: 'left', cellClass: 'selectable-cell' },
-  { field: 'wafer_id', headerName: 'WAFER ID', width: 100, pinned: 'left' },
-  { field: 'total', headerName: 'TOTAL', width: 90, type: 'numericColumn' },
-  { field: 'pass', headerName: 'PASS', width: 90, type: 'numericColumn' },
-  { field: 'yield_rate', headerName: 'YIELD', width: 90, cellRenderer: YieldRenderer },
-  { field: 'program', headerName: 'Test Program', width: 315 },
-  { field: 'mp_tester', headerName: 'MP Tester', width: 110 },
-  { field: 'probecard', headerName: 'Probe Card', width: 217 },
-  { field: 'test_start', headerName: 'Test Start', width: 150 },
-  { field: 'test_date', headerName: 'Test End', width: 150 },
-  { field: 'duration_h', headerName: 'Time(h)', width: 90, type: 'numericColumn' }
-]
-for (let i = 1; i <= 130; i++) {
-  detailColDefs.push({ 
-    field: 'sbin' + i, 
-    headerName: 'Sbin' + i, 
-    width: 75,
-    type: 'numericColumn',
-    valueFormatter: (p: any) => p.value === 0 ? '' : p.value
-  })
+const binDisplayMode = ref<'count' | 'pct'>('count')
+const sylOverOnly = ref(false)
+const sylJudging = ref(false)
+const overCount = ref<number | null>(null)
+let suppressOverCount = false
+const exporting = ref(false)
+const detailGridRef = ref<any>(null)
+const detailGridApi = shallowRef<any>(null)
+const sortBackup = ref<{ field: string; dir: 'asc' | 'desc' } | null>(null)
+
+function onGridReady(e: any) {
+  detailGridApi.value = e && e.api ? e.api : null
 }
 
-async function fetchData() {
-  loading.value = true
+function onSortChanged(e: any) {
   try {
-    const params: any = { page: page.value, page_size: pageSize.value }
+    const model = e && e.api ? e.api.getSortModel() : []
+    if (model && model.length) {
+      sortBackup.value = { field: model[0].colId, dir: model[0].sort === 'desc' ? 'desc' : 'asc' }
+    } else {
+      sortBackup.value = null
+    }
+  } catch (err) {
+    sortBackup.value = null
+  }
+}
+
+// Fallback that reads the sort arrows directly from the grid header DOM.
+function domGridSort(): { field: string; dir: 'asc' | 'desc' } | null {
+  try {
+    let root: any = detailGridRef.value
+    if (!root) return null
+    const el = root.$el || root
+    if (!el || typeof el.querySelectorAll !== 'function') return null
+
+    // 1) AG Grid adds ag-header-cell-sorted-asc/desc classes with a col-id attribute
+    const cells: any[] = Array.prototype.slice.call(el.querySelectorAll('.ag-header-cell-sorted-asc, .ag-header-cell-sorted-desc'))
+    for (const c of cells) {
+      const dir = c.classList.contains('ag-header-cell-sorted-desc') ? 'desc' : 'asc'
+      const colId = c.getAttribute('col-id') || c.getAttribute('colid') || ''
+      if (colId) return { field: colId, dir }
+    }
+
+    // 2) aria-sort on column headers, mapped through the grid column defs
+    const heads: any[] = Array.prototype.slice.call(el.querySelectorAll('[role="columnheader"]'))
+    for (const h of heads) {
+      const aria = (h.getAttribute('aria-sort') || '').toLowerCase()
+      if (!aria || aria === 'none') continue
+      const dir = aria === 'descending' ? 'desc' : 'asc'
+      const textEl = h.querySelector && h.querySelector('.ag-header-cell-text')
+      const label = textEl ? (textEl.textContent || '').trim() : ''
+      if (!label) continue
+      const col = detailColDefs.value.find((d: any) => d.headerName === label)
+      if (col) return { field: col.colId || col.field || col.headerName, dir }
+    }
+  } catch (err) {
+    // ignore
+  }
+  return null
+}
+
+// Read the grid sort (live API first, DOM arrows second, event backup third).
+function readGridSort(): { field: string; dir: 'asc' | 'desc' } | null {
+  try {
+    const api = detailGridApi.value || (detailGridRef.value && detailGridRef.value.api)
+    if (api && typeof api.getSortModel === 'function') {
+      const model = api.getSortModel()
+      if (model && model.length) {
+        return { field: model[0].colId, dir: model[0].sort === 'desc' ? 'desc' : 'asc' }
+      }
+    }
+  } catch (err) {
+    // ignore, fall back below
+  }
+  const fromDom = domGridSort()
+  if (fromDom) return fromDom
+  return sortBackup.value
+}
+
+const detailColDefs = computed<any[]>(() => {
+  const cols: any[] = [
+    { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
+    { field: 'osat_name', headerName: 'OSAT', width: 90, pinned: 'left' },
+    { field: 'product_name', headerName: 'Device', width: 140, pinned: 'left' },
+    { field: 'lot_id', headerName: 'LOT ID', width: 140, pinned: 'left', cellClass: 'selectable-cell' },
+    { field: 'wafer_id', headerName: 'WAFER ID', width: 100, pinned: 'left' },
+    { field: 'total', headerName: 'TOTAL', width: 90, type: 'numericColumn' },
+    { field: 'pass', headerName: 'PASS', width: 90, type: 'numericColumn' },
+    { field: 'yield_rate', headerName: 'YIELD', width: 90, cellRenderer: YieldRenderer },
+    { field: 'program', headerName: 'Test Program', width: 315 },
+    { field: 'mp_tester', headerName: 'MP Tester', width: 110 },
+    { field: 'probecard', headerName: 'Probe Card', width: 217 },
+    { field: 'test_start', headerName: 'Test Start', width: 150 },
+    { field: 'test_date', headerName: 'Test End', width: 150 },
+    { field: 'duration_h', headerName: 'Time(h)', width: 90, type: 'numericColumn' }
+  ]
+  const mode = binDisplayMode.value
+  for (let i = 1; i <= 130; i++) {
+    cols.push({
+      field: 'sbin' + i,
+      headerName: 'Sbin' + i,
+      width: 75,
+      type: 'numericColumn',
+      valueFormatter: (p: any) => {
+        const v = p.value
+        if (v === 0 || v === null || v === undefined || v === '') return ''
+        if (mode === 'pct') {
+          const tot = p.data ? Number(p.data.total) : 0
+          if (!tot) return ''
+          return ((Number(v) / tot) * 100).toFixed(2) + '%'
+        }
+        return v
+      }
+    })
+  }
+  return cols
+})
+
+// 淡红色整行底色：命中的 SYL 超标记录
+function detailRowStyle(params: any) {
+  if (params && params.data && params.data.syl_over) {
+    return { backgroundColor: '#fde8e8' }
+  }
+  return null
+}
+
+async function fetchData(opts: { count?: boolean } = {}) {
+  loading.value = true
+  sylJudging.value = sylOverOnly.value
+  try {
+    const params: any = { page: page.value, page_size: pageSize.value, include_syl: 1 }
+    if (!sylOverOnly.value && opts.count) params.syl_over_total = 1
     if (filters.osat_name) params.osat_name = filters.osat_name
     if (filters.product_name) params.product_name = filters.product_name
     if (filters.lot_id) params.lot_id = filters.lot_id
@@ -751,21 +880,36 @@ async function fetchData() {
     if (filters.test_date_from) params.test_date_from = filters.test_date_from
     if (filters.test_date_to) params.test_date_to = filters.test_date_to
 
-    const resp: any = await api.get('/lots/mp-yield/list', { params })
+    const url = sylOverOnly.value ? '/lots/mp-yield/syl-over' : '/lots/mp-yield/list'
+    const resp: any = await api.get(url, { params })
     items.value = resp.items || []
     total.value = resp.total || 0
+    if (opts.count && !suppressOverCount) {
+      if (sylOverOnly.value) {
+        overCount.value = resp.total !== undefined ? Number(resp.total) : null
+      } else {
+        overCount.value = typeof resp.syl_over_total === 'number' ? Number(resp.syl_over_total) : null
+      }
+    }
   } catch (error) {
     console.error('Failed to fetch MP Yield list:', error)
   } finally {
     loading.value = false
+    sylJudging.value = false
+    suppressOverCount = false
   }
+}
+
+function toggleSylOver() {
+  sylOverOnly.value = !sylOverOnly.value
+  handleSearch()
 }
 
 const maxPage = computed(() => Math.ceil(total.value / pageSize.value) || 1)
 
 function handleSearch() {
   page.value = 1
-  fetchData()
+  fetchData({ count: true })
 }
 
 let searchTimeout: any;
@@ -784,7 +928,63 @@ function handleReset() {
   filters.program = ''
   filters.test_date_from = ''
   filters.test_date_to = ''
-  handleSearch()
+  sylOverOnly.value = false
+  overCount.value = null
+  page.value = 1
+  fetchData()
+}
+
+// Export the currently filtered rows (whole scope, not just this page) to an
+// Excel workbook with two sheets: bin counts and bin percentages.
+async function exportExcel() {
+  exporting.value = true
+  try {
+    const params: any = {}
+    if (filters.osat_name) params.osat_name = filters.osat_name
+    if (filters.product_name) params.product_name = filters.product_name
+    if (filters.lot_id) params.lot_id = filters.lot_id
+    if (filters.wafer_id) params.wafer_id = filters.wafer_id
+    if (filters.program) params.program = filters.program
+    if (filters.test_date_from) params.test_date_from = filters.test_date_from
+    if (filters.test_date_to) params.test_date_to = filters.test_date_to
+    if (sylOverOnly.value) params.syl_over_only = 1
+    const gridSort = readGridSort()
+    if (gridSort) {
+      params.sort_col = gridSort.field
+      params.sort_dir = gridSort.dir
+    }
+    params.t = String(Date.now())
+    const resp: any = await api.get('/lots/mp-yield/export', { params, responseType: 'blob' })
+    const blob = resp.data
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const now = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    a.download = 'MP_Yield_' + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + '_' + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds()) + '.xlsx'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    console.error('Export failed:', e)
+  } finally {
+    exporting.value = false
+  }
+}
+
+// Entered from the SYL/SBL setup page (new tab /analysis?view=detail&...):
+// prefill product + test-date window and turn on the SYL-over filter.
+const entryQ = route.query
+if (entryQ && entryQ.view === 'detail') {
+  if (typeof entryQ.product_name === 'string' && entryQ.product_name) filters.product_name = entryQ.product_name
+  if (typeof entryQ.test_date_from === 'string' && entryQ.test_date_from) filters.test_date_from = entryQ.test_date_from
+  if (typeof entryQ.test_date_to === 'string' && entryQ.test_date_to) filters.test_date_to = entryQ.test_date_to
+  if (entryQ.syl_over === '1' || entryQ.syl_over === 'true') {
+    sylOverOnly.value = true
+    suppressOverCount = true
+  }
+  activeView.value = 'detail'
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1970,5 +2170,33 @@ onMounted(() => {
 :deep(.selectable-cell) {
   cursor: text;
   user-select: text;
+}
+
+/* 数量/百分比 与 SYL 超标 控件 */
+.bin-mode-btn {
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+}
+.bin-mode-btn.bin-mode-pct {
+  background: #2563eb !important;
+  border-color: #2563eb !important;
+  color: #fff !important;
+}
+.btn-export {
+  background: #059669 !important;
+  border: 1px solid #059669 !important;
+  color: #fff !important;
+}
+.syl-over-btn.syl-over-active {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #fff;
+}
+.syl-over-hint {
+  width: 100%;
+  font-size: 12px;
+  color: #b91c1c;
+  line-height: 1;
 }
 </style>

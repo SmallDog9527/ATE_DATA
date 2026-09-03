@@ -259,11 +259,21 @@ def parse_and_save_ksht_summary(filepath: str, db: Session, user_id: int = None,
                 rate_val = sh_sum.cell(r, c_idx + 1).value
                 if rate_val is not None:
                     try:
-                        rate_str = str(rate_val).replace('%', '').strip()
+                        raw_str = str(rate_val).strip()
+                        is_percent_text = '%' in raw_str
+                        rate_str = raw_str.replace('%', '').replace(',', '').strip()
                         val_float = float(rate_str)
-                        if '%' in str(rate_val) or (val_float > 0 and val_float < 1.0):
+                        if is_percent_text:
+                            # Percent text such as '97.56%' / '0.33%' -> count = die * percent / 100
+                            sbin_counts[b_num] = int(round(die_count * val_float / 100.0))
+                        elif 0 < val_float < 1.0:
+                            # Numeric fraction such as 0.9756 -> count = die * fraction
                             sbin_counts[b_num] = int(round(die_count * val_float))
+                        elif val_float <= 100.0:
+                            # Numeric percent-point such as 97.56 -> count = die * value / 100
+                            sbin_counts[b_num] = int(round(die_count * val_float / 100.0))
                         else:
+                            # Numeric raw count (larger than any percent point)
                             sbin_counts[b_num] = int(round(val_float))
                     except ValueError:
                         pass

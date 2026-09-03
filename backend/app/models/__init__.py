@@ -18,3 +18,4 @@ from app.models.datasheet_spec import Datasheet, DatasheetParameter, ParameterMa
 from app.models.ftp_scan_snapshot import FtpScanSnapshot
 
 from app.models.ftp_extracted_file import FtpExtractedFile
+from app.models.mp_yield_syl import MpYieldSylSession
