@@ -90,6 +90,14 @@ def enrich_device_and_program(w_info: dict, db_sess: Session, cache: dict = None
                 (Lot.product_name.isnot(None) & (Lot.product_name != '')) | (Lot.program.isnot(None) & (Lot.program != ''))
             ).order_by(Lot.id.desc()).first()
 
+        # Fallback to any existing record of the same lot (even MP_Yield) with valid product_name or program
+        if not match:
+            match = db_sess.query(Lot.product_name, Lot.program, Lot.mp_tester).filter(
+                Lot.lot_id == cur_lot,
+                Lot.status != 'deleted',
+                (Lot.product_name.isnot(None) & (Lot.product_name != '')) | (Lot.program.isnot(None) & (Lot.program != ''))
+            ).order_by(Lot.id.desc()).first()
+
         if match:
             if not prod_val and match.product_name:
                 prod_val = match.product_name
@@ -97,6 +105,12 @@ def enrich_device_and_program(w_info: dict, db_sess: Session, cache: dict = None
                 prog_val = match.program
             if not tester_val and match.mp_tester:
                 tester_val = match.mp_tester
+            if cache is not None:
+                cache[cur_lot] = {
+                    "product_name": prod_val,
+                    "program": prog_val,
+                    "mp_tester": tester_val,
+                }
 
     # 3. Deduce product_name from program prefix or ProductMapping if still missing
     if missing_dev and not prod_val:
