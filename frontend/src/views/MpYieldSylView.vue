@@ -4,7 +4,10 @@
     <div class="syl-topbar">
       <a class="syl-back" href="javascript:void(0)" @click="goBack">← 返回量产良率</a>
       <span class="syl-title">SYL/SBL 设定 — {{ product }}</span>
-      <a class="syl-godetail" :href="detailEntryUrl" target="_blank" rel="noopener" title="在新标签页打开明细：首次设定不筛开始日期，多次设定筛最近一次设定日期起，点亮 SYL 超标">进入明细页面 →</a>
+      <div class="syl-godetail-wrap">
+        <a class="syl-godetail" :href="detailEntryUrl" target="_blank" rel="noopener" :title="detailEntryTip || '在新标签页打开明细'">进入明细页面 →</a>
+        <span v-if="detailEntryTip" class="syl-godetail-hint">{{ detailEntryTip }}</span>
+      </div>
       <button class="syl-refresh" @click="loadSessions">刷新</button>
     </div>
 
@@ -31,9 +34,20 @@
         <table class="syl-table">
           <thead>
             <tr class="syl-group-row">
-              <th v-for="s in sessions" :key="'g' + s.id" :colspan="3" class="syl-group-head">
-                <span class="syl-time">{{ fmtTime(s.setup_time) }}</span>
-                <a class="syl-del" href="javascript:void(0)" title="删除本次设定" @click="removeSession(s.id)">✕ 删除</a>
+              <th v-for="s in sessions" :key="'g' + s.id" :colspan="3" class="syl-group-head" :class="{ 'syl-group-selected': s.id === selectedSessionId }">
+                <div class="syl-group-head-inner">
+                  <label class="syl-select-label" title="选中此设定进行明细筛选">
+                    <input
+                      type="radio"
+                      name="syl_session_select"
+                      :value="s.id"
+                      v-model="selectedSessionId"
+                      class="syl-radio"
+                    />
+                    <span class="syl-time">{{ fmtTime(s.setup_time) }}</span>
+                  </label>
+                  <a class="syl-del" href="javascript:void(0)" title="删除本次设定" @click="removeSession(s.id)">✕ 删除</a>
+                </div>
               </th>
             </tr>
             <tr class="syl-header-row">
@@ -85,6 +99,7 @@ const router = useRouter()
 const product = ref<string>((route.query.product as string) || '')
 const sylInput = ref('')
 const sessions = ref<SylSession[]>([])
+const selectedSessionId = ref<number | null>(null)
 const loading = ref(false)
 const saving = ref(false)
 const message = ref('')
@@ -203,6 +218,7 @@ async function loadSessions() {
       const last = sessions.value[sessions.value.length - 1];
       sylInput.value = last && last.raw_text ? last.raw_text : '';
     }
+    initDefaultSession();
   } catch (e: any) {
     message.value = '加载失败: ' + ((e && (e.response && e.response.data && e.response.data.detail)) || (e && e.message) || e);
     msgIsErr.value = true;
@@ -250,18 +266,100 @@ function setMsg(text: string, isErr: boolean) {
   msgIsErr.value = isErr;
 }
 
-// Jump into the detail page (new tab), turning on the SYL-over view.
-// First-time setup: no start-date filter and no end date (default).
-// Multiple setups: start date = latest setup date, end date still default.
-const detailEntryUrl = computed(() => {
-  const qp: string[] = []
-  if (product.value) qp.push('product_name=' + encodeURIComponent(product.value))
-  if (sessions.value.length > 1) {
-    const last = sessions.value[sessions.value.length - 1]
-    const d = last && last.setup_time ? String(last.setup_time).slice(0, 10) : ''
-    if (d) qp.push('test_date_from=' + d)
+function initDefaultSession() {
+  const list = sessions.value || []
+  if (list.length === 0) {
+    selectedSessionId.value = null
+    return
   }
-  return '/analysis?view=detail&syl_over=1&' + qp.join('&')
+  if (list.length === 1) {
+    selectedSessionId.value = list[0].id
+    return
+  }
+  const now = new Date()
+  const y = now.getFullYear()
+  const m = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  const todayStr = y + '-' + m + '-' + d
+
+  const last = list[list.length - 1]
+  const lastDateStr = last && last.setup_time ? String(last.setup_time).slice(0, 10) : ''
+  if (lastDateStr === todayStr) {
+    // If the last session's setup date is today, user wants to view from previous setup date to today
+    selectedSessionId.value = list[list.length - 2].id
+  } else {
+    // If the last session's setup date is not today, view from last setup date to today
+    selectedSessionId.value = last.id
+  }
+}
+
+const selectedSessionIndex = computed(() => {
+  if (selectedSessionId.value == null) return -1
+  return sessions.value.findIndex((s) => s.id === selectedSessionId.value)
+})
+
+const detailEntryParams = computed(() => {
+  const list = sessions.value || []
+  const idx = selectedSessionIndex.value
+  if (idx < 0 || list.length === 0) {
+    return { from: '', to: '', tip: '', sessionId: null }
+  }
+
+  const cur = list[idx]
+  const isLast = idx === list.length - 1
+
+  if (list.length === 1) {
+    // Only 1 session (first setup): default to 6 months prior to today
+    const dt = new Date(String(cur.setup_time).replace(' ', 'T'))
+    let fromStr = ''
+    if (!isNaN(dt.getTime())) {
+      dt.setMonth(dt.getMonth() - 6)
+      const y = dt.getFullYear()
+      const m = String(dt.getMonth() + 1).padStart(2, '0')
+      const d = String(dt.getDate()).padStart(2, '0')
+      fromStr = y + '-' + m + '-' + d
+    }
+    return {
+      from: fromStr,
+      to: '',
+      tip: '首版设定：筛选 ' + fromStr + ' 至今数据',
+      sessionId: cur.id
+    }
+  }
+
+  if (!isLast) {
+    // Middle session: from cur.setup_time to next.setup_time
+    const next = list[idx + 1]
+    const fromStr = cur.setup_time ? String(cur.setup_time).slice(0, 10) : ''
+    const toStr = next && next.setup_time ? String(next.setup_time).slice(0, 10) : ''
+    return {
+      from: fromStr,
+      to: toStr,
+      tip: '选中区间：' + fromStr + ' 至 ' + toStr,
+      sessionId: cur.id
+    }
+  } else {
+    // Last session: from cur.setup_time to today
+    const fromStr = cur.setup_time ? String(cur.setup_time).slice(0, 10) : ''
+    return {
+      from: fromStr,
+      to: '',
+      tip: '最新设定：' + fromStr + ' 至今',
+      sessionId: cur.id
+    }
+  }
+})
+
+const detailEntryTip = computed(() => detailEntryParams.value.tip)
+
+const detailEntryUrl = computed(() => {
+  const qp = ['view=detail', 'syl_over=1', 'mode=pct']
+  if (product.value) qp.push('product_name=' + encodeURIComponent(product.value))
+  const { from, to, sessionId } = detailEntryParams.value
+  if (from) qp.push('test_date_from=' + from)
+  if (to) qp.push('test_date_to=' + to)
+  if (sessionId) qp.push('syl_session_id=' + sessionId)
+  return '/analysis?' + qp.join('&')
 })
 
 loadSessions();
@@ -272,7 +370,13 @@ loadSessions();
 .syl-topbar { display: flex; align-items: center; }
 .syl-back { margin-right: 16px; color: #2563eb; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 5px 12px; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
 .syl-title { font-size: 18px; font-weight: 700; color: #1e293b; margin-right: 28px; }
-.syl-godetail { margin-right: 28px; color: #2563eb; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 5px 12px; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+.syl-godetail-wrap { display: inline-flex; align-items: center; gap: 10px; margin-right: 24px; }
+.syl-godetail { color: #2563eb; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 5px 12px; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+.syl-godetail-hint { font-size: 12px; color: #475569; font-weight: 500; background: #f8fafc; padding: 3px 8px; border-radius: 4px; border: 1px solid #e2e8f0; }
+.syl-group-head-inner { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.syl-select-label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.syl-radio { cursor: pointer; width: 14px; height: 14px; accent-color: #2563eb; }
+.syl-group-selected { background: #dbeafe !important; border-top: 3px solid #2563eb !important; }
 .syl-refresh { padding: 5px 14px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; cursor: pointer; color: #334155; font-size: 13px; }
 .syl-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
 .syl-parse-row { display: flex; gap: 10px; align-items: stretch; }

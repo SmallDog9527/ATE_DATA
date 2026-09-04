@@ -127,20 +127,21 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
                         yield_rate = round(val_float, 4)
                     except ValueError:
                         pass
-            elif col_name in ("probe card no", "probecard"):
+            col_clean = col_name.rstrip('.').strip()
+            if col_clean in ("probe card no", "probecard", "probe card"):
                 probecard = str(val).strip() if val else None
-            elif col_name == "tester":
+            elif col_clean == "tester":
                 mp_tester = str(val).strip() if val else None
-            elif col_name == "test program":
+            elif col_clean in ("test program", "program"):
                 program = str(val).strip() if val else None
-            elif col_name.startswith("sbin") or col_name.startswith("bin") or col_name.startswith("s-bin"):
+            elif col_name.startswith(("sbin", "bin", "s-bin")) or (col_name.startswith("c") and len(col_name) > 1 and col_name[1:].isdigit()):
                 try:
                     num_str = ''.join([ch for ch in col_name if ch.isdigit()])
                     if num_str:
                         bin_no = int(num_str)
                         if 1 <= bin_no <= 130:
-                            sbin_counts[bin_no] = int(val) if val is not None else 0
-                except ValueError:
+                            sbin_counts[bin_no] = int(round(float(val))) if val is not None else 0
+                except (ValueError, TypeError):
                     pass
                     
         # Now read details from the per-wafer sheet named after raw_wafer or wafer_key
@@ -175,7 +176,7 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
                                 total_tested = int(v_val)
                             except (ValueError, TypeError):
                                 pass
-                        elif k_str in ("pass dice", "pass count"):
+                        elif k_str in ("pass dice", "pass count", "pass"):
                             try:
                                 pass_count = int(v_val)
                             except (ValueError, TypeError):
@@ -183,20 +184,32 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
                                 
             # If sbin_counts empty, parse sbin from df_w
             if not sbin_counts:
-                # Look for SBIN rows
+                # Look for SBIN or Category rows (e.g. '1 CP1_PASS', 'sbin1')
                 for wr in range(df_w.shape[0]):
                     k_val = df_w.iloc[wr, 0]
                     if pd.notna(k_val):
                         k_str = str(k_val).strip().lower()
-                        if k_str.startswith("sbin") or k_str.startswith("bin"):
+                        if k_str.startswith(("sbin", "bin", "s-bin")):
                             try:
                                 num_str = ''.join([ch for ch in k_str if ch.isdigit()])
                                 if num_str:
                                     bin_no = int(num_str)
                                     if 1 <= bin_no <= 130:
-                                        sbin_counts[bin_no] = int(df_w.iloc[wr, 1]) if pd.notna(df_w.iloc[wr, 1]) else 0
+                                        sbin_counts[bin_no] = int(round(float(df_w.iloc[wr, 1]))) if pd.notna(df_w.iloc[wr, 1]) else 0
                             except (ValueError, TypeError):
                                 pass
+                        else:
+                            # Match rows like '1 CP1_PASS', '5 CP1_OPEN'
+                            m = re.match(r"^(\d+)\s+.*", k_str)
+                            if m:
+                                try:
+                                    bin_no = int(m.group(1))
+                                    if 1 <= bin_no <= 130:
+                                        v = df_w.iloc[wr, 1]
+                                        if pd.notna(v):
+                                            sbin_counts[bin_no] = int(round(float(v)))
+                                except (ValueError, TypeError):
+                                    pass
 
         # Default pass_count from sbin1
         if pass_count is None:
@@ -217,6 +230,14 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
             Lot.wafer_id == wafer_id,
             Lot.data_type == 'MP_Yield'
         ).first()
+
+        saved_storage_path = filepath
+        if existing_lot and existing_lot.storage_path and not existing_lot.storage_path.startswith('/tmp'):
+            saved_storage_path = existing_lot.storage_path
+        elif filepath.startswith('/tmp'):
+            zip_candidate = f"/app/uploads/Summary/{filename}.zip"
+            if os.path.exists(zip_candidate):
+                saved_storage_path = zip_candidate
         
         if existing_lot:
             # Overwrite: delete existing lot and its bin summary
@@ -228,7 +249,7 @@ def parse_and_save_chipmore_summary(filepath: str, db: Session, user_id: int = N
         # Create new Lot record
         lot = Lot(
             filename=filename,
-            storage_path=filepath,
+            storage_path=saved_storage_path,
             file_size=os.path.getsize(filepath),
             status=ProcessStatus.processed,
             data_source=DataSource.manual if user_id else DataSource.ftp,

@@ -137,7 +137,7 @@
           </div>
           <div class="filter-actions-inline">
             <button class="btn btn-secondary" @click="handleReset">重置</button>
-            <button class="btn btn-primary" @click="handleSearch">查询</button>
+            <button class="btn btn-primary" :disabled="loading" @click="handleSearch">{{ loading ? "查询中…" : "查询" }}</button>
             <button
               class="btn bin-mode-btn"
               :class="{ 'bin-mode-pct': binDisplayMode === 'pct' }"
@@ -157,7 +157,11 @@
       </div>
 
       <!-- Data Table Card (AG Grid) -->
-      <div class="table-card" style="flex: 1; display: flex; flex-direction: column; min-height: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0;">
+      <div class="table-card" style="position: relative; flex: 1; display: flex; flex-direction: column; min-height: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0;">
+        <div v-if="loading" class="grid-loading-overlay">
+          <div class="loading-spinner"></div>
+          <span>正在查询数据…</span>
+        </div>
         <AgGridVue
           ref="detailGridRef"
           class="ag-theme-alpine detail-grid"
@@ -397,10 +401,19 @@ const defaultColDef = {
 const YieldRenderer = (p: any) => {
   const val = p.value;
   if (val == null) return `<div style="width: 100%;"><span style="color: #64748b;">-</span></div>`;
+  const details = p.data?.syl?.details || [];
+  const isYieldOver = details.some((d: any) => d.direction === 'gte' || (d.bins && (d.bins.includes(1) || d.bins.includes(2))));
   let color = 'green';
   let fw = 'normal';
-  if (val < 80) { color = 'red'; fw = 'bold'; }
-  else if (val < 95) { color = 'orange'; }
+  if (isYieldOver) {
+    color = '#b91c1c';
+    fw = 'bold';
+  } else if (val < 80) {
+    color = 'red';
+    fw = 'bold';
+  } else if (val < 95) {
+    color = 'orange';
+  }
   return `<div style="width: 100%;"><span style="color: ${color}; font-weight: ${fw};">${val.toFixed(2)}%</span></div>`;
 }
 
@@ -746,12 +759,11 @@ const sylOverOnly = ref(false)
 const sylJudging = ref(false)
 const overCount = ref<number | null>(null)
 const sylOverBtnText = computed(() => {
+  if (sylJudging.value) return "筛选中…"
   if (overCount.value !== null) {
-    const s = `（${overCount.value}）`
-    const pad = s.length < 5 ? '\u00A0'.repeat(5 - s.length) : ''
-    return `显示SYL超标${s}${pad}`
+    return `SYL超标(${overCount.value})`
   }
-  return '显示SYL超标\u00A0\u00A0\u00A0\u00A0\u00A0'
+  return "SYL超标"
 })
 let suppressOverCount = false
 const exporting = ref(false)
@@ -856,7 +868,28 @@ const detailColDefs = computed<any[]>(() => {
     { field: 'wafer_id', headerName: 'WAFER ID', width: 100, pinned: 'left' },
     { field: 'total', headerName: 'TOTAL', width: 90, type: 'numericColumn' },
     { field: 'pass', headerName: 'PASS', width: 90, type: 'numericColumn' },
-    { field: 'yield_rate', headerName: 'YIELD', width: 90, cellRenderer: YieldRenderer },
+    {
+      field: 'yield_rate',
+      headerName: 'YIELD',
+      width: 90,
+      cellRenderer: YieldRenderer,
+      cellStyle: (p: any) => {
+        const details = p.data?.syl?.details || [];
+        const isYieldOver = details.some((d: any) => d.direction === 'gte' || (d.bins && (d.bins.includes(1) || d.bins.includes(2))));
+        if (isYieldOver) {
+          return { backgroundColor: '#fee2e2', fontWeight: 'bold' };
+        }
+        return null;
+      },
+      tooltipValueGetter: (p: any) => {
+        const details = p.data?.syl?.details || [];
+        const d = details.find((x: any) => x.direction === 'gte' || (x.bins && (x.bins.includes(1) || x.bins.includes(2))));
+        if (d) {
+          return '\u826f\u7387\u4e0d\u8fbe\u6807: ' + d.label + ' \u5b9e\u9645 ' + d.actual + '% < \u8bbe\u5b9a ' + d.pct + '%';
+        }
+        return null;
+      }
+    },
     { field: 'program', headerName: 'Test Program', width: 315 },
     { field: 'mp_tester', headerName: 'MP Tester', width: 110 },
     { field: 'probecard', headerName: 'Probe Card', width: 217 },
@@ -880,6 +913,22 @@ const detailColDefs = computed<any[]>(() => {
           return ((Number(v) / tot) * 100).toFixed(2) + '%'
         }
         return v
+      },
+      cellStyle: (p: any) => {
+        const details = p.data?.syl?.details || [];
+        const hit = details.find((d: any) => d.direction === 'lte' && d.bins && d.bins.includes(i));
+        if (hit) {
+          return { backgroundColor: '#fee2e2', color: '#b91c1c', fontWeight: 'bold' };
+        }
+        return null;
+      },
+      tooltipValueGetter: (p: any) => {
+        const details = p.data?.syl?.details || [];
+        const hit = details.find((d: any) => d.direction === 'lte' && d.bins && d.bins.includes(i));
+        if (hit) {
+          return 'SBL\u8d85\u6807: ' + (hit.label || ('Bin' + i)) + (hit.param ? ' (' + hit.param + ')' : '') + ' \u5b9e\u9645 ' + hit.actual + '% > \u8bbe\u5b9a ' + hit.pct + '%';
+        }
+        return null;
       }
     })
   }
@@ -888,9 +937,6 @@ const detailColDefs = computed<any[]>(() => {
 
 // 淡红色整行底色：命中的 SYL 超标记录
 function detailRowStyle(params: any) {
-  if (params && params.data && params.data.syl_over) {
-    return { backgroundColor: '#fde8e8' }
-  }
   return null
 }
 
@@ -898,8 +944,11 @@ async function fetchData(opts: { count?: boolean } = {}) {
   loading.value = true
   sylJudging.value = sylOverOnly.value
   try {
-    const params: any = { page: page.value, page_size: pageSize.value, include_syl: 1 }
-    if (!sylOverOnly.value && opts.count) params.syl_over_total = 1
+    const params: any = { page: page.value, page_size: pageSize.value }
+    // Ordinary query: do not calculate SYL. Only evaluate SYL when sylOverOnly is true.
+    if (sylOverOnly.value) {
+      params.include_syl = 1
+    }
     if (filters.osat_name) params.osat_name = filters.osat_name
     if (filters.product_name) params.product_name = filters.product_name
     if (filters.lot_id) params.lot_id = filters.lot_id
@@ -907,17 +956,14 @@ async function fetchData(opts: { count?: boolean } = {}) {
     if (filters.program) params.program = filters.program
     if (filters.test_date_from) params.test_date_from = filters.test_date_from
     if (filters.test_date_to) params.test_date_to = filters.test_date_to
+    if (selectedSylSessionId.value) params.syl_session_id = selectedSylSessionId.value
 
     const url = sylOverOnly.value ? '/lots/mp-yield/syl-over' : '/lots/mp-yield/list'
     const resp: any = await api.get(url, { params })
     items.value = resp.items || []
     total.value = resp.total || 0
-    if (opts.count && !suppressOverCount) {
-      if (sylOverOnly.value) {
-        overCount.value = resp.total !== undefined ? Number(resp.total) : null
-      } else {
-        overCount.value = typeof resp.syl_over_total === 'number' ? Number(resp.syl_over_total) : null
-      }
+    if (sylOverOnly.value) {
+      overCount.value = resp.total !== undefined ? Number(resp.total) : null
     }
   } catch (error) {
     console.error('Failed to fetch MP Yield list:', error)
@@ -930,7 +976,8 @@ async function fetchData(opts: { count?: boolean } = {}) {
 
 function toggleSylOver() {
   sylOverOnly.value = !sylOverOnly.value
-  handleSearch()
+  page.value = 1
+  fetchData()
 }
 
 const maxPage = computed(() => Math.ceil(total.value / pageSize.value) || 1)
@@ -957,6 +1004,7 @@ function handleReset() {
   filters.test_date_from = ''
   filters.test_date_to = ''
   sylOverOnly.value = false
+  selectedSylSessionId.value = null
   overCount.value = null
   page.value = 1
   fetchData()
@@ -976,6 +1024,7 @@ async function exportExcel() {
     if (filters.test_date_from) params.test_date_from = filters.test_date_from
     if (filters.test_date_to) params.test_date_to = filters.test_date_to
     if (sylOverOnly.value) params.syl_over_only = 1
+    if (selectedSylSessionId.value) params.syl_session_id = selectedSylSessionId.value
     const gridSort = readGridSort()
     if (gridSort) {
       params.sort_col = gridSort.field
@@ -1004,10 +1053,15 @@ async function exportExcel() {
 // Entered from the SYL/SBL setup page (new tab /analysis?view=detail&...):
 // prefill product + test-date window and turn on the SYL-over filter.
 const entryQ = route.query
+const selectedSylSessionId = ref<number | null>(null)
 if (entryQ && entryQ.view === 'detail') {
   if (typeof entryQ.product_name === 'string' && entryQ.product_name) filters.product_name = entryQ.product_name
   if (typeof entryQ.test_date_from === 'string' && entryQ.test_date_from) filters.test_date_from = entryQ.test_date_from
   if (typeof entryQ.test_date_to === 'string' && entryQ.test_date_to) filters.test_date_to = entryQ.test_date_to
+  if (entryQ.syl_session_id) selectedSylSessionId.value = Number(entryQ.syl_session_id)
+  if (entryQ.mode === 'pct' || entryQ.syl_over === '1' || entryQ.syl_over === 'true') {
+    binDisplayMode.value = 'pct'
+  }
   if (entryQ.syl_over === '1' || entryQ.syl_over === 'true') {
     sylOverOnly.value = true
     suppressOverCount = true
@@ -2224,14 +2278,43 @@ onMounted(() => {
   box-sizing: border-box;
 }
 .syl-over-btn.syl-over-active {
-  background: #dc2626;
-  border-color: #dc2626;
-  color: #fff;
+  background: #dc2626 !important;
+  border-color: #dc2626 !important;
+  color: #fff !important;
+  font-weight: 600;
 }
 .syl-over-hint {
   width: 100%;
   font-size: 12px;
   color: #b91c1c;
   line-height: 1;
+}
+
+.grid-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.7);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  gap: 8px;
+  font-size: 13px;
+  color: #4b5563;
+}
+.loading-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid #e5e7eb;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 </style>

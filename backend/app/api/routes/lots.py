@@ -899,16 +899,32 @@ class ReparseRequest(BaseModel):
 
 
 def _prepare_reparse_csv(lot: Lot) -> tuple[str, Optional[str]]:
-    if not lot.storage_path or not os.path.exists(lot.storage_path):
+    resolved_path = lot.storage_path
+    if not resolved_path or not os.path.exists(resolved_path):
+        # Fallback to persistent storage locations if previous path was temporary or moved
+        candidates = [
+            f"/app/uploads/Summary/{lot.filename}.zip",
+            f"/app/uploads/Summary/{lot.filename}",
+            f"/app/uploads/Data/{lot.filename}.zip",
+            f"/app/uploads/Data/{lot.filename}",
+            f"/tmp/FTP/{lot.filename}",
+        ]
+        for cand in candidates:
+            if os.path.exists(cand):
+                resolved_path = cand
+                lot.storage_path = cand
+                break
+
+    if not resolved_path or not os.path.exists(resolved_path):
         raise FileNotFoundError(f"Source file not found for LOT {lot.id}")
 
-    lower_path = lot.storage_path.lower()
+    lower_path = resolved_path.lower()
     if lower_path.endswith(('.csv', '.xls', '.xlsx', '.txt')):
-        return lot.storage_path, None
+        return resolved_path, None
 
     if lower_path.endswith('.zip'):
         tmp_dir = tempfile.mkdtemp(prefix=f"reparse_lot_{lot.id}_")
-        with zipfile.ZipFile(lot.storage_path, 'r') as zf:
+        with zipfile.ZipFile(resolved_path, 'r') as zf:
             members = [info for info in zf.infolist() if not info.is_dir()]
             valid_members = [
                 info for info in members 
@@ -923,7 +939,7 @@ def _prepare_reparse_csv(lot: Lot) -> tuple[str, Optional[str]]:
                 shutil.copyfileobj(src, dst)
         return csv_path, tmp_dir
 
-    raise ValueError(f"Unsupported source file type for LOT {lot.id}: {lot.storage_path}")
+    raise ValueError(f"Unsupported source file type for LOT {lot.id}: {resolved_path}")
 
 
 def _reparse_lot_bg(lot_id: int):
@@ -1318,6 +1334,7 @@ def get_mp_yield_list(
     range_value: Optional[int] = None,
     include_syl: bool = Query(False),
     syl_over_total: bool = Query(False),
+    syl_session_id: Optional[int] = None,
 ):
     """
     Get a list of MP Yield records with horizontally pivoted sbin1-sbin130 values.
@@ -1424,7 +1441,7 @@ def get_mp_yield_list(
                 item[f"sbin{sbin_idx}"] = lot_bins.get(sbin_idx, 0)
             if include_syl:
                 sess_list = syl_sessions_map.get((lot.product_name or "").strip().lower())
-                syl_res = _judge_lot_syl(lot, lot_bins, sess_list) if sess_list else None
+                syl_res = _judge_lot_syl(lot, lot_bins, sess_list, fixed_session_id=syl_session_id) if sess_list else None
                 item["syl"] = syl_res
                 item["syl_over"] = bool(syl_res and syl_res.get("over"))
                 
@@ -1445,7 +1462,7 @@ def get_mp_yield_list(
                 range_type=range_type, range_value=range_value,
             )
             scope_q = scope_q.order_by(desc(Lot.test_date), desc(Lot.id))
-            payload["syl_over_total"] = len(_collect_syl_over_ids(db, scope_q))
+            payload["syl_over_total"] = len(_collect_syl_over_ids(db, scope_q, fixed_session_id=syl_session_id, has_date_filter=bool(test_date_from or test_date_to or range_type)))
         return payload
     except Exception as e:
         import traceback
@@ -1573,10 +1590,11 @@ def get_mp_yield_syl_over(
     test_date_to: Optional[str] = None,
     range_type: Optional[str] = None,
     range_value: Optional[int] = None,
+    syl_session_id: Optional[int] = None,
 ):
     """
-    Paginated MP-Yield wafer list filtered server-side to rows that exceed the
-    most recent applicable SYL session (test date >= setup time of the session).
+    Paginated MP-Yield wafer list filtered server-side to rows that exceed an
+    applicable SYL session.
     """
     try:
         query = _mp_yield_scope_query(
@@ -1588,8 +1606,10 @@ def get_mp_yield_syl_over(
         )
         base_q = query.order_by(desc(Lot.test_date), desc(Lot.id))
 
-        # Keep only rows whose applicable SYL session is exceeded.
-        hit_ids = _collect_syl_over_ids(db, base_q)
+        has_date_filter = bool(test_date_from or test_date_to or range_type)
+        hit_ids = _collect_syl_over_ids(
+            db, base_q, fixed_session_id=syl_session_id, has_date_filter=has_date_filter
+        )
         total = len(hit_ids)
         page_ids = hit_ids[(page - 1) * page_size: (page - 1) * page_size + page_size]
 
@@ -1681,7 +1701,7 @@ def get_mp_yield_syl_over(
                 item[f"sbin{sbin_idx}"] = lot_bins.get(sbin_idx, 0)
 
             sess = session_map.get((lot.product_name or "").strip().lower())
-            syl_res = _judge_lot_syl(lot, lot_bins, sess) if sess else None
+            syl_res = _judge_lot_syl(lot, lot_bins, sess, fixed_session_id=syl_session_id) if sess else None
             item["syl"] = syl_res
             item["syl_over"] = bool(syl_res and syl_res.get("over"))
 
@@ -1715,6 +1735,7 @@ def export_mp_yield_excel(
     range_type: Optional[str] = None,
     range_value: Optional[int] = None,
     syl_over_only: bool = Query(False),
+    syl_session_id: Optional[int] = None,
     sort_col: Optional[str] = None,
     sort_dir: Optional[str] = None,
     req_id: Optional[str] = Query(None, alias="t"),
@@ -1739,7 +1760,10 @@ def export_mp_yield_excel(
 
         hit_ids = None
         if syl_over_only:
-            hit_ids = _collect_syl_over_ids(db, base_q)
+            has_date_filter = bool(test_date_from or test_date_to or range_type)
+            hit_ids = _collect_syl_over_ids(
+                db, base_q, fixed_session_id=syl_session_id, has_date_filter=has_date_filter
+            )
 
         item_keys = ["osat_name", "product_name", "lot_id", "wafer_id", "total", "pass",
                      "yield_rate", "program", "mp_tester", "probecard", "test_start",
@@ -1770,6 +1794,8 @@ def export_mp_yield_excel(
             bins_map: dict = {}
             for b in bin_rows:
                 bins_map.setdefault(b.lot_id, {})[b.bin_number] = b.count
+            chunk_products = {(l.product_name or "").strip().lower() for l in chunk_lots if l.product_name}
+            session_map = _load_sessions_by_products(db, chunk_products)
             for lot in chunk_lots:
                 test_start = lot.beginning_time.strftime("%Y-%m-%d %H:%M:%S") if lot.beginning_time else ""
                 test_date = lot.test_date.strftime("%Y-%m-%d %H:%M:%S") if lot.test_date else ""
@@ -1779,6 +1805,10 @@ def export_mp_yield_excel(
                     if diff_s > 0:
                         duration_h = round(diff_s / 3600.0, 2)
                 bins = bins_map.get(lot.id, {})
+                prod_key = (lot.product_name or "").strip().lower()
+                sess = session_map.get(prod_key)
+                syl_res = _judge_lot_syl(lot, bins, sess, fixed_session_id=syl_session_id) if sess else None
+                syl_details = (syl_res.get("details") or []) if (syl_res and syl_res.get("over")) else []
                 row = {
                     "osat_name": lot.osat_name or "chipmore",
                     "product_name": lot.product_name or "",
@@ -1793,6 +1823,7 @@ def export_mp_yield_excel(
                     "test_start": test_start,
                     "test_date": test_date,
                     "duration_h": duration_h,
+                    "syl_details": syl_details,
                 }
                 for bi in range(1, 131):
                     row[f"sbin{bi}"] = bins.get(bi, 0)
@@ -1862,6 +1893,9 @@ def export_mp_yield_excel(
                 cell.alignment = Alignment(horizontal="center")
             ws.freeze_panes = "A2"
 
+        red_fill = PatternFill("solid", fgColor="FEE2E2")
+        red_font = Font(color="B91C1C", bold=True)
+
         for row in rows:
             head = [row[k] for k in item_keys]
             bin_vals = [row[f"sbin{i}"] for i in range(1, 131)]
@@ -1869,6 +1903,28 @@ def export_mp_yield_excel(
             die = row["total"] or 0
             pct_vals = [round((v / die * 100.0), 2) if die > 0 and v else 0 for v in bin_vals]
             ws_pct.append(head + pct_vals)
+
+            details = row.get("syl_details") or []
+            if details:
+                is_yield_over = any(
+                    d.get("direction") == "gte" or (d.get("bins") and (1 in d["bins"] or 2 in d["bins"]))
+                    for d in details
+                )
+                if is_yield_over:
+                    for ws in (ws_count, ws_pct):
+                        cell = ws.cell(row=ws.max_row, column=7)
+                        cell.fill = red_fill
+                        cell.font = red_font
+
+                for d in details:
+                    if d.get("direction") == "lte" and d.get("bins"):
+                        for b in d["bins"]:
+                            if 1 <= b <= 130:
+                                col_idx = 13 + b
+                                for ws in (ws_count, ws_pct):
+                                    cell = ws.cell(row=ws.max_row, column=col_idx)
+                                    cell.fill = red_fill
+                                    cell.font = red_font
 
         buf = io.BytesIO()
         wb.save(buf)
@@ -1913,28 +1969,52 @@ def _load_sessions_by_products(db: Session, product_names) -> dict:
     return out
 
 
-def _judge_lot_syl(lot: Lot, lot_bins: dict, sessions_asc) -> Optional[dict]:
+def _judge_lot_syl(lot: Lot, lot_bins: dict, sessions_asc, fixed_session_id: Optional[int] = None) -> Optional[dict]:
     """
-    Judge one wafer row against the most recent SYL session whose setup_time is
-    <= the row test date. Returns None when no session applies, otherwise a dict:
-      {session_id, setup_time, over, details:[...]}
+    Judge one wafer row against an applicable SYL session.
+    If fixed_session_id is provided, evaluate against that specific session.
+    Otherwise evaluate based on the wafer test start time (beginning_time or test_date):
+      - If t >= S_last.setup_time: use S_last
+      - If S_k.setup_time <= t < S_{k+1}.setup_time: use S_k
+      - If t < S_0.setup_time:
+          use S_0 if t >= S_0.setup_time - timedelta(days=183) (6 months prior)
+          otherwise None
     Rule direction:
       'gte' (Bin1 / yield rules): over spec when actual < pct
       'lte' (fail-bin rules):     over spec when actual > pct
     """
-    test_date = lot.test_date
-    if test_date is None or not sessions_asc:
+    if not sessions_asc:
         return None
-    td = test_date
-    if getattr(td, "tzinfo", None) is not None:
-        td = td.replace(tzinfo=None)
+
     chosen = None
-    for s in sessions_asc:
-        st = s.setup_time
-        if st is not None and st <= td:
-            chosen = s
+    if fixed_session_id is not None:
+        for s in sessions_asc:
+            if s.id == fixed_session_id:
+                chosen = s
+                break
+    else:
+        ref_time = lot.beginning_time or lot.test_date
+        if ref_time is None:
+            return None
+        if getattr(ref_time, "tzinfo", None) is not None:
+            ref_time = ref_time.replace(tzinfo=None)
+
+        first_st = sessions_asc[0].setup_time
+        if first_st and getattr(first_st, "tzinfo", None) is not None:
+            first_st = first_st.replace(tzinfo=None)
+
+        if first_st and ref_time < first_st:
+            if ref_time >= first_st - timedelta(days=183):
+                chosen = sessions_asc[0]
         else:
-            break
+            for s in reversed(sessions_asc):
+                st = s.setup_time
+                if st and getattr(st, "tzinfo", None) is not None:
+                    st = st.replace(tzinfo=None)
+                if st and ref_time >= st:
+                    chosen = s
+                    break
+
     if chosen is None:
         return None
 
@@ -1960,6 +2040,7 @@ def _judge_lot_syl(lot: Lot, lot_bins: dict, sessions_asc) -> Optional[dict]:
         if over:
             details.append({
                 "label": r.get("label") or ("Bin" + "+".join(str(b) for b in bins)),
+                "bins": [int(b) for b in bins],
                 "param": r.get("param") or "",
                 "pct": round(pct, 4),
                 "actual": round(ratio, 4),
@@ -1984,13 +2065,14 @@ def _mp_yield_scope_query(
     from app.models.lot import DataSource
     query = db.query(Lot).filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
 
+    from sqlalchemy import select
     latest_wafer_run_ids = (
         db.query(func.max(Lot.id))
         .filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
         .group_by(Lot.lot_id, Lot.wafer_id)
         .subquery()
     )
-    query = query.filter(Lot.id.in_(latest_wafer_run_ids))
+    query = query.filter(Lot.id.in_(select(latest_wafer_run_ids.c[0])))
 
     if lot_id:
         query = query.filter(Lot.lot_id.ilike(f"%{lot_id}%"))
@@ -2049,32 +2131,73 @@ def _mp_yield_scope_query(
         elif range_type == "all":
             pass
     else:
-        if test_date_from:
-            query = query.filter(Lot.test_date >= datetime.strptime(test_date_from, "%Y-%m-%d"))
-        if test_date_to:
-            query = query.filter(Lot.test_date < datetime.strptime(test_date_to, "%Y-%m-%d") + timedelta(days=1))
+        def _parse_filter_date(val):
+            if not val:
+                return None
+            s = str(val).strip()
+            for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y%m%d"):
+                try:
+                    return datetime.strptime(s, fmt)
+                except ValueError:
+                    pass
+            return None
+
+        dt_from = _parse_filter_date(test_date_from)
+        if dt_from:
+            query = query.filter(func.coalesce(Lot.beginning_time, Lot.test_date) >= dt_from)
+        dt_to = _parse_filter_date(test_date_to)
+        if dt_to:
+            query = query.filter(Lot.test_date < dt_to + timedelta(days=1))
     return query
 
 
-def _collect_syl_over_ids(db: Session, ordered_query) -> List[int]:
+def _collect_syl_over_ids(
+    db: Session,
+    ordered_query,
+    fixed_session_id: Optional[int] = None,
+    has_date_filter: bool = False,
+) -> List[int]:
     """Scan an ordered MP-Yield scope, returning ids of rows whose applicable
-    SYL session (test date >= setup time) is exceeded."""
-    session_map: dict = {}
+    SYL session is exceeded."""
+    all_sessions = db.query(MpYieldSylSession).all()
+    if not all_sessions:
+        return []
+
+    session_prods = list({s.product_name.strip() for s in all_sessions if s.product_name})
+    if not session_prods:
+        return []
+
+    candidate_q = ordered_query.filter(Lot.product_name.in_(session_prods))
+
+    # If fixed session is requested, filter strictly to that session's product
+    if fixed_session_id:
+        target_s = next((s for s in all_sessions if s.id == fixed_session_id), None)
+        if target_s and target_s.product_name:
+            candidate_q = candidate_q.filter(Lot.product_name == target_s.product_name)
+
+    # Prune candidates based on earliest possible relevant time
+    earliest_times = [
+        (s.setup_time.replace(tzinfo=None) - timedelta(days=183))
+        for s in all_sessions
+        if s.setup_time
+    ]
+    if earliest_times and not has_date_filter:
+        earliest_time = min(earliest_times)
+        candidate_q = candidate_q.filter(
+            func.coalesce(Lot.beginning_time, Lot.test_date) >= earliest_time
+        )
+
+    session_map = _load_sessions_by_products(db, {(p or "").strip().lower() for p in session_prods})
     hit_ids: List[int] = []
 
-    def _ensure_sessions(lots):
-        missing = {(l.product_name or "").strip().lower() for l in lots if l.product_name}
-        if missing:
-            for k, v in _load_sessions_by_products(db, missing).items():
-                session_map.setdefault(k, []).extend(v)
+    today_date = datetime.now(timezone.utc).date()
 
     step = 1500
     offset = 0
     while True:
-        chunk = ordered_query.offset(offset).limit(step).all()
+        chunk = candidate_q.offset(offset).limit(step).all()
         if not chunk:
             break
-        _ensure_sessions(chunk)
         chunk_ids = [c.id for c in chunk]
         chunk_bin_rows = (
             db.query(BinSummary)
@@ -2084,11 +2207,33 @@ def _collect_syl_over_ids(db: Session, ordered_query) -> List[int]:
         bins_by_lot: dict = {}
         for b in chunk_bin_rows:
             bins_by_lot.setdefault(b.lot_id, {})[b.bin_number] = b.count
+
         for lot in chunk:
-            sess = session_map.get((lot.product_name or "").strip().lower())
+            prod_key = (lot.product_name or "").strip().lower()
+            sess = session_map.get(prod_key)
             if not sess:
                 continue
-            res = _judge_lot_syl(lot, bins_by_lot.get(lot.id, {}), sess)
+
+            ref_time = lot.beginning_time or lot.test_date
+            if ref_time and getattr(ref_time, "tzinfo", None) is not None:
+                ref_time = ref_time.replace(tzinfo=None)
+
+            # When no date filter is specified by user, default to showing from last session setup_time to today
+            # (or 6 months prior if the only session was created today)
+            if not has_date_filter and fixed_session_id is None and ref_time:
+                last_sess = sess[-1]
+                last_st = last_sess.setup_time
+                if last_st and getattr(last_st, "tzinfo", None) is not None:
+                    last_st = last_st.replace(tzinfo=None)
+                if last_st:
+                    if len(sess) == 1 and last_st.date() == today_date:
+                        cutoff = last_st - timedelta(days=183)
+                    else:
+                        cutoff = last_st
+                    if ref_time < cutoff:
+                        continue
+
+            res = _judge_lot_syl(lot, bins_by_lot.get(lot.id, {}), sess, fixed_session_id=fixed_session_id)
             if res and res.get("over"):
                 hit_ids.append(lot.id)
         offset += step
