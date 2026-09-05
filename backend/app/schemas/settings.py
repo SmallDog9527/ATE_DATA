@@ -216,3 +216,22 @@ class UserLogPage(BaseModel):
     page: int
     page_size: int
     items: list[UserLogItem]
+
+# ----------------------------------------------
+# OSAT Device Mappings
+# ----------------------------------------------
+
+class OsatDeviceMappingIn(BaseModel):
+    osat_product_name: str
+    internal_product_name: str
+
+class OsatDeviceMappingOut(BaseModel):
+    id: int
+    osat_product_name: str
+    internal_product_name: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+

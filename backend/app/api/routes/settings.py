@@ -2009,3 +2009,57 @@ def get_snapshot_summary_48h(
     latest["sessions"] = sessions
 
     return latest
+
+
+# ----------------------------------------------
+# OSAT Device Mappings
+# ----------------------------------------------
+from app.models.osat_device_mapping import OsatDeviceMapping
+from app.schemas.settings import OsatDeviceMappingIn, OsatDeviceMappingOut
+
+@router.get("/osat-mappings", response_model=List[OsatDeviceMappingOut])
+def get_osat_mappings(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    return db.query(OsatDeviceMapping).order_by(OsatDeviceMapping.id.asc()).all()
+
+@router.post("/osat-mappings", response_model=OsatDeviceMappingOut)
+def create_osat_mapping(data: OsatDeviceMappingIn, db: Session = Depends(get_db), _: User = Depends(require_admin_or_eng)):
+    existing = db.query(OsatDeviceMapping).filter(OsatDeviceMapping.osat_product_name == data.osat_product_name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="该保密名称已存在")
+    new_mapping = OsatDeviceMapping(
+        osat_product_name=data.osat_product_name,
+        internal_product_name=data.internal_product_name
+    )
+    db.add(new_mapping)
+    db.commit()
+    db.refresh(new_mapping)
+    return new_mapping
+
+@router.put("/osat-mappings/{mapping_id}", response_model=OsatDeviceMappingOut)
+def update_osat_mapping(mapping_id: int, data: OsatDeviceMappingIn, db: Session = Depends(get_db), _: User = Depends(require_admin_or_eng)):
+    mapping = db.query(OsatDeviceMapping).filter(OsatDeviceMapping.id == mapping_id).first()
+    if not mapping:
+        raise HTTPException(status_code=404, detail="映射不存在")
+    
+    existing = db.query(OsatDeviceMapping).filter(
+        OsatDeviceMapping.osat_product_name == data.osat_product_name,
+        OsatDeviceMapping.id != mapping_id
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="该保密名称已存在")
+        
+    mapping.osat_product_name = data.osat_product_name
+    mapping.internal_product_name = data.internal_product_name
+    db.commit()
+    db.refresh(mapping)
+    return mapping
+
+@router.delete("/osat-mappings/{mapping_id}")
+def delete_osat_mapping(mapping_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin_or_eng)):
+    mapping = db.query(OsatDeviceMapping).filter(OsatDeviceMapping.id == mapping_id).first()
+    if not mapping:
+        raise HTTPException(status_code=404, detail="映射不存在")
+    db.delete(mapping)
+    db.commit()
+    return {"ok": True}
+

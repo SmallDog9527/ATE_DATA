@@ -28,6 +28,9 @@ app.include_router(programs.router,         prefix="/api")
 app.include_router(specs.router,            prefix="/api")
 app.include_router(tools.router,            prefix="/api")
 
+from app.api.routes import ft_yield
+app.include_router(ft_yield.router,         prefix="/api")
+
 
 
 @app.on_event("startup")

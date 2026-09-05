@@ -179,6 +179,24 @@ def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, 
 
     print(f"[xls_summary_parser] Routing summary report parse for OSAT: {name!r} (original: {osat_name!r})")
     
+    # Try to detect FT reports first
+    try:
+        import pandas as pd
+        xl = pd.ExcelFile(filepath)
+        if 'FT' in xl.sheet_names:
+            print(f"[xls_summary_parser] Detected 'FT' sheet, routing to UCD FT parser")
+            from app.services.parsers.ucd_ft_parser import parse_and_save_ucd_ft
+            return parse_and_save_ucd_ft(filepath, db, user_id, osat_name="UCD")
+            
+        df_head = pd.read_excel(filepath, nrows=1)
+        if '温度' in df_head.columns and '流水号' in df_head.columns:
+            print(f"[xls_summary_parser] Detected '温度' column, routing to CMC FT parser")
+            from app.services.parsers.cmc_ft_parser import parse_and_save_cmc_ft
+            return parse_and_save_cmc_ft(filepath, db, user_id, osat_name="CMC")
+    except Exception as e:
+        print(f"[xls_summary_parser] Error during FT detection: {e}")
+
+    
     if name == "ksht":
         from app.services.parsers.ksht_summary_parser import parse_and_save_ksht_summary
         return parse_and_save_ksht_summary(filepath, db, user_id, osat_name="HTKS")

@@ -1239,6 +1239,63 @@
       </div>
 
     </div>
+
+    <!-- ── OSAT 映射 Tab ── -->
+    <div v-if="activeTab === 'osat_mappings'" class="panel">
+      <div class="settings-card">
+        <div class="settings-card-header">
+          <div class="settings-card-title">
+            <span class="settings-icon">🔗</span>
+            <span>OSAT 映射管理</span>
+          </div>
+        </div>
+        <div class="settings-card-body">
+          <div class="action-row" style="display:flex; gap:10px; margin-bottom: 16px;">
+            <button class="btn-primary" @click="addMappingRow">➕ 新增映射</button>
+            <button class="btn-primary" style="background:#10b981;" @click="triggerMappingUpload">📤 导入 Excel</button>
+            <input type="file" ref="mappingUploadInput" style="display:none" accept=".xlsx,.xls" @change="handleMappingUpload" />
+            <button class="btn-primary" style="background:#3b82f6;" @click="exportMappingExcel">📥 导出 Excel</button>
+            <button class="btn-primary" style="background:#f59e0b;" @click="fetchOsatMappings">🔄 刷新</button>
+          </div>
+          <table class="log-table">
+            <colgroup>
+              <col style="width: 60px;" />
+              <col style="width: 200px;" />
+              <col style="width: 200px;" />
+              <col style="width: 120px;" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>OSAT 产品名 (双击编辑)</th>
+                <th>内部产品名 (双击编辑)</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in osatMappings" :key="row.id || row._tempId">
+                <td>{{ row.id || '新' }}</td>
+                <td @dblclick="editMappingCell(row, 'osat_product_name')">
+                  <input v-if="row._editing === 'osat_product_name'" v-model="row.osat_product_name" @blur="saveMappingRow(row)" @keyup.enter="saveMappingRow(row)" class="filter-input-sm" style="width: 100%;" autofocus />
+                  <span v-else>{{ row.osat_product_name || '—' }}</span>
+                </td>
+                <td @dblclick="editMappingCell(row, 'internal_product_name')">
+                  <input v-if="row._editing === 'internal_product_name'" v-model="row.internal_product_name" @blur="saveMappingRow(row)" @keyup.enter="saveMappingRow(row)" class="filter-input-sm" style="width: 100%;" autofocus />
+                  <span v-else>{{ row.internal_product_name || '—' }}</span>
+                </td>
+                <td>
+                  <button class="btn-sm btn-warn" @click="deleteMappingRow(row)">🗑 删除</button>
+                </td>
+              </tr>
+              <tr v-if="osatMappings.length === 0">
+                <td colspan="4" class="empty-tip" style="text-align: center; padding: 20px;">暂无映射记录</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -1262,6 +1319,7 @@ const visibleTabs = computed(() => {
   ]
   if (authStore.isAdmin || authStore.isEng) {
     list.push({ key: 'admin',  label: '系统管理' })
+    list.push({ key: 'osat_mappings', label: 'OSAT 映射' })
   } else {
     list.push({ key: 'admin',  label: '上传日志' })
   }
@@ -2550,6 +2608,123 @@ async function handleProcessExistingLocal() {
   }
 }
 
+// ── OSAT 映射管理 ──
+const osatMappings = ref<any[]>([])
+const mappingUploadInput = ref<HTMLInputElement | null>(null)
+
+async function fetchOsatMappings() {
+  try {
+    const res = await api.get('/osat-mappings')
+    osatMappings.value = res.data.map((r: any) => ({ ...r, _editing: null }))
+  } catch (e: any) {
+    alert("加载 OSAT 映射失败：" + (e.response?.data?.detail || e.message))
+  }
+}
+
+function addMappingRow() {
+  osatMappings.value.unshift({
+    _tempId: Date.now(),
+    id: null,
+    osat_product_name: '',
+    internal_product_name: '',
+    _editing: 'osat_product_name'
+  })
+}
+
+function editMappingCell(row: any, field: string) {
+  row._editing = field
+}
+
+async function saveMappingRow(row: any) {
+  if (!row._editing) return
+  const currentEditing = row._editing
+  row._editing = null
+
+  if (!row.id && !row.osat_product_name && !row.internal_product_name) {
+    osatMappings.value = osatMappings.value.filter(r => r !== row)
+    return
+  }
+  
+  if (!row.osat_product_name || !row.internal_product_name) {
+    alert("OSAT 产品名和内部产品名均不能为空")
+    row._editing = currentEditing
+    return
+  }
+
+  try {
+    if (row.id) {
+      await api.put(`/osat-mappings/${row.id}`, {
+        osat_product_name: row.osat_product_name,
+        internal_product_name: row.internal_product_name
+      })
+    } else {
+      const res = await api.post('/osat-mappings', {
+        osat_product_name: row.osat_product_name,
+        internal_product_name: row.internal_product_name
+      })
+      row.id = res.data.id
+    }
+    await fetchOsatMappings()
+  } catch (e: any) {
+    alert("保存映射失败：" + (e.response?.data?.detail || e.message))
+    row._editing = currentEditing
+  }
+}
+
+async function deleteMappingRow(row: any) {
+  if (!row.id) {
+    osatMappings.value = osatMappings.value.filter(r => r !== row)
+    return
+  }
+  if (!confirm('确定删除此映射?')) return
+  try {
+    await api.delete(`/osat-mappings/${row.id}`)
+    await fetchOsatMappings()
+  } catch (e: any) {
+    alert("删除映射失败：" + (e.response?.data?.detail || e.message))
+  }
+}
+
+function triggerMappingUpload() {
+  mappingUploadInput.value?.click()
+}
+
+async function handleMappingUpload(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  const formData = new FormData()
+  formData.append('file', file)
+  try {
+    await api.post('/osat-mappings/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    alert('上传成功')
+    await fetchOsatMappings()
+  } catch (err: any) {
+    alert("上传失败：" + (err.response?.data?.detail || err.message))
+  } finally {
+    if (mappingUploadInput.value) {
+      mappingUploadInput.value.value = ''
+    }
+  }
+}
+
+async function exportMappingExcel() {
+  try {
+    const res = await api.get('/osat-mappings/export', { responseType: 'blob' })
+    const url = window.URL.createObjectURL(new Blob([res.data]))
+    const link = document.createElement('a')
+    link.href = url
+    link.setAttribute('download', `osat_mappings_${Date.now()}.xlsx`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+  } catch (e: any) {
+    alert("导出失败：" + (e.response?.data?.detail || e.message))
+  }
+}
+
 // ── 工具 ──
 function fmtDate(d?: string) {
   return fmtDateTz(d)
@@ -2568,7 +2743,7 @@ onMounted(async () => {
   await loadManualLogs()
   await loadVersionInfo()
   if (authStore.isAdmin || authStore.isEng) {
-    await Promise.all([loadOsats(), loadFtpLogs(), loadSmtpConfig(), loadManualOperators(), loadDailySummary()])
+    await Promise.all([loadOsats(), loadFtpLogs(), loadSmtpConfig(), loadManualOperators(), loadDailySummary(), fetchOsatMappings()])
   }
   if (authStore.isAdmin) {
     await loadUsers()

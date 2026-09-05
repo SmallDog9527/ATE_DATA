@@ -2,7 +2,7 @@
   <div class="syl-page">
     <!-- Top bar -->
     <div class="syl-topbar">
-      <a class="syl-back" href="javascript:void(0)" @click="goBack">← 返回量产良率</a>
+      <a class="syl-back" href="javascript:void(0)" @click="goBack">← 返回CP良率</a>
       <span class="syl-title">SYL/SBL 设定 — {{ product }}</span>
       <div class="syl-godetail-wrap">
         <a class="syl-godetail" :href="detailEntryUrl" target="_blank" rel="noopener" :title="detailEntryTip || '在新标签页打开明细'">进入明细页面 →</a>
@@ -194,10 +194,12 @@ function parseSylText(rawText: string): ParsedRule[] {
     while ((m = binRe.exec(head)) !== null) {
       bins.push(parseInt(m[1], 10));
     }
+    if (head.includes('良率') || /yield/i.test(head)) bins.push(1);
+
     if (bins.length === 0) continue;
     const sorted = Array.from(new Set(bins)).sort((a, b) => a - b);
     out.push({
-      label: sorted.map((b) => 'Bin' + b).join('+'),
+      label: sorted.map((b) => b === 1 ? '良率(Bin1)' : 'Bin' + b).join('+'),
       bins: sorted,
       param,
       pct,

@@ -150,9 +150,11 @@
               :disabled="sylJudging"
               @click="toggleSylOver"
             >{{ sylOverBtnText }}</button>
-            <button class="btn btn-export" :disabled="exporting" @click="exportExcel">{{ exporting ? '导出中…' : '导出Excel' }}</button>
+            <button class="btn btn-secondary" @click="toggleHideEmptyBins" style="margin-right: 8px;">{{ hideEmptyBins ? '显示所有Bin' : '隐藏空Bin' }}</button>
+            <button class="btn btn-export"  :disabled="exporting" @click="exportExcel">{{ exporting ? '导出中…' : '导出Excel' }}</button>
           </div>
-          <div v-if="sylOverOnly" class="syl-over-hint">当前仅显示 SYL 超标 Wafer（{{ total }} 条）</div>
+          <div v-if="sylMode === 2" class="syl-over-hint">当前仅显示 SYL 超标 Wafer（{{ total }} 条）</div>
+          <div v-else-if="sylMode === 1" class="syl-over-hint">当前显示所有数据，并已标记 SYL 超标项</div>
         </div>
       </div>
 
@@ -755,7 +757,10 @@ const page = ref(1)
 const pageSize = ref(50)
 
 const binDisplayMode = ref<'count' | 'pct'>('count')
-const sylOverOnly = ref(false)
+const sylMode = ref(0)
+const sylBtnDisabled = computed(() => {
+  return !filters.osat_name && !filters.product_name && !filters.lot_id && !filters.wafer_id && !filters.program && !filters.test_date_from && !filters.test_date_to
+})
 const sylJudging = ref(false)
 const overCount = ref<number | null>(null)
 const sylOverBtnText = computed(() => {
@@ -942,11 +947,11 @@ function detailRowStyle(params: any) {
 
 async function fetchData(opts: { count?: boolean } = {}) {
   loading.value = true
-  sylJudging.value = sylOverOnly.value
+  sylJudging.value = sylMode.value > 0
   try {
     const params: any = { page: page.value, page_size: pageSize.value }
-    // Ordinary query: do not calculate SYL. Only evaluate SYL when sylOverOnly is true.
-    if (sylOverOnly.value) {
+    // Ordinary query: do not calculate SYL unless sylMode > 0.
+    if (sylMode.value > 0) {
       params.include_syl = 1
     }
     if (filters.osat_name) params.osat_name = filters.osat_name
@@ -958,11 +963,11 @@ async function fetchData(opts: { count?: boolean } = {}) {
     if (filters.test_date_to) params.test_date_to = filters.test_date_to
     if (selectedSylSessionId.value) params.syl_session_id = selectedSylSessionId.value
 
-    const url = sylOverOnly.value ? '/lots/mp-yield/syl-over' : '/lots/mp-yield/list'
+    const url = sylMode.value === 2 ? '/lots/mp-yield/syl-over' : '/lots/mp-yield/list'
     const resp: any = await api.get(url, { params })
     items.value = resp.items || []
     total.value = resp.total || 0
-    if (sylOverOnly.value) {
+    if (sylMode.value === 2) {
       overCount.value = resp.total !== undefined ? Number(resp.total) : null
     }
   } catch (error) {
@@ -975,7 +980,8 @@ async function fetchData(opts: { count?: boolean } = {}) {
 }
 
 function toggleSylOver() {
-  sylOverOnly.value = !sylOverOnly.value
+  if (sylBtnDisabled.value) return
+  sylMode.value = (sylMode.value + 1) % 3
   page.value = 1
   fetchData()
 }
@@ -1003,7 +1009,7 @@ function handleReset() {
   filters.program = ''
   filters.test_date_from = ''
   filters.test_date_to = ''
-  sylOverOnly.value = false
+  sylMode.value = 0
   selectedSylSessionId.value = null
   overCount.value = null
   page.value = 1
@@ -1023,7 +1029,8 @@ async function exportExcel() {
     if (filters.program) params.program = filters.program
     if (filters.test_date_from) params.test_date_from = filters.test_date_from
     if (filters.test_date_to) params.test_date_to = filters.test_date_to
-    if (sylOverOnly.value) params.syl_over_only = 1
+    if (sylMode.value === 2) params.syl_over_only = 1
+    if (sylMode.value > 0) params.include_syl = 1
     if (selectedSylSessionId.value) params.syl_session_id = selectedSylSessionId.value
     const gridSort = readGridSort()
     if (gridSort) {
@@ -1063,7 +1070,7 @@ if (entryQ && entryQ.view === 'detail') {
     binDisplayMode.value = 'pct'
   }
   if (entryQ.syl_over === '1' || entryQ.syl_over === 'true') {
-    sylOverOnly.value = true
+    sylMode.value = 2
     suppressOverCount = true
   }
   activeView.value = 'detail'
@@ -1811,6 +1818,63 @@ function renderWaferYieldChart() {
 }
 
 // Watch selectedLotId to render appropriate charts
+
+watch(items, () => {
+  if (hideEmptyBins.value) {
+    nextTick(() => applyHideEmptyBins())
+  }
+})
+
+
+const hideEmptyBins = ref(false)
+function toggleHideEmptyBins() {
+  hideEmptyBins.value = !hideEmptyBins.value;
+  applyHideEmptyBins();
+}
+function applyHideEmptyBins() {
+  const api = detailGridApi.value || (detailGridRef.value && detailGridRef.value.api);
+  if (!api) return;
+  
+  const binCols = [];
+  for (let i = 1; i <= 130; i++) {
+    binCols.push('sbin' + i);
+  }
+  
+  if (!hideEmptyBins.value) {
+    api.setColumnsVisible(binCols, true);
+    return;
+  }
+  
+  const colsToShow = [];
+  const colsToHide = [];
+  
+  const binMaxValues = new Map();
+  api.forEachNodeAfterFilter((rowNode) => {
+    const data = rowNode.data;
+    if (data) {
+      for (let i = 1; i <= 130; i++) {
+        const col = 'sbin' + i;
+        const val = data[col] || 0;
+        const currentMax = binMaxValues.get(col) || 0;
+        if (val > currentMax) {
+          binMaxValues.set(col, val);
+        }
+      }
+    }
+  });
+  
+  for (let i = 1; i <= 130; i++) {
+    const col = 'sbin' + i;
+    if ((binMaxValues.get(col) || 0) === 0) {
+      colsToHide.push(col);
+    } else {
+      colsToShow.push(col);
+    }
+  }
+  api.setColumnsVisible(colsToShow, true);
+  api.setColumnsVisible(colsToHide, false);
+}
+
 watch(selectedLotId, (newVal) => {
   nextTick(() => {
     if (newVal) {

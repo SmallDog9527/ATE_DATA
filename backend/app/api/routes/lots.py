@@ -1545,7 +1545,7 @@ def create_mp_yield_syl_session(
         raise HTTPException(status_code=400, detail="No valid SYL rules in payload")
     sess = MpYieldSylSession(
         product_name=name,
-        setup_time=datetime.now(timezone.utc).replace(tzinfo=None),
+        setup_time=datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None),
         raw_text=payload.raw_text or "",
         rules=rules,
         created_by=current_user.id,
@@ -1879,7 +1879,11 @@ def export_mp_yield_excel(
         ws_pct = wb.create_sheet("百分比")
         headers = ["OSAT", "Device", "LOT ID", "WAFER ID", "TOTAL", "PASS", "YIELD",
                    "Test Program", "MP Tester", "Probe Card", "Test Start", "Test End", "Time(h)"]
-        bin_headers = [f"Sbin{i}" for i in range(1, 131)]
+        active_bins = []
+        for i in range(1, 131):
+            if any(r.get(f"sbin{i}", 0) > 0 for r in rows):
+                active_bins.append(i)
+        bin_headers = [f"Sbin{i}" for i in active_bins]
         full_headers = headers + bin_headers
 
         head_font = Font(bold=True, color="FFFFFF")
@@ -1898,7 +1902,7 @@ def export_mp_yield_excel(
 
         for row in rows:
             head = [row[k] for k in item_keys]
-            bin_vals = [row[f"sbin{i}"] for i in range(1, 131)]
+            bin_vals = [row[f"sbin{i}"] for i in active_bins]
             ws_count.append(head + bin_vals)
             die = row["total"] or 0
             pct_vals = [round((v / die * 100.0), 2) if die > 0 and v else 0 for v in bin_vals]
@@ -1919,8 +1923,8 @@ def export_mp_yield_excel(
                 for d in details:
                     if d.get("direction") == "lte" and d.get("bins"):
                         for b in d["bins"]:
-                            if 1 <= b <= 130:
-                                col_idx = 13 + b
+                            if b in active_bins:
+                                col_idx = len(headers) + active_bins.index(b) + 1
                                 for ws in (ws_count, ws_pct):
                                     cell = ws.cell(row=ws.max_row, column=col_idx)
                                     cell.fill = red_fill

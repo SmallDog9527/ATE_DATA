@@ -69,6 +69,13 @@ class Lot(Base):
     # OSAT 来源（FTP自动上传时记录，手动上传为 NULL）
     osat_name = Column(String, nullable=True, index=True)
 
+    # OSAT 保密设备名称 / 内部设备名称映射
+    osat_product_name = Column(String, nullable=True, index=True)
+
+    # FT 专属字段
+    package = Column(String, nullable=True)
+    temperature = Column(String, nullable=True, index=True)
+
     # 机台 / 探针卡（后续通过 Summary 关联填入）
     mp_tester = Column(String, nullable=True)
     probecard = Column(String, nullable=True)

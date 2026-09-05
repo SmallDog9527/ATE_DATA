@@ -13,7 +13,11 @@
         </RouterLink>
         <RouterLink to="/analysis" target="_blank" class="menu-item" :class="{ 'router-link-active': isAnalysisActive }">
           <span class="icon">📊</span>
-          <span v-if="!collapsed" class="label">量产良率</span>
+          <span v-if="!collapsed" class="label">CP良率</span>
+        </RouterLink>
+        <RouterLink to="/ft-yield" target="_blank" class="menu-item" :class="{ 'router-link-active': route.path.startsWith('/ft-yield') }">
+          <span class="icon">📈</span>
+          <span v-if="!collapsed" class="label">FT良率</span>
         </RouterLink>
         <RouterLink to="/reports" target="_blank" class="menu-item">
           <span class="icon">📑</span>
@@ -88,7 +92,8 @@ const aiOpen = ref(false)
 
 const pageTitles: Record<string, string> = {
   '/': '数据列表',
-  '/analysis': '量产良率',
+  '/analysis': 'CP良率',
+  '/ft-yield': 'FT良率',
   '/reports': '报表中心',
   '/program-changes': '程序变更',
   '/tools': '小工具集',

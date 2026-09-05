@@ -20,3 +20,7 @@ from app.models.ftp_scan_snapshot import FtpScanSnapshot
 from app.models.ftp_extracted_file import FtpExtractedFile
 from app.models.mp_yield_syl import MpYieldSylSession
 from app.models.user_log import UserLog
+from app.models.osat_device_mapping import OsatDeviceMapping
+
+
+from app.models.ft_yield_syl import FtYieldSylSession
