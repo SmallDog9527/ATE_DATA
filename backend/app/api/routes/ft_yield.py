@@ -124,7 +124,7 @@ def get_ft_yield_overview(
             q = db.query(func.max(Lot.id)).filter(*filters)
             if extra_filter is not None:
                 q = q.filter(extra_filter)
-            return q.group_by(Lot.lot_id, Lot.wafer_id, Lot.temperature).subquery()
+            return q.group_by(Lot.lot_id, Lot.wafer_id, Lot.temperature, Lot.program).subquery()
 
         pname_filter = Lot.product_name.ilike(f"%{product_name}%") if product_name else None
 
@@ -156,10 +156,11 @@ def get_ft_yield_overview(
             pname = lot.product_name or "(unknown)"
             osat = lot.osat_name or "chipmore"
             temp = lot.temperature or "-"
-            group_lots[(pname, osat, temp)].append(lot)
+            prog = lot.program or "-"
+            group_lots[(pname, osat, temp, prog)].append(lot)
 
         products = []
-        for (pname, osat, temp), plots in group_lots.items():
+        for (pname, osat, temp, prog), plots in group_lots.items():
             wafer_count = len(plots)
             total_pass = sum((lot.pass_count or 0) for lot in plots)
             total_die  = sum((lot.die_count  or 0) for lot in plots)
@@ -206,6 +207,7 @@ def get_ft_yield_overview(
                 "product_name": pname,
                 "osat": osat.upper() if osat.lower() in ("ksht", "htks") else osat,
                 "temperature": temp,
+                "program": prog,
                 "lots_count": wafer_count,
                 "wafers": wafer_count,
                 "bin1_k": int(total_pass // 1000),       # integer K
@@ -713,7 +715,7 @@ def _ft_yield_scope_query(
     latest_wafer_run_ids = (
         db.query(func.max(Lot.id))
         .filter(Lot.data_type == 'FT_Yield', Lot.status != 'deleted')
-        .group_by(Lot.lot_id, Lot.wafer_id, Lot.temperature)
+        .group_by(Lot.lot_id, Lot.wafer_id, Lot.temperature, Lot.program)
         .subquery()
     )
     query = query.filter(Lot.id.in_(select(latest_wafer_run_ids.c[0])))

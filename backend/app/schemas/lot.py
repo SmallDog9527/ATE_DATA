@@ -11,6 +11,7 @@ class LotResponse(BaseModel):
     program: Optional[str]
     test_machine: Optional[str]
     data_type: Optional[str]
+    stage: Optional[str] = None
     test_stage: Optional[str]
     station_count: Optional[int]
     die_count: Optional[int]

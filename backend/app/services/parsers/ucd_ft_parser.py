@@ -36,19 +36,22 @@ def parse_and_save_ucd_ft(filepath: str, db: Session, user_id: int = None, osat_
     # Find column names dynamically if possible
     # In UCD FT, columns: Product, Package, Program, Customer Lot, Wafer, Stage, Total, Pass, Yield, Bin1...
     # We will try to map by name heuristics
-    def find_col(kw):
+       def find_col(kw):
         for c in df.columns:
-            if kw.lower() in str(c).lower():
+            if str(c).strip().lower() == kw.lower():
+                return c
+        for c in df.columns:
+            if kw.lower() in str(c).lower() and "type" not in str(c).lower():
                 return c
         return None
         
-    col_product = find_col('product') or df.columns[3]
-    col_package = find_col('package') or df.columns[4]
+    col_product = find_col('device') or find_col('product') or df.columns[3]
+    col_package = find_col('pkg') or find_col('package') or df.columns[4]
     col_program = find_col('program') or df.columns[5]
-    col_cust_lot = find_col('customer lot') or find_col('lot') or df.columns[6]
+    col_cust_lot = find_col('mesid') or find_col('customer lot') or find_col('lot') or df.columns[6]
     col_stage = find_col('stage') or df.columns[9]
-    col_total = find_col('total') or df.columns[10]
-    col_pass = find_col('pass') or df.columns[11]
+    col_total = find_col('test in') or find_col('total') or df.columns[10]
+    col_pass = find_col('test out') or find_col('pass') or df.columns[11]
     col_yield = find_col('yield') or df.columns[12]
     col_tester = find_col('tester')
     col_handler = find_col('handler')
@@ -59,7 +62,29 @@ def parse_and_save_ucd_ft(filepath: str, db: Session, user_id: int = None, osat_
         if pd.isna(cust) or str(cust).strip().upper() != 'HMC':
             continue
             
-        stage = str(row[col_stage]).strip() if pd.notna(row[col_stage]) else None
+        # Standardize stage string
+        raw_stage = str(row[col_stage]).strip() if pd.notna(row[col_stage]) else ""
+            
+        stage_upper = raw_stage.upper()
+        if '常温' in stage_upper or 'ROOM' in stage_upper or 'ETR' in stage_upper:
+            stage = 'Room'
+        elif '高温' in stage_upper or 'HOT' in stage_upper or 'ETH' in stage_upper:
+            stage = 'Hot'
+        elif '低温' in stage_upper or 'COLD' in stage_upper or 'ETC' in stage_upper:
+            stage = 'Cold'
+        else:
+            # Fallback to infer from program name
+            import re
+            prog_str = str(row[col_program]).strip().upper() if col_program and pd.notna(row[col_program]) else ""
+            if re.search(r'_V\d+', prog_str):
+                stage = 'Room'
+            elif re.search(r'_H\d+', prog_str):
+                stage = 'Hot'
+            elif re.search(r'_L\d+', prog_str):
+                stage = 'Cold'
+            else:
+                stage = raw_stage if raw_stage else None
+                
         if not stage:
             continue
             
@@ -92,6 +117,9 @@ def parse_and_save_ucd_ft(filepath: str, db: Session, user_id: int = None, osat_
             except ValueError:
                 pass
                 
+        if yield_rate is None and total > 0:
+            yield_rate = round(pass_count / total, 4)
+                
         test_date = None
         if col_date and pd.notna(row[col_date]):
             try:
@@ -104,7 +132,9 @@ def parse_and_save_ucd_ft(filepath: str, db: Session, user_id: int = None, osat_
             Lot.data_type == 'FT_Yield',
             Lot.lot_id == lot_id,
             Lot.wafer_id == wafer_id,
-            Lot.temperature == stage
+            Lot.temperature == stage,
+            Lot.program == program,
+            Lot.status != 'deleted'
         ).first()
         
         if existing:

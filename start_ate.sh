@@ -72,7 +72,7 @@ docker compose up $COMPOSE_UP_ARGS db redis
 if [ "$DEV_MODE" = true ]; then
     echo -e "${YELLOW}[2/3] 开发模式：Backend / Frontend 将在本地进程启动${NC}"
     echo "  Backend:  cd backend && venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
-    echo "  Frontend: cd frontend && npx vite --host 0.0.0.0 --port 5173"
+    echo "  Frontend: cd frontend && npx vite --host 0.0.0.0 --port 5175"
     echo ""
     echo -e "${RED}提示：请手动在另一个终端启动 Backend 和 Frontend${NC}"
 else
@@ -102,7 +102,7 @@ if [ "$DEV_MODE" = false ]; then
     echo ""
     echo "  应用服务:"
     echo "    Backend API:      http://localhost:8000"
-    echo "    Frontend Web:     http://localhost:5173"
+    echo "    Frontend Web:     http://localhost:5175"
 fi
 if [ "$BIZ" = true ]; then
     echo ""

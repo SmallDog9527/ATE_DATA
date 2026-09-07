@@ -103,7 +103,7 @@
         <div class="filter-row">
           <div class="filter-item">
             <label>OSAT</label>
-            <input type="text" v-model="filters.osat_name" placeholder="输入 OSAT 名" @input="debouncedSearch" class="filter-input input-osat" />
+            <select v-model="filters.osat_name" @change="debouncedSearch" class="filter-input input-osat"><option value="">全部</option><option v-for="osat in osatOptions" :key="osat" :value="osat">{{ osat }}</option></select>
           </div>
           <div class="filter-item">
             <label>Device</label>
@@ -175,6 +175,7 @@
           @grid-ready="onGridReady"
           @sort-changed="onSortChanged"
           @cell-double-clicked="onCellDoubleClicked"
+          @filter-changed="onDetailFilterChanged"
           style="width: 100%; flex: 1; min-height: 0;"
           :suppressScrollOnNewData="true"
         />
@@ -396,8 +397,9 @@ const defaultColDef = {
   sortable: true,
   resizable: true,
   filter: false, // Turned off filter per user request
-  suppressMovable: true,
-  menuTabs: []
+  suppressMovable: false,
+suppressFloatingFilterButton: true,
+  suppressMenu: true,
 }
 
 const YieldRenderer = (p: any) => {
@@ -535,7 +537,7 @@ for(let i=0; i<5; i++) {
 }
 
 const ovColDefs = [
-  { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
+  { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' , suppressMenu: false },
   { field: 'product_name', headerName: 'Device（产品名）', width: 180, pinned: 'left', cellRenderer: DeviceLinkRenderer },
   { headerName: 'SYL设定', width: 90, pinned: 'left', valueGetter: (p: any) => p.data ? p.data.product_name : '', cellRenderer: SylLinkRenderer },
   { field: 'osat', headerName: 'OSAT', width: 110, pinned: 'left' },
@@ -742,6 +744,7 @@ function renderOverviewCharts() {
 // ══════════════════════════════════════════════════════════════════
 const loading = ref(false)
 const items = shallowRef<any[]>([])
+const osatOptions = ref<string[]>([])
 const filters = reactive({
   osat_name: '',
   product_name: '',
@@ -778,6 +781,44 @@ const sortBackup = ref<{ field: string; dir: 'asc' | 'desc' } | null>(null)
 
 function onGridReady(e: any) {
   detailGridApi.value = e && e.api ? e.api : null
+}
+
+
+// Sync AG Grid floating filters to backend filters
+let detailFilterTimeout = null;
+function onDetailFilterChanged() {
+  if (!detailGridRef.value) return;
+  // @ts-ignore
+  const api = detailGridRef.value.api;
+  if (!api) return;
+  const model = api.getFilterModel();
+  
+  if (detailFilterTimeout) clearTimeout(detailFilterTimeout);
+  // @ts-ignore
+  detailFilterTimeout = setTimeout(() => {
+    const oldOsat = filters.osat_name;
+    const oldProduct = filters.product_name;
+    const oldLot = filters.lot_id;
+    const oldWafer = filters.wafer_id;
+    const oldProgram = filters.program;
+    
+    filters.osat_name = model.osat_name?.filter || '';
+    filters.product_name = model.product_name?.filter || '';
+    filters.lot_id = model.lot_id?.filter || '';
+    filters.wafer_id = model.wafer_id?.filter || '';
+    filters.program = model.program?.filter || '';
+    
+    const changed = 
+      oldOsat !== filters.osat_name ||
+      oldProduct !== filters.product_name ||
+      oldLot !== filters.lot_id ||
+      oldWafer !== filters.wafer_id ||
+      oldProgram !== filters.program;
+      
+    if (changed) {
+      handleSearch();
+    }
+  }, 600);
 }
 
 function onSortChanged(e: any) {
@@ -866,18 +907,17 @@ function readGridSort(): { field: string; dir: 'asc' | 'desc' } | null {
 
 const detailColDefs = computed<any[]>(() => {
   const cols: any[] = [
-    { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
-    { field: 'osat_name', headerName: 'OSAT', width: 90, pinned: 'left' },
-    { field: 'product_name', headerName: 'Device', width: 140, pinned: 'left', cellClass: 'selectable-cell' },
-    { field: 'lot_id', headerName: 'LOT ID', width: 140, pinned: 'left', cellClass: 'selectable-cell' },
-    { field: 'wafer_id', headerName: 'WAFER ID', width: 100, pinned: 'left' },
-    { field: 'total', headerName: 'TOTAL', width: 90, type: 'numericColumn' },
-    { field: 'pass', headerName: 'PASS', width: 90, type: 'numericColumn' },
+    { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' , suppressMenu: false },
+    { field: 'osat_name', headerName: 'OSAT', width: 90, filter: 'agTextColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['contains'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true, pinned: 'left' },
+    { field: 'product_name', headerName: 'Device', width: 140, filter: 'agTextColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['contains'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true, pinned: 'left', cellClass: 'selectable-cell' },
+    { field: 'lot_id', headerName: 'LOT ID', width: 140, filter: 'agTextColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['contains'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true, pinned: 'left', cellClass: 'selectable-cell' },
+    { field: 'wafer_id', headerName: 'WAFER ID', width: 105, filter: 'agTextColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['contains'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true, pinned: 'left' },
+    { field: 'total', headerName: 'TOTAL', width: 90, filter: 'agNumberColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['greaterThan'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true },
+    { field: 'pass', headerName: 'PASS', width: 90, filter: 'agNumberColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['greaterThan'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true },
     {
       field: 'yield_rate',
       headerName: 'YIELD',
-      width: 90,
-      cellRenderer: YieldRenderer,
+      width: 90, filter: 'agNumberColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['greaterThan'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true, cellRenderer: YieldRenderer,
       cellStyle: (p: any) => {
         const details = p.data?.syl?.details || [];
         const isYieldOver = details.some((d: any) => d.direction === 'gte' || (d.bins && (d.bins.includes(1) || d.bins.includes(2))));
@@ -895,10 +935,10 @@ const detailColDefs = computed<any[]>(() => {
         return null;
       }
     },
-    { field: 'program', headerName: 'Test Program', width: 315 },
-    { field: 'mp_tester', headerName: 'MP Tester', width: 110 },
-    { field: 'probecard', headerName: 'Probe Card', width: 217 },
-    { field: 'test_start', headerName: 'Test Start', width: 150 },
+    { field: 'program', headerName: 'Test Program', width: 315, filter: 'agTextColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['contains'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true, },
+    { field: 'mp_tester', headerName: 'MP Tester', width: 110, filter: 'agTextColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['contains'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true, },
+    { field: 'probecard', headerName: 'Probe Card', width: 217, filter: 'agTextColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['contains'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true, },
+    { field: 'test_start', headerName: 'Test Start', width: 150, },
     { field: 'test_date', headerName: 'Test End', width: 150 },
     { field: 'duration_h', headerName: 'Time(h)', width: 90, type: 'numericColumn' }
   ]
@@ -1045,7 +1085,7 @@ async function exportExcel() {
     a.href = url
     const now = new Date()
     const pad = (n: number) => String(n).padStart(2, '0')
-    a.download = 'MP_Yield_' + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + '_' + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds()) + '.xlsx'
+    a.download = 'CP_Yield_' + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + '_' + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds()) + '.xlsx'
     document.body.appendChild(a)
     a.click()
     a.remove()
@@ -1163,7 +1203,7 @@ function onDeviceGridCellClicked(params: any) {
 const deviceColDefs = computed(() => {
   const isPgmMode = deviceGroupMode.value === 'PGM'
   return [
-    { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' },
+    { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' , suppressMenu: false },
     { 
       field: isPgmMode ? 'program' : 'lot_id', 
       headerName: isPgmMode ? 'PGM' : 'LOT ID', 
@@ -1179,7 +1219,7 @@ const deviceColDefs = computed(() => {
         cellRenderer: WafersDataRenderer
       }
     ]),
-    { field: 'test_start', headerName: '测试时间(最早)', width: 160 },
+    { field: 'test_start', headerName: '测试时间(最早)', width: 160, },
     { field: 'wafers', headerName: 'Wafers', width: 90, type: 'numericColumn' },
     { field: 'avg_wafer_time_h', headerName: 'Time(h)', width: 90, type: 'numericColumn' },
     { field: 'bin1_k', headerName: 'Bin1(K)', width: 90, type: 'numericColumn' },
@@ -1898,7 +1938,17 @@ function onCellMouseOver(event: any) {
 // ══════════════════════════════════════════════════════════════════
 //  LIFECYCLE
 // ══════════════════════════════════════════════════════════════════
+async function fetchOsatOptions() {
+  try {
+    const resp = await api.get('/lots/osats/names')
+    osatOptions.value = Array.isArray(resp) ? resp : []
+  } catch (err) {
+    console.error('Failed to fetch OSAT options:', err)
+  }
+}
+
 onMounted(() => {
+  fetchOsatOptions()
   try {
     fetchOverview(false) // Will not fetch if already loaded
     fetchData()

@@ -183,13 +183,26 @@ def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, 
     try:
         import pandas as pd
         xl = pd.ExcelFile(filepath)
-        if 'FT' in xl.sheet_names:
+        if 'FT' in xl.sheet_names and 'Probe by wafer' in xl.sheet_names:
+            print(f"[xls_summary_parser] Detected both 'Probe by wafer' and 'FT' sheets. Calling both UCD CP and FT parsers.")
+            from app.services.parsers.ucd_summary_parser import parse_and_save_ucd_summary
+            from app.services.parsers.ucd_ft_parser import parse_and_save_ucd_ft
+            lots1 = parse_and_save_ucd_summary(filepath, db, user_id, osat_name="UCD")
+            lots2 = parse_and_save_ucd_ft(filepath, db, user_id, osat_name="UCD")
+            return lots1 + lots2
+        elif 'FT' in xl.sheet_names:
             print(f"[xls_summary_parser] Detected 'FT' sheet, routing to UCD FT parser")
             from app.services.parsers.ucd_ft_parser import parse_and_save_ucd_ft
             return parse_and_save_ucd_ft(filepath, db, user_id, osat_name="UCD")
             
-        df_head = pd.read_excel(filepath, nrows=1)
-        if '温度' in df_head.columns and '流水号' in df_head.columns:
+        df_head = pd.read_excel(filepath, nrows=10, header=None)
+        has_cmc_ft = False
+        for r in range(df_head.shape[0]):
+            row_vals = [str(x).strip() for x in df_head.iloc[r].values if pd.notna(x)]
+            if '温度' in row_vals and '流水号' in row_vals:
+                has_cmc_ft = True
+                break
+        if has_cmc_ft:
             print(f"[xls_summary_parser] Detected '温度' column, routing to CMC FT parser")
             from app.services.parsers.cmc_ft_parser import parse_and_save_cmc_ft
             return parse_and_save_cmc_ft(filepath, db, user_id, osat_name="CMC")

@@ -18,27 +18,33 @@ def parse_ucd_date(val):
 
 def parse_and_save_ucd_summary(filepath: str, db: Session, user_id: int = None, osat_name: str = "UCD") -> list:
     """
-    Parse UCD Excel summary reports (first sheet: Probe by wafer)
-    and save the parsed wafer data into the database.
+    Parse UCD Excel summary reports (sheet: Probe by wafer)
+    and save the parsed wafer data into the database as CP.
     """
     filename = os.path.basename(filepath)
     print(f"[ucd_summary_parser] Parsing file: {filename}")
     
-    # Read the first sheet, header starts at Row 2 (index 2)
-    df0 = pd.read_excel(filepath, sheet_name=0, header=2)
+    xl = pd.ExcelFile(filepath)
+    sheet_name = 0
+    for s_name in xl.sheet_names:
+        if str(s_name).strip().lower() == "probe by wafer":
+            sheet_name = s_name
+            break
+            
+    df = xl.parse(sheet_name, header=2)
     
     created_lots = []
+    target_data_type = 'CP_Yield'
     
-    # Cache existing lot/wafer combinations in DB to speed up lookup
     existing_lots = set(
         db.query(Lot.lot_id, Lot.wafer_id)
-        .filter(Lot.data_type == 'MP_Yield')
+        .filter(Lot.data_type == target_data_type)
         .all()
     )
-    print(f"[ucd_summary_parser] Found {len(existing_lots)} existing lots in DB")
+    print(f"[ucd_summary_parser] Found {len(existing_lots)} existing lots in DB for {target_data_type}")
     
     batch_count = 0
-    for idx, row in df0.iterrows():
+    for idx, row in df.iterrows():
         cust = row.get('Cust')
         if pd.isna(cust) or str(cust).strip().upper() != 'HMC':
             continue
@@ -48,11 +54,9 @@ def parse_and_save_ucd_summary(filepath: str, db: Session, user_id: int = None, 
         if pd.isna(wafer) or pd.isna(ww):
             continue
             
-        # Split by '#' to merge split-lots (e.g. 139A53#A & 139A53#B -> 139A53)
         lot_id = str(wafer).strip().split('#')[0]
         wafer_id = f"{int(float(ww)):02d}"
         
-        # Check if already processed (incremental update)
         if (lot_id, wafer_id) in existing_lots:
             continue
             
@@ -73,7 +77,6 @@ def parse_and_save_ucd_summary(filepath: str, db: Session, user_id: int = None, 
                 
         test_date = parse_ucd_date(row.get('Test_Date'))
         
-        # Extract bin counts (Bin1 to Bin64)
         sbin_counts = {}
         for i in range(1, 65):
             bin_col = f"Bin{i}"
@@ -82,7 +85,6 @@ def parse_and_save_ucd_summary(filepath: str, db: Session, user_id: int = None, 
             else:
                 sbin_counts[i] = 0
                 
-        # Create Lot
         lot = Lot(
             filename=filename,
             storage_path=filepath,
@@ -96,8 +98,8 @@ def parse_and_save_ucd_summary(filepath: str, db: Session, user_id: int = None, 
             product_name=product_name,
             lot_id=lot_id,
             wafer_id=wafer_id,
-            data_type='MP_Yield',
-            test_stage='MP_Yield',
+            data_type=target_data_type,
+            test_stage=target_data_type,
             test_machine=mp_tester,
             mp_tester=mp_tester,
             probecard=None,
@@ -112,9 +114,8 @@ def parse_and_save_ucd_summary(filepath: str, db: Session, user_id: int = None, 
             ending_time=test_date,
         )
         db.add(lot)
-        db.flush() # Flush to get lot.id
+        db.flush() 
         
-        # Save BinSummary records
         for b_num, count in sbin_counts.items():
             percentage = (count / die_count) * 100.0 if (die_count and die_count > 0) else 0.0
             bin_name = f"Sbin{b_num}"
@@ -133,12 +134,10 @@ def parse_and_save_ucd_summary(filepath: str, db: Session, user_id: int = None, 
         created_lots.append(lot)
         batch_count += 1
         
-        # Commit every 500 lots to optimize performance
         if batch_count % 500 == 0:
             db.commit()
             print(f"[ucd_summary_parser] Committed batch of 500 lots (total processed: {batch_count})")
             
-    # Final commit
     db.commit()
     print(f"[ucd_summary_parser] Finished parsing UCD Summary. Total new lots added: {len(created_lots)}")
     return created_lots

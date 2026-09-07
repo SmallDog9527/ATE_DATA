@@ -193,7 +193,8 @@ def parse_and_save_lbs_summary(filepath: str, db: Session, user_id: int = None, 
         existing_lot = db.query(Lot).filter(
             Lot.lot_id == lot_id,
             Lot.wafer_id == wafer_id,
-            Lot.data_type == 'MP_Yield'
+            Lot.data_type == 'CP_Yield',
+            Lot.status != 'deleted'
         ).first()
         
         if existing_lot:
@@ -216,8 +217,8 @@ def parse_and_save_lbs_summary(filepath: str, db: Session, user_id: int = None, 
             product_name=device_name,
             lot_id=lot_id,
             wafer_id=wafer_id,
-            data_type='MP_Yield',
-            test_stage='MP_Yield',
+            data_type='CP_Yield',
+            test_stage='CP_Yield',
             test_machine=mp_tester,
             mp_tester=mp_tester,
             probecard=probecard,

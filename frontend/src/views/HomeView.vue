@@ -322,6 +322,7 @@
             <option value="QA">QA</option>
             <option value="Summary">Summary</option>
             <option value="CP_LOT">CP_LOT</option>
+            <option value="FT_Yield">FT_Yield</option>
           </select>
         </template>
         <template v-else-if="displayEditDialog.field === 'test_machine'">
@@ -479,18 +480,18 @@ const filteredLots = computed(() => {
     return lots.value
   }
   if (activeHomeTab.value === 'ENG_DATA') {
-    return lots.value.filter((l: any) => l.data_source === 'manual' && l.user_id === authStore.user?.id && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield')
+    return lots.value.filter((l: any) => l.data_source === 'manual' && l.user_id === authStore.user?.id && l.data_type !== 'CP_LOT' && l.data_type !== 'CP_Yield')
   }
   if (activeHomeTab.value === 'CP_LOT') {
     return lots.value.filter((l: any) => l.data_type === 'CP_LOT')
   }
   if (activeHomeTab.value === 'CP') {
-    return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield')
+    return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'CP_Yield')
   }
   if (activeHomeTab.value === 'FT') {
-    return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield')
+    return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'CP_Yield')
   }
-  return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'MP_Yield')
+  return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_Yield')
 })
 
 const computedColumnDefs = computed(() => {
@@ -973,7 +974,7 @@ const columnDefs: ColDef[] = [
     floatingFilterComponent: SelectFloatingFilter,
     floatingFilterComponentParams: {
       // 固定列表：不受当前 Tab 过滤影响，始终显示所有可能的 Data Type
-      options: () => ['CP', 'FT', 'QA', 'Summary', 'CP_LOT', 'MP_Yield'],
+      options: () => ['CP', 'FT', 'QA', 'Summary', 'CP_LOT', 'CP_Yield', 'FT_Yield'],
       placeholder: 'Data Type',
     },
   },
@@ -1407,8 +1408,8 @@ async function saveDisplayEdit() {
   }
   if (dialog.field === 'data_type') {
     value = value.toUpperCase()
-    if (!['CP', 'FT', 'QA'].includes(value)) {
-      dialog.error = 'Data Type 只能是 CP / FT / QA'
+    if (!['CP', 'FT', 'QA', 'SUMMARY', 'CP_LOT', 'MP_YIELD', 'FT_YIELD'].includes(value)) {
+      dialog.error = 'Data Type 只能是 CP / FT / QA / Summary / CP_LOT / CP_Yield / FT_Yield'
       return
     }
   }

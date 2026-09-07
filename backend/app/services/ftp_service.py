@@ -787,7 +787,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
             db.commit()
             return {"ok": True, "lot_id": None}
 
-        elif ext in ('.csv', '.xls', '.xlsx') or (ext == '.txt' and 'ets' in filename.lower()):
+        elif ext in ('.csv', '.xls', '.xlsx'):
             # 单个 CSV, TXT, XLS 或 XLSX 文件
             csv_files_to_process.append(local_file)
         else:
@@ -1256,7 +1256,7 @@ def _do_download_with_ftp(ftp, osat_id: int, remote_path: str, admin_user_id: in
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return None
 
-        elif ext in ('.csv', '.xls', '.xlsx') or (ext == '.txt' and 'ets' in filename.lower()):
+        elif ext in ('.csv', '.xls', '.xlsx'):
             csv_files_to_process.append(local_file)
         else:
             raise Exception(f"不支持的文件格式: {ext}")
@@ -1448,9 +1448,14 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
 
         def is_processable_file(fname: str) -> bool:
             name_lower = fname.lower()
+            import re
+            if name_lower.endswith('sum.csv'):
+                return False
+            if name_lower.endswith(('.mdb', '.std', '.txt')):
+                return False
+            if name_lower.endswith('.xls') and re.search(r't[123]_ft.*\.xls$', name_lower):
+                return False
             if name_lower.endswith(('.csv', '.xls', '.xlsx')):
-                return True
-            if name_lower.endswith('.txt') and ('ets' in name_lower or 'summary' in name_lower):
                 return True
             return False
 

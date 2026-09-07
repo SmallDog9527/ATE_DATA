@@ -32,6 +32,7 @@ class Lot(Base):
     test_machine = Column(String)
     handler = Column(String)
     data_type = Column(String)        # CP / FT
+    stage = Column(String)             # Room / Hot / Cold
     test_stage = Column(String)
     station_count = Column(Integer)
     die_count = Column(Integer)

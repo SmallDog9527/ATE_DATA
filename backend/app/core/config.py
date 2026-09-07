@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASS: str = ""
     SMTP_FROM: str = "noreply@ate-system.com"
-    APP_URL: str = "http://localhost:5174"
+    APP_URL: str = "http://localhost:5175"
 
     class Config:
         env_file = ".env"

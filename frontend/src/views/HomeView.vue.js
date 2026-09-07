@@ -111,22 +111,22 @@ const filteredLots = computed(() => {
     }
     if (activeHomeTab.value === 'ENG_DATA') {
         if (authStore.isAdmin || authStore.isEng) {
-            return lots.value.filter((l) => l.data_source === 'manual' && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield');
+            return lots.value.filter((l) => l.data_source === 'manual' && l.data_type !== 'CP_LOT' && l.data_type !== 'CP_Yield');
         }
         else {
-            return lots.value.filter((l) => l.data_source === 'manual' && l.user_id === authStore.user?.id && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield');
+            return lots.value.filter((l) => l.data_source === 'manual' && l.user_id === authStore.user?.id && l.data_type !== 'CP_LOT' && l.data_type !== 'CP_Yield');
         }
     }
     if (activeHomeTab.value === 'CP_LOT') {
         return lots.value.filter((l) => l.data_type === 'CP_LOT');
     }
     if (activeHomeTab.value === 'CP') {
-        return lots.value.filter((l) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield');
+        return lots.value.filter((l) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'CP_Yield');
     }
     if (activeHomeTab.value === 'FT') {
-        return lots.value.filter((l) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'MP_Yield');
+        return lots.value.filter((l) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'CP_Yield');
     }
-    return lots.value.filter((l) => l.data_source === 'ftp' && l.data_type !== 'MP_Yield');
+    return lots.value.filter((l) => l.data_source === 'ftp' && l.data_type !== 'CP_Yield');
 });
 const computedColumnDefs = computed(() => {
     const baseDefs = [...columnDefs];
@@ -602,7 +602,7 @@ const columnDefs = [
         floatingFilterComponent: SelectFloatingFilter,
         floatingFilterComponentParams: {
             // 固定列表：不受当前 Tab 过滤影响，始终显示所有可能的 Data Type
-            options: () => ['CP', 'FT', 'QA', 'Summary', 'CP_LOT', 'MP_Yield'],
+            options: () => ['CP', 'FT', 'QA', 'Summary', 'CP_LOT', 'CP_Yield'],
             placeholder: 'Data Type',
         },
     },

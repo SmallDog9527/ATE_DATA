@@ -44,7 +44,7 @@ def extract_date_from_filename(filename: str):
 def enrich_device_and_program(w_info: dict, db_sess: Session, cache: dict = None):
     """
     Enrich missing device_name (product_name) and program from raw test data
-    (data_type != 'MP_Yield') in the lots table.
+    (data_type != 'CP_Yield') in the lots table.
     """
     cur_lot = w_info.get("lot_id")
     cur_wafer = w_info.get("wafer_id")
@@ -77,7 +77,7 @@ def enrich_device_and_program(w_info: dict, db_sess: Session, cache: dict = None
         match = db_sess.query(Lot.product_name, Lot.program, Lot.mp_tester).filter(
             Lot.lot_id == cur_lot,
             Lot.wafer_id == cur_wafer,
-            Lot.data_type != 'MP_Yield',
+            Lot.data_type != 'CP_Yield',
             Lot.status != 'deleted',
             (Lot.product_name.isnot(None) & (Lot.product_name != '')) | (Lot.program.isnot(None) & (Lot.program != ''))
         ).order_by(Lot.id.desc()).first()
@@ -85,12 +85,12 @@ def enrich_device_and_program(w_info: dict, db_sess: Session, cache: dict = None
         if not match:
             match = db_sess.query(Lot.product_name, Lot.program, Lot.mp_tester).filter(
                 Lot.lot_id == cur_lot,
-                Lot.data_type != 'MP_Yield',
+                Lot.data_type != 'CP_Yield',
                 Lot.status != 'deleted',
                 (Lot.product_name.isnot(None) & (Lot.product_name != '')) | (Lot.program.isnot(None) & (Lot.program != ''))
             ).order_by(Lot.id.desc()).first()
 
-        # Fallback to any existing record of the same lot (even MP_Yield) with valid product_name or program
+        # Fallback to any existing record of the same lot (even CP_Yield) with valid product_name or program
         if not match:
             match = db_sess.query(Lot.product_name, Lot.program, Lot.mp_tester).filter(
                 Lot.lot_id == cur_lot,
@@ -479,7 +479,8 @@ def parse_and_save_ksht_summary(filepath: str, db: Session, user_id: int = None,
         existing_lot = db.query(Lot).filter(
             Lot.lot_id == lot_id,
             Lot.wafer_id == wafer_id,
-            Lot.data_type == 'MP_Yield'
+            Lot.data_type == 'CP_Yield',
+            Lot.status != 'deleted'
         ).first()
 
         saved_storage_path = filepath
@@ -571,8 +572,8 @@ def parse_and_save_ksht_summary(filepath: str, db: Session, user_id: int = None,
                 product_name=w.get("device_name"),
                 lot_id=lot_id,
                 wafer_id=wafer_id,
-                data_type='MP_Yield',
-                test_stage='MP_Yield',
+                data_type='CP_Yield',
+                test_stage='CP_Yield',
                 test_machine=w["mp_tester"],
                 mp_tester=w["mp_tester"],
                 probecard=w["probecard"],

@@ -610,7 +610,7 @@ def _find_prev_lot(db: Session, lot: Lot) -> Optional[Lot]:
             Lot.test_machine == lot.test_machine,
             Lot.status == "processed",
             Lot.id != lot.id,
-            or_(Lot.data_type.is_(None), Lot.data_type != "MP_Yield"),
+            or_(Lot.data_type.is_(None), Lot.data_type != "CP_Yield"),
         )
         .order_by(desc(Lot.test_date))
     )
@@ -1064,7 +1064,7 @@ def _build_program_list_data(db: Session) -> list:
         .filter(
             Lot.product_name.isnot(None),
             Lot.status != "deleted",
-            or_(Lot.data_type.is_(None), Lot.data_type != "MP_Yield"),
+            or_(Lot.data_type.is_(None), Lot.data_type != "CP_Yield"),
             or_(Lot.data_type.is_(None), Lot.data_type != "QA"),
             ~Lot.filename.ilike("%QA%"),
         )
@@ -1079,7 +1079,7 @@ def _build_program_list_data(db: Session) -> list:
             Lot.product_name.isnot(None),
             Lot.program.isnot(None),
             Lot.status == "processed",
-            or_(Lot.data_type.is_(None), Lot.data_type != "MP_Yield"),
+            or_(Lot.data_type.is_(None), Lot.data_type != "CP_Yield"),
             or_(Lot.data_type.is_(None), Lot.data_type != "QA"),
             ~Lot.filename.ilike("%QA%"),
         )
@@ -1200,7 +1200,7 @@ def get_product_programs(product_name: str, db: Session = Depends(get_db)):
             Lot.product_name == product_name,
             Lot.program.isnot(None),
             Lot.status == "processed",
-            or_(Lot.data_type.is_(None), Lot.data_type != "MP_Yield"),
+            or_(Lot.data_type.is_(None), Lot.data_type != "CP_Yield"),
         )
         .order_by(Lot.test_machine, desc(Lot.test_date))
         .all()

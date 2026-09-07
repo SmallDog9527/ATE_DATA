@@ -109,7 +109,12 @@ def _collect_archive_data_files(extract_dir: str) -> list[str]:
     for root, _, files in os.walk(extract_dir):
         for f in files:
             flower = f.lower()
-            if flower.endswith('.csv') or flower.endswith('.txt') or flower.endswith('.xls') or flower.endswith('.xlsx'):
+            import re
+            if flower.endswith('sum.csv') or flower.endswith('.mdb') or flower.endswith('.std') or flower.endswith('.txt'):
+                continue
+            if flower.endswith('.xls') and re.search(r't[123]_ft.*\.xls$', flower):
+                continue
+            if flower.endswith('.csv') or flower.endswith('.xls') or flower.endswith('.xlsx'):
                 data_files.append(os.path.join(root, f))
             elif _is_stdf(f):
                 from app.services.parsers.stdf_converter import convert_stdf_to_csv
@@ -768,6 +773,45 @@ def _parse_and_save(lot_id: int, csv_path: str, db: Session):
         lot.data_type = result.test_stage or lot.data_type
         lot.test_machine = result.tester or lot.test_machine
 
+        import os, re
+        
+        # Determine Stage and QA by Program name
+        if lot.program:
+            prog_upper = lot.program.upper()
+            if re.search(r'_V\d+', prog_upper):
+                lot.stage = 'Room'
+            elif re.search(r'_H\d+', prog_upper):
+                lot.stage = 'Hot'
+            elif re.search(r'_L\d+', prog_upper):
+                lot.stage = 'Cold'
+            
+            import os
+            prog_base = os.path.splitext(prog_upper)[0]
+            if prog_base.endswith('_QA'):
+                lot.data_type = 'QA'
+
+        import os, re
+        basename = os.path.basename(csv_path)
+
+        # Feature sniffing regexes (for Lot ID and Wafer ID only now)
+        cmc_match = re.match(r'^(T[123])_([^_]+)_([^_]+)_', basename, re.IGNORECASE)
+        ucd_match = re.match(r'^([^_]+)_([Hh][Mm][Cc][^_]*)_', basename)
+
+        if lot.osat_name == 'CMC' or (not lot.osat_name and cmc_match):
+            # cmc_FT logic
+            if cmc_match:
+                lot.lot_id = cmc_match.group(2)
+                lot.wafer_id = cmc_match.group(3)
+                if not lot.osat_name and str(lot.data_type).upper() in ('FT', 'QA', 'FT_YIELD'):
+                    lot.osat_name = 'CMC'
+        elif lot.osat_name == 'UCD' or (not lot.osat_name and ucd_match):
+            # UCD_FT logic
+            if ucd_match:
+                lot.wafer_id = ucd_match.group(1)
+                lot.lot_id = ucd_match.group(2)
+                if not lot.osat_name and str(lot.data_type).upper() in ('FT', 'QA', 'FT_YIELD'):
+                    lot.osat_name = 'UCD'
+
         from app.services.parsers.acco_parser import parse_datetime_str
         for field in ['test_date', 'beginning_time', 'ending_time']:
             val = getattr(result, field, None)
@@ -1118,9 +1162,9 @@ def get_mp_yield_overview(
             range_type = "month"
             range_value = months
 
-        # All users have read access to MP_Yield summary metrics
+        # All users have read access to CP_Yield summary metrics
         filters = [
-            Lot.data_type == "MP_Yield",
+            Lot.data_type == "CP_Yield",
             Lot.status != "deleted",
         ]
 
@@ -1134,11 +1178,11 @@ def get_mp_yield_overview(
             filters.append(Lot.test_date >= cutoff)
         elif range_type == "lot":
             val = range_value if range_value is not None else 20
-            # Get recent N distinct lot IDs for MP_Yield
+            # Get recent N distinct lot IDs for CP_Yield
             recent_lots_q = (
                 db.query(Lot.lot_id)
                 .filter(
-                    Lot.data_type == "MP_Yield",
+                    Lot.data_type == "CP_Yield",
                     Lot.status != "deleted",
                 )
             )
@@ -1933,7 +1977,7 @@ def export_mp_yield_excel(
         buf = io.BytesIO()
         wb.save(buf)
         buf.seek(0)
-        fname = "MP_Yield_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".xlsx"
+        fname = "CP_Yield_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".xlsx"
         record_user_log(
             db=db,
             action="DOWNLOAD",
@@ -2067,12 +2111,12 @@ def _mp_yield_scope_query(
 ):
     """Build the filtered, de-duplicated MP-Yield scope query (no ordering)."""
     from app.models.lot import DataSource
-    query = db.query(Lot).filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
+    query = db.query(Lot).filter(Lot.data_type == 'CP_Yield', Lot.status != 'deleted')
 
     from sqlalchemy import select
     latest_wafer_run_ids = (
         db.query(func.max(Lot.id))
-        .filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
+        .filter(Lot.data_type == 'CP_Yield', Lot.status != 'deleted')
         .group_by(Lot.lot_id, Lot.wafer_id)
         .subquery()
     )
@@ -2118,7 +2162,7 @@ def _mp_yield_scope_query(
                 db.query(Lot.lot_id)
                 .filter(
                     Lot.data_source == DataSource.ftp,
-                    Lot.data_type == "MP_Yield",
+                    Lot.data_type == "CP_Yield",
                     Lot.status != "deleted",
                 )
             )
@@ -2280,13 +2324,13 @@ def get_lots(
         # Deduplicate summary files: only show the first wafer (minimum ID) for each unique summary filename
         representative_mp_yield_ids = (
             db.query(func.min(Lot.id))
-            .filter(Lot.data_type == 'MP_Yield', Lot.status != 'deleted')
+            .filter(Lot.data_type == 'CP_Yield', Lot.status != 'deleted')
             .group_by(Lot.filename)
             .subquery()
         )
         query = query.filter(
             or_(
-                Lot.data_type != 'MP_Yield',
+                Lot.data_type != 'CP_Yield',
                 Lot.id.in_(representative_mp_yield_ids)
             )
         )
@@ -2332,7 +2376,7 @@ def get_lots(
                     osat_names_for_type.append(name.split('_')[0])
             query = query.filter(
             Lot.osat_name.in_(osat_names_for_type),
-            Lot.data_type != 'MP_Yield'
+            Lot.data_type != 'CP_Yield'
         )
         if test_date_from:
             query = query.filter(Lot.test_date >= datetime.strptime(test_date_from, "%Y-%m-%d"))

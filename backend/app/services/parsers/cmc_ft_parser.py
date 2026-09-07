@@ -13,18 +13,55 @@ def parse_and_save_cmc_ft(filepath: str, db: Session, user_id: int = None, osat_
     filename = os.path.basename(filepath)
     print(f"[cmc_ft_parser] Parsing file: {filename}")
     
-    df = pd.read_excel(filepath)
+    df_raw = pd.read_excel(filepath, header=None)
+    header_idx = 0
+    for r in range(min(10, df_raw.shape[0])):
+        row_vals = [str(x).strip() for x in df_raw.iloc[r].values if pd.notna(x)]
+        if '温度' in row_vals and '流水号' in row_vals:
+            header_idx = r
+            break
+    df = pd.read_excel(filepath, header=header_idx)
     
     mappings = {m.osat_product_name: m.internal_product_name for m in db.query(OsatDeviceMapping).all()}
     
     created_lots = []
     
     for idx, row in df.iterrows():
+        # Check if we hit the footer (e.g. '报告拟制')
+        date_col = '结批日期' if '结批日期' in row else '日期'
+        if date_col in row and str(row.get(date_col, '')).strip() in ('报告拟制', '编制', '审核'):
+            break
+            
         lot_id = str(row.get('流水号', '')).strip()
-        if not lot_id or lot_id == 'nan':
+        if not lot_id or lot_id == 'nan' or lot_id == '日期':
             continue
             
-        temperature = str(row.get('温度', '')).strip()
+        # If 产品名 is NaN or empty, it's likely a footer row
+        product_val = str(row.get('产品名', '')).strip()
+        if not product_val or product_val.lower() == 'nan':
+            continue
+            
+        # Standardize temperature string
+        raw_temperature = str(row.get('温度', '')).strip()
+        raw_upper = raw_temperature.upper()
+        if '常温' in raw_upper or 'ROOM' in raw_upper or 'ETR' in raw_upper:
+            temperature = 'Room'
+        elif '高温' in raw_upper or 'HOT' in raw_upper or 'ETH' in raw_upper:
+            temperature = 'Hot'
+        elif '低温' in raw_upper or 'COLD' in raw_upper or 'ETC' in raw_upper:
+            temperature = 'Cold'
+        else:
+            # Fallback to infer from program name
+            import re
+            prog_str = str(row.get('测试程序名', '')).strip().upper()
+            if re.search(r'_V\d+', prog_str):
+                temperature = 'Room'
+            elif re.search(r'_H\d+', prog_str):
+                temperature = 'Hot'
+            elif re.search(r'_L\d+', prog_str):
+                temperature = 'Cold'
+            else:
+                temperature = raw_temperature
         wafer_id = str(row.get('客户扩散批', '')).strip()
         package = str(row.get('封装形式', '')).strip()
         osat_product = str(row.get('产品名', '')).strip()
@@ -60,7 +97,9 @@ def parse_and_save_cmc_ft(filepath: str, db: Session, user_id: int = None, osat_
             Lot.lot_id == lot_id,
             Lot.wafer_id == wafer_id,
             Lot.osat_name == 'CMC',
-            Lot.temperature == temperature
+            Lot.temperature == temperature,
+            Lot.program == program,
+            Lot.status != 'deleted'
         ).first()
         
         if existing:
@@ -105,11 +144,17 @@ def parse_and_save_cmc_ft(filepath: str, db: Session, user_id: int = None, osat_
             '工程': 130
         }
         
+        has_sbin = any('SBIN' in str(c).strip().upper() for c in df.columns)
+        
         for c in df.columns:
             c_str = str(c).strip().upper()
             b_num = None
             
             if 'BIN' in c_str:
+                if has_sbin and 'HBIN' in c_str:
+                    continue
+                if not has_sbin and 'SBIN' in c_str:
+                    continue
                 b_num_str = ''.join(filter(str.isdigit, c_str))
                 if b_num_str:
                     b_num = int(b_num_str)
