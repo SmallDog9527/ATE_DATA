@@ -1,5 +1,22 @@
 # 版本更新日志
 
+## V03_20260907
+
+**分支：** \main\ ｜ **日期：** 2026-09-07
+
+### 1. MP_Yield 字段重命名为 CP_Yield
+- 全局替换了后端 API 路由、解析器以及前端 Vue 页面中原有的 \MP_Yield\ 字段为 \CP_Yield\，确保与实际业务术语一致。
+- 对数据库历史数据进行迁移，修复由于数据类型映射问题导致的 CP 明细在页面中丢失或无法正常查询的缺陷。
+
+### 2. 修复 UCD FT 良率解析问题
+- 优化了 \ucd_ft_parser.py\ 针对良率（Yield）列的识别规则，排除包含 \Yield TYPE\ 等字样的干扰列。
+- 新增良率回退计算机制（Fallback calculation）：当表单中 Yield 数据缺失或无效时，系统会自动利用 \Pass / Total\ 计算良率，修复了 UCD FT 良率为 0 的问题。
+- 已自动对数据库中历史缺失良率记录进行数据修正。
+
+### 3. 增强页面筛选框交互
+- 修正 \FtYieldView.vue\ 与 \DataAnalysisView.vue\ 中 AG Grid 浮动筛选框（Floating Filter）的过滤逻辑。
+- 监听 \@filter-changed\，用户在表头下方的各列筛选框（如 OSAT、Device、LOT ID 等）中输入条件时，自动触发后端全库检索（取代之前的纯本地过滤）。
+
 ## V02_20260906
 
 **分支：** `main` ｜ **日期：** 2026-09-06
