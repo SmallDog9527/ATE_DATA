@@ -72,7 +72,7 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-noreply@ate-system.com}
-      APP_URL: ${APP_URL:-http://localhost:5175}
+      APP_URL: ${APP_URL:-http://localhost:5174}
     volumes:
       - ./backend:/app
       - /data/ATE_DATA/uploads:/app/uploads
@@ -86,7 +86,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "5175:5175"
+      - "5174:5174"
     environment:
       - BACKEND_URL=http://backend:8000
     volumes:
