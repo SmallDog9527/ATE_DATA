@@ -121,7 +121,13 @@
       />
       <div class="db-page-footer">
         <span class="db-page-size">
-          Page Size: {{ backendPageSize }}
+          Page Size:
+          <select v-model="backendPageSize" @change="fetchLotsFromFirstPage" style="margin-left: 4px; padding: 2px 4px; border-radius: 4px; border: 1px solid #cbd5e1;">
+            <option :value="50">50</option>
+            <option :value="100">100</option>
+            <option :value="200">200</option>
+            <option :value="500">500</option>
+          </select>
         </span>
         <span class="db-page-summary">
           本页 {{ lots.length }}（总 {{ backendTotal }}）
@@ -480,18 +486,18 @@ const filteredLots = computed(() => {
     return lots.value
   }
   if (activeHomeTab.value === 'ENG_DATA') {
-    return lots.value.filter((l: any) => l.data_source === 'manual' && l.user_id === authStore.user?.id && l.data_type !== 'CP_LOT' && l.data_type !== 'CP_Yield')
+    return lots.value.filter((l: any) => !l.osat_name && l.data_type !== 'CP_LOT')
   }
   if (activeHomeTab.value === 'CP_LOT') {
     return lots.value.filter((l: any) => l.data_type === 'CP_LOT')
   }
   if (activeHomeTab.value === 'CP') {
-    return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'CP_Yield')
+    return lots.value.filter((l: any) => l.osat_name && ['CP', 'CP_Yield'].includes(l.data_type))
   }
   if (activeHomeTab.value === 'FT') {
-    return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_LOT' && l.data_type !== 'CP_Yield')
+    return lots.value.filter((l: any) => l.osat_name && !['CP', 'CP_Yield', 'CP_LOT'].includes(l.data_type))
   }
-  return lots.value.filter((l: any) => l.data_source === 'ftp' && l.data_type !== 'CP_Yield')
+  return lots.value
 })
 
 const computedColumnDefs = computed(() => {
@@ -659,6 +665,7 @@ const defaultColDef: ColDef = {
   filter: true,
   floatingFilter: true,
   suppressFloatingFilterButton: true,
+  filterParams: { maxNumConditions: 1, suppressAndOrCondition: true },
   minWidth: 80,
 }
 
@@ -693,6 +700,8 @@ const dateRangeFilterParams = {
   inRangeInclusive: true,
   buttons: ['reset'],
   comparator: compareDateOnly,
+  maxNumConditions: 1,
+  suppressAndOrCondition: true,
 }
 
 const OPEN_START_DATE = '0001-01-01'
@@ -915,33 +924,34 @@ const columnDefs: ColDef[] = [
     field: 'item_count', 
     width: 100, 
     filter: 'agNumberColumnFilter',
-    filterParams: { defaultOption: 'greaterThan', buttons: ['reset'] }
+    filterParams: { defaultOption: 'greaterThan', buttons: ['reset'], maxNumConditions: 1, suppressAndOrCondition: true }
   },
   { 
     headerName: '晶圆数', 
     field: 'die_count', 
     width: 100, 
     filter: 'agNumberColumnFilter',
-    filterParams: { defaultOption: 'greaterThan', buttons: ['reset'] }
+    filterParams: { defaultOption: 'greaterThan', buttons: ['reset'], maxNumConditions: 1, suppressAndOrCondition: true }
   },
   { 
     headerName: '良品数', 
     field: 'pass_count', 
     width: 100, 
     filter: 'agNumberColumnFilter',
-    filterParams: { defaultOption: 'greaterThan', buttons: ['reset'] }
+    filterParams: { defaultOption: 'greaterThan', buttons: ['reset'], maxNumConditions: 1, suppressAndOrCondition: true }
   },
   {
     headerName: '良率',
     field: 'yield_rate',
+    valueGetter: (p: any) => p.data.yield_rate != null ? Number((p.data.yield_rate * 100).toFixed(2)) : null,
     width: 100,
     filter: 'agNumberColumnFilter',
-    filterParams: { defaultOption: 'greaterThan', buttons: ['reset'] },
-    valueFormatter: (p: any) => p.value ? `${(p.value * 100).toFixed(2)}%` : '-',
+    filterParams: { defaultOption: 'greaterThan', buttons: ['reset'], maxNumConditions: 1, suppressAndOrCondition: true },
+    valueFormatter: (p: any) => p.value != null ? `${p.value}%` : '-',
     cellStyle: (p: any): any => {
-      if (!p.value) return {}
-      if (p.value < 0.8) return { color: 'red', fontWeight: 'bold' }
-      if (p.value < 0.95) return { color: 'orange' }
+      if (p.value == null) return {}
+      if (p.value < 80) return { color: 'red', fontWeight: 'bold' }
+      if (p.value < 95) return { color: 'orange' }
       return { color: 'green' }
     }
   },
@@ -1185,17 +1195,14 @@ async function fetchLots() {
     if (filters.value.status) params.status = filters.value.status
     Object.assign(params, backendGridFilters.value)
 
-    // 根据当前 Tab 加上后端过滤参数，减轻前端过滤压力并解除 200 条限制问题
     if (activeHomeTab.value === 'ENG_DATA') {
-      params.data_source = 'manual'
+      params.tab_category = 'ENG_DATA'
     } else if (activeHomeTab.value === 'FT') {
-      params.data_source = 'ftp'
-      params.osat_type = 'FT'   // 按 OSAT 配置的 data_type 过滤，而非 lot 自身的 data_type
+      params.tab_category = 'OSAT_FT'
     } else if (activeHomeTab.value === 'CP') {
-      params.data_source = 'ftp'
-      params.osat_type = 'CP'   // 按 OSAT 配置的 data_type 过滤，而非 lot 自身的 data_type
+      params.tab_category = 'OSAT_CP'
     } else if (activeHomeTab.value === 'CP_LOT') {
-      params.data_type = 'CP_LOT'
+      params.tab_category = 'CP_LOT'
     }
 
     const data: any = await api.get('/lots', { params })
@@ -1330,6 +1337,7 @@ function onGridFilterChanged() {
   const nextLotId = textFilterValue(model, 'lot_id')
   const nextStatus = textFilterValue(model, 'status')
   const nextBackendGridFilters = extractBackendGridFilters(model)
+  nextBackendGridFilters.grid_filters = JSON.stringify(model)
   const backendFilterChanged = JSON.stringify(nextBackendGridFilters) !== JSON.stringify(backendGridFilters.value)
 
   if (
@@ -1769,7 +1777,14 @@ watch(activeHomeTab, (newTab) => {
   }
   if (gridApi.value) {
     const model = gridApi.value.getFilterModel() || {}
-    delete model.data_type
+    if (newTab === 'FT') {
+      model.data_type = { type: 'equals', filter: 'FT' }
+    } else if (newTab === 'CP') {
+      model.data_type = { type: 'equals', filter: 'CP' }
+    } else {
+      delete model.data_type
+    }
+    
     if (filters.value.status) {
       model.status = { type: 'equals', filter: filters.value.status }
     } else {

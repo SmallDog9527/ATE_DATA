@@ -260,6 +260,21 @@ def get_ft_yield_overview(
             for name, total_pass in osat_bin1_totals.items()
         ]
 
+
+        # --- Add has_syl flag ---
+        from app.models.ft_yield_syl import FtYieldSylSession
+        syl_product_names = [p['product_name'] for p in products if p['product_name']]
+        syl_set = set()
+        if syl_product_names:
+            syl_rows = db.query(func.lower(FtYieldSylSession.product_name)).filter(
+                func.lower(FtYieldSylSession.product_name).in_([name.lower() for name in syl_product_names])
+            ).all()
+            syl_set = {row[0] for row in syl_rows}
+        
+        for p in products:
+            p['has_syl'] = (p['product_name'] or '').lower() in syl_set
+        # ------------------------
+
         result_data = {
             "products": products,
             "weekly_output": weekly_output,
@@ -304,6 +319,7 @@ def get_ft_yield_list(
     include_syl: bool = Query(False),
     syl_over_total: bool = Query(False),
     syl_session_id: Optional[int] = None,
+    grid_filters: Optional[str] = None,
 ):
     """
     Get a list of FT Yield records with horizontally pivoted sbin1-sbin130 values.
@@ -316,6 +332,56 @@ def get_ft_yield_list(
             test_date_from=test_date_from, test_date_to=test_date_to,
             range_type=range_type, range_value=range_value,
         )
+        if grid_filters:
+            import json
+            try:
+                gf = json.loads(grid_filters)
+                for col_key, filter_info in gf.items():
+                    if col_key == "total":
+                        col_key = "die_count"
+                    elif col_key == "pass":
+                        col_key = "pass_count"
+                        
+                    filter_type = filter_info.get("filterType")
+                    filter_val = filter_info.get("filter")
+                    filter_type_cond = filter_info.get("type")
+                    
+                    if col_key == "yield_rate" and filter_val is not None:
+                        try: filter_val = float(filter_val) / 100.0
+                        except: pass
+                        if filter_info.get("filterTo") is not None:
+                            try: filter_info["filterTo"] = float(filter_info["filterTo"]) / 100.0
+                            except: pass
+                            
+                    if hasattr(Lot, col_key):
+                        col_attr = getattr(Lot, col_key)
+                        if filter_type == "number":
+                            if filter_type_cond == "equals":
+                                query = query.filter(col_attr == filter_val)
+                            elif filter_type_cond == "notEqual":
+                                query = query.filter(col_attr != filter_val)
+                            elif filter_type_cond == "lessThan":
+                                query = query.filter(col_attr < filter_val)
+                            elif filter_type_cond == "lessThanOrEqual":
+                                query = query.filter(col_attr <= filter_val)
+                            elif filter_type_cond == "greaterThan":
+                                query = query.filter(col_attr > filter_val)
+                            elif filter_type_cond == "greaterThanOrEqual":
+                                query = query.filter(col_attr >= filter_val)
+                            elif filter_type_cond == "inRange":
+                                filter_to = filter_info.get("filterTo")
+                                query = query.filter(col_attr >= filter_val, col_attr <= filter_to)
+                        elif filter_type == "text":
+                            if filter_type_cond == "contains":
+                                query = query.filter(col_attr.ilike(f"%{filter_val}%"))
+                            elif filter_type_cond == "equals":
+                                query = query.filter(col_attr == filter_val)
+                            elif filter_type_cond == "startsWith":
+                                query = query.filter(col_attr.ilike(f"{filter_val}%"))
+                            elif filter_type_cond == "endsWith":
+                                query = query.filter(col_attr.ilike(f"%{filter_val}"))
+            except Exception as e:
+                pass
         total = query.count()
         lots = query.order_by(desc(Lot.test_date), desc(Lot.id)).offset(
             (page - 1) * page_size
@@ -478,6 +544,7 @@ def export_ft_yield_excel(
     range_value: Optional[int] = None,
     syl_over_only: bool = Query(False),
     syl_session_id: Optional[int] = None,
+    grid_filters: Optional[str] = None,
     sort_col: Optional[str] = None,
     sort_dir: Optional[str] = None,
     req_id: Optional[str] = Query(None, alias="t"),
@@ -498,6 +565,56 @@ def export_ft_yield_excel(
             test_date_from=test_date_from, test_date_to=test_date_to,
             range_type=range_type, range_value=range_value,
         )
+        if grid_filters:
+            import json
+            try:
+                gf = json.loads(grid_filters)
+                for col_key, filter_info in gf.items():
+                    if col_key == "total":
+                        col_key = "die_count"
+                    elif col_key == "pass":
+                        col_key = "pass_count"
+                        
+                    filter_type = filter_info.get("filterType")
+                    filter_val = filter_info.get("filter")
+                    filter_type_cond = filter_info.get("type")
+                    
+                    if col_key == "yield_rate" and filter_val is not None:
+                        try: filter_val = float(filter_val) / 100.0
+                        except: pass
+                        if filter_info.get("filterTo") is not None:
+                            try: filter_info["filterTo"] = float(filter_info["filterTo"]) / 100.0
+                            except: pass
+                            
+                    if hasattr(Lot, col_key):
+                        col_attr = getattr(Lot, col_key)
+                        if filter_type == "number":
+                            if filter_type_cond == "equals":
+                                query = query.filter(col_attr == filter_val)
+                            elif filter_type_cond == "notEqual":
+                                query = query.filter(col_attr != filter_val)
+                            elif filter_type_cond == "lessThan":
+                                query = query.filter(col_attr < filter_val)
+                            elif filter_type_cond == "lessThanOrEqual":
+                                query = query.filter(col_attr <= filter_val)
+                            elif filter_type_cond == "greaterThan":
+                                query = query.filter(col_attr > filter_val)
+                            elif filter_type_cond == "greaterThanOrEqual":
+                                query = query.filter(col_attr >= filter_val)
+                            elif filter_type_cond == "inRange":
+                                filter_to = filter_info.get("filterTo")
+                                query = query.filter(col_attr >= filter_val, col_attr <= filter_to)
+                        elif filter_type == "text":
+                            if filter_type_cond == "contains":
+                                query = query.filter(col_attr.ilike(f"%{filter_val}%"))
+                            elif filter_type_cond == "equals":
+                                query = query.filter(col_attr == filter_val)
+                            elif filter_type_cond == "startsWith":
+                                query = query.filter(col_attr.ilike(f"{filter_val}%"))
+                            elif filter_type_cond == "endsWith":
+                                query = query.filter(col_attr.ilike(f"%{filter_val}"))
+            except Exception as e:
+                pass
         base_q = query.order_by(desc(Lot.test_date), desc(Lot.id))
 
         hit_ids = None
@@ -1024,6 +1141,7 @@ def get_ft_yield_syl_over(
     range_type: Optional[str] = None,
     range_value: Optional[int] = None,
     syl_session_id: Optional[int] = None,
+    grid_filters: Optional[str] = None,
 ):
     try:
         query = _ft_yield_scope_query(
@@ -1033,6 +1151,56 @@ def get_ft_yield_syl_over(
             test_date_from=test_date_from, test_date_to=test_date_to,
             range_type=range_type, range_value=range_value,
         )
+        if grid_filters:
+            import json
+            try:
+                gf = json.loads(grid_filters)
+                for col_key, filter_info in gf.items():
+                    if col_key == "total":
+                        col_key = "die_count"
+                    elif col_key == "pass":
+                        col_key = "pass_count"
+                        
+                    filter_type = filter_info.get("filterType")
+                    filter_val = filter_info.get("filter")
+                    filter_type_cond = filter_info.get("type")
+                    
+                    if col_key == "yield_rate" and filter_val is not None:
+                        try: filter_val = float(filter_val) / 100.0
+                        except: pass
+                        if filter_info.get("filterTo") is not None:
+                            try: filter_info["filterTo"] = float(filter_info["filterTo"]) / 100.0
+                            except: pass
+                            
+                    if hasattr(Lot, col_key):
+                        col_attr = getattr(Lot, col_key)
+                        if filter_type == "number":
+                            if filter_type_cond == "equals":
+                                query = query.filter(col_attr == filter_val)
+                            elif filter_type_cond == "notEqual":
+                                query = query.filter(col_attr != filter_val)
+                            elif filter_type_cond == "lessThan":
+                                query = query.filter(col_attr < filter_val)
+                            elif filter_type_cond == "lessThanOrEqual":
+                                query = query.filter(col_attr <= filter_val)
+                            elif filter_type_cond == "greaterThan":
+                                query = query.filter(col_attr > filter_val)
+                            elif filter_type_cond == "greaterThanOrEqual":
+                                query = query.filter(col_attr >= filter_val)
+                            elif filter_type_cond == "inRange":
+                                filter_to = filter_info.get("filterTo")
+                                query = query.filter(col_attr >= filter_val, col_attr <= filter_to)
+                        elif filter_type == "text":
+                            if filter_type_cond == "contains":
+                                query = query.filter(col_attr.ilike(f"%{filter_val}%"))
+                            elif filter_type_cond == "equals":
+                                query = query.filter(col_attr == filter_val)
+                            elif filter_type_cond == "startsWith":
+                                query = query.filter(col_attr.ilike(f"{filter_val}%"))
+                            elif filter_type_cond == "endsWith":
+                                query = query.filter(col_attr.ilike(f"%{filter_val}"))
+            except Exception as e:
+                pass
         from sqlalchemy import desc
         base_q = query.order_by(desc(Lot.test_date), desc(Lot.id))
         

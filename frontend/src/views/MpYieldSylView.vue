@@ -13,7 +13,7 @@
 
     <!-- Parse row: left = parse button, right = input -->
     <div class="syl-card">
-      <div class="syl-parse-row">
+      <div class="syl-parse-row" v-if="canEdit">
         <button class="btn syl-parse-btn" :disabled="saving" @click="handleParse">{{ saving ? '解析中…' : '解析' }}</button>
         <textarea
           v-model="sylInput"
@@ -46,7 +46,7 @@
                     />
                     <span class="syl-time">{{ fmtTime(s.setup_time) }}</span>
                   </label>
-                  <a class="syl-del" href="javascript:void(0)" title="删除本次设定" @click="removeSession(s.id)">✕ 删除</a>
+                  <a class="syl-del" v-if="canEdit" href="javascript:void(0)" title="删除本次设定" @click="removeSession(s.id)">✕ 删除</a>
                 </div>
               </th>
             </tr>
@@ -74,6 +74,10 @@
 </template>
 
 <script setup lang="ts">
+
+import { useAuthStore } from '@/stores/auth'
+const authStore = useAuthStore()
+const canEdit = computed(() => authStore.user?.role === 'admin' || authStore.user?.role === 'eng')
 import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '@/api'

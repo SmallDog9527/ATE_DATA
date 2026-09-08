@@ -45,11 +45,29 @@
             </select>
           </div>
           <div class="ov-filter-item">
+            <label>OSAT</label>
+            <input 
+              type="text" 
+              v-model="ovOsatFilter" 
+              placeholder="输入OSAT过滤" 
+              class="ov-filter-input"
+            />
+          </div>
+          <div class="ov-filter-item">
             <label>产品名称</label>
             <input 
               type="text" 
               v-model="ovProductName" 
               placeholder="输入产品名过滤" 
+              class="ov-filter-input"
+            />
+          </div>
+          <div class="ov-filter-item">
+            <label>Temp.</label>
+            <input 
+              type="text" 
+              v-model="ovTempFilter" 
+              placeholder="输入Temp过滤" 
               class="ov-filter-input"
             />
           </div>
@@ -86,7 +104,7 @@
           class="ag-theme-alpine"
           :theme="'legacy'"
           :rowData="filteredOvProducts"
-          :columnDefs="ovColDefs"
+          :columnDefs="computedOvColDefs"
           :defaultColDef="defaultColDef"
           style="width: 100%; flex: 1; min-height: 0;"
           :suppressScrollOnNewData="true"
@@ -308,6 +326,8 @@ const globalRangeType = ref('month')
 const globalRangeValue = ref(3)
 const globalFilterSelection = ref('month-3')
 const globalOvProductName = ref('')
+const globalOvOsatFilter = ref('')
+const globalOvTempFilter = ref('')
 const globalOvProducts = shallowRef<any[]>([])
 const globalOvWeeklyOutput = ref<any[]>([])
 const globalOvOsats = ref<any[]>([])
@@ -318,6 +338,10 @@ export default {
 </script>
 
 <script setup lang="ts">
+
+import { useAuthStore } from '@/stores/auth'
+const authStore = useAuthStore()
+const canEdit = computed(() => authStore.user?.role === 'admin' || authStore.user?.role === 'eng')
 import { reactive, computed, onMounted, nextTick, watch } from 'vue'
 import * as echarts from 'echarts'
 import api from '@/api'
@@ -338,13 +362,24 @@ const ovProducts = globalOvProducts
 const ovWeeklyOutput = globalOvWeeklyOutput
 const ovOsats = globalOvOsats
 const ovProductName = globalOvProductName
+const ovOsatFilter = globalOvOsatFilter
+const ovTempFilter = globalOvTempFilter
 
 const filteredOvProducts = computed(() => {
-  if (!ovProductName.value) return ovProducts.value
-  const query = ovProductName.value.toLowerCase().trim()
-  return ovProducts.value.filter((p: any) => 
-    p.product_name && p.product_name.toLowerCase().includes(query)
-  )
+  let list = ovProducts.value
+  if (ovOsatFilter.value) {
+    const q = ovOsatFilter.value.toLowerCase().trim()
+    list = list.filter((p: any) => p.osat && p.osat.toLowerCase().includes(q))
+  }
+  if (ovProductName.value) {
+    const q = ovProductName.value.toLowerCase().trim()
+    list = list.filter((p: any) => p.product_name && p.product_name.toLowerCase().includes(q))
+  }
+  if (ovTempFilter.value) {
+    const q = ovTempFilter.value.toLowerCase().trim()
+    list = list.filter((p: any) => p.temperature && String(p.temperature).toLowerCase().includes(q))
+  }
+  return list
 })
 
 function onFilterSelectionChange() {
@@ -507,8 +542,9 @@ const DeviceLinkRenderer = (p: any) => {
 const SylLinkRenderer = (p: any) => {
   if (!p.value) return '';
   const href = '/ft-yield-syl?product=' + encodeURIComponent(String(p.value));
+  const bgStyle = (p.data && p.data.has_syl) ? 'background-color: #e0f2fe; padding: 2px 6px; border-radius: 4px;' : '';
   return `<a class="syl-setup-link" target="_blank" rel="noopener" href="${href}"
-    style="color:#2563eb; text-decoration:underline; cursor:pointer; font-weight:500;">SYL</a>`;
+    style="color:#2563eb; text-decoration:underline; cursor:pointer; font-weight:500; ${bgStyle}">SYL</a>`;
 }
 
 const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#f97316'];
@@ -545,10 +581,10 @@ const TemperatureFormatter = (p: any) => {
   return p.value
 }
 
-const ovColDefs = [
+const computedOvColDefs = computed(() => { const showSyl = authStore.user?.role === "admin" || authStore.user?.role === "eng"; return [
   { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 60, pinned: 'left' , suppressMenu: false },
   { field: 'product_name', headerName: 'Device（产品名）', width: 180, pinned: 'left', cellRenderer: DeviceLinkRenderer },
-  { headerName: 'SYL设定', width: 90, pinned: 'left', valueGetter: (p: any) => p.data ? p.data.product_name : '', cellRenderer: SylLinkRenderer },
+  { headerName: 'SYL设定', width: 90, pinned: 'left',  valueGetter: (p: any) => p.data ? p.data.product_name : '', cellRenderer: SylLinkRenderer },
   { field: 'osat', headerName: 'OSAT', width: 110, pinned: 'left' },
   { field: 'temperature', headerName: 'Temp.', width: 110, pinned: 'left', valueFormatter: TemperatureFormatter },
   { field: 'program', headerName: 'Program', width: 180, pinned: 'left', filter: 'agTextColumnFilter', cellClass: 'selectable-cell' },
@@ -556,7 +592,7 @@ const ovColDefs = [
   { field: 'bin1_k', headerName: 'Bin1(K)', width: 90, type: 'numericColumn' },
   { field: 'avg_yield', headerName: '平均良率', width: 100, cellRenderer: YieldRenderer },
   ...failBinCols
-]
+]})
 
 async function fetchOverview(force = false) {
   if (ovLoaded.value && !force) {
@@ -767,7 +803,8 @@ const filters = reactive({
 
 const total = ref(0)
 const page = ref(1)
-const pageSize = ref(50)
+const pageSize = ref(200)
+const gridFiltersStr = ref("")
 
 const binDisplayMode = ref<'count' | 'pct'>('count')
 const sylMode = ref(0)
@@ -806,26 +843,15 @@ function onDetailFilterChanged() {
   if (detailFilterTimeout) clearTimeout(detailFilterTimeout);
   // @ts-ignore
   detailFilterTimeout = setTimeout(() => {
-    const oldOsat = filters.osat_name;
-    const oldProduct = filters.product_name;
-    const oldLot = filters.lot_id;
-    const oldWafer = filters.wafer_id;
-    const oldProgram = filters.program;
-    
     filters.osat_name = model.osat_name?.filter || '';
     filters.product_name = model.product_name?.filter || '';
     filters.lot_id = model.lot_id?.filter || '';
     filters.wafer_id = model.wafer_id?.filter || '';
     filters.program = model.program?.filter || '';
     
-    const changed = 
-      oldOsat !== filters.osat_name ||
-      oldProduct !== filters.product_name ||
-      oldLot !== filters.lot_id ||
-      oldWafer !== filters.wafer_id ||
-      oldProgram !== filters.program;
-      
-    if (changed) {
+    const newGridFilters = JSON.stringify(model);
+    if (gridFiltersStr.value !== newGridFilters) {
+      gridFiltersStr.value = newGridFilters;
       handleSearch();
     }
   }, 600);
@@ -1015,6 +1041,7 @@ async function fetchData(opts: { count?: boolean } = {}) {
     if (filters.program) params.program = filters.program
     if (filters.test_date_from) params.test_date_from = filters.test_date_from
     if (filters.test_date_to) params.test_date_to = filters.test_date_to
+    if (gridFiltersStr.value) params.grid_filters = gridFiltersStr.value
     if (selectedSylSessionId.value) params.syl_session_id = selectedSylSessionId.value
 
     const url = sylMode.value === 2 ? '/lots/ft-yield/syl-over' : '/lots/ft-yield/list'
@@ -1083,6 +1110,7 @@ async function exportExcel() {
     if (filters.program) params.program = filters.program
     if (filters.test_date_from) params.test_date_from = filters.test_date_from
     if (filters.test_date_to) params.test_date_to = filters.test_date_to
+    if (gridFiltersStr.value) params.grid_filters = gridFiltersStr.value
     if (sylMode.value === 2) params.syl_over_only = 1
     if (sylMode.value > 0) params.include_syl = 1
     if (selectedSylSessionId.value) params.syl_session_id = selectedSylSessionId.value
