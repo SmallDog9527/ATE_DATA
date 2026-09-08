@@ -1548,8 +1548,9 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
                             print(f"[ftp_dl] Overwrite cleanup failed for {old_f}: {e}")
 
                 if file_exists_in_db(filename):
-                    print(f"[ftp_dl] Duplicate file '{filename}' already processed, discarding")
-                    log.status = 'success'
+                    print(f"[ftp_dl] Duplicate file '%{filename}' already processed, discarding")
+                    log.status = 'skipped'
+                    log.error_msg = 'Skipped: Duplicate file already processed in database'
                     log.uploaded_at = datetime.now(timezone.utc)
                     db.commit()
                     if os.path.exists(local_file):
@@ -1786,7 +1787,7 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                     ext_file = FtpExtractedFile(
                         ftp_log_id=log_id,
                         filename=save_name,
-                        status='success',
+                        status='skipped',
                         error_msg='Duplicate processed lot skipped'
                     )
                     db_ext.add(ext_file)

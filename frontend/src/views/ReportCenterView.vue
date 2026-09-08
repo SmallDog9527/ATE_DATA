@@ -30,7 +30,8 @@
     <div class="report-tabs-bar">
       <div class="tabs">
         <button class="tab-btn" :class="{ active: activeTab === 'eng' }" @click="activeTab = 'eng'">ENG</button>
-        <button class="tab-btn" :class="{ active: activeTab === 'osat' }" @click="activeTab = 'osat'">OSAT</button>
+        <button class="tab-btn disabled-osat" title="待完善" style="color: #a0aec0; cursor: not-allowed; background-color: #f7fafc;" @click.prevent>OSAT (待完善)</button>
+        <!-- <button class="tab-btn" :class="{ active: activeTab === 'osat' }" @click="activeTab = 'osat'">OSAT</button> -->
       </div>
       <div v-if="activeTab === 'osat' && isGlobalViewer" class="osat-update-bar">
         <span class="range-label">最近</span>

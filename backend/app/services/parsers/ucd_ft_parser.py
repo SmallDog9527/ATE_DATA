@@ -36,7 +36,7 @@ def parse_and_save_ucd_ft(filepath: str, db: Session, user_id: int = None, osat_
     # Find column names dynamically if possible
     # In UCD FT, columns: Product, Package, Program, Customer Lot, Wafer, Stage, Total, Pass, Yield, Bin1...
     # We will try to map by name heuristics
-       def find_col(kw):
+    def find_col(kw):
         for c in df.columns:
             if str(c).strip().lower() == kw.lower():
                 return c

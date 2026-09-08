@@ -1408,7 +1408,7 @@ async function saveDisplayEdit() {
   }
   if (dialog.field === 'data_type') {
     value = value.toUpperCase()
-    if (!['CP', 'FT', 'QA', 'SUMMARY', 'CP_LOT', 'MP_YIELD', 'FT_YIELD'].includes(value)) {
+    if (!['CP', 'FT', 'QA', 'SUMMARY', 'CP_LOT', 'CP_YIELD', 'FT_YIELD'].includes(value)) {
       dialog.error = 'Data Type 只能是 CP / FT / QA / Summary / CP_LOT / CP_Yield / FT_Yield'
       return
     }
@@ -1769,13 +1769,7 @@ watch(activeHomeTab, (newTab) => {
   }
   if (gridApi.value) {
     const model = gridApi.value.getFilterModel() || {}
-    if (newTab === 'FT') {
-      model.data_type = { type: 'equals', filter: 'FT' }
-    } else if (newTab === 'CP') {
-      model.data_type = { type: 'equals', filter: 'CP' }
-    } else {
-      delete model.data_type
-    }
+    delete model.data_type
     if (filters.value.status) {
       model.status = { type: 'equals', filter: filters.value.status }
     } else {

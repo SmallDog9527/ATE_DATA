@@ -2375,8 +2375,7 @@ def get_lots(
                 if '_' in name:
                     osat_names_for_type.append(name.split('_')[0])
             query = query.filter(
-            Lot.osat_name.in_(osat_names_for_type),
-            Lot.data_type != 'CP_Yield'
+            Lot.osat_name.in_(osat_names_for_type)
         )
         if test_date_from:
             query = query.filter(Lot.test_date >= datetime.strptime(test_date_from, "%Y-%m-%d"))
@@ -2531,8 +2530,8 @@ def update_lot_display(
         normalized = value.strip()
         if field == "filename" and not normalized:
             raise HTTPException(status_code=400, detail="Display name cannot be empty")
-        if field == "data_type" and normalized.upper() not in {"CP", "FT", "QA", "MP_YIELD"}:
-            raise HTTPException(status_code=400, detail="Data Type 只能是 CP / FT / QA / MP_YIELD")
+        if field == "data_type" and normalized.upper() not in {"CP", "FT", "QA", "CP_YIELD", "FT_YIELD", "MP_YIELD"}:
+            raise HTTPException(status_code=400, detail="Data Type 只能是 CP / FT / QA / CP_Yield / FT_Yield")
         if field == "data_type":
             normalized = normalized.upper()
         setattr(lot, field, normalized)

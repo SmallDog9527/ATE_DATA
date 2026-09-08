@@ -924,12 +924,12 @@ const detailColDefs = computed<any[]>(() => {
     { field: 'lot_id', headerName: 'LOT ID', width: 140, filter: 'agTextColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['contains'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true, pinned: 'left', cellClass: 'selectable-cell' },
     { field: 'wafer_id', headerName: 'WAFER ID', width: 105, filter: 'agTextColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['contains'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true, pinned: 'left', cellClass: 'selectable-cell' },
     { field: 'temperature', headerName: 'Temp.', width: 110, filter: 'agTextColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['contains'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true, pinned: 'left', valueFormatter: TemperatureFormatter },
-    { field: 'total', headerName: 'TOTAL', width: 90, filter: 'agNumberColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['greaterThan'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true },
-    { field: 'pass', headerName: 'PASS', width: 90, filter: 'agNumberColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['greaterThan'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true },
+    { field: 'total', headerName: 'TOTAL', width: 90, filter: 'agNumberColumnFilter', floatingFilter: true, filterParams: { defaultOption: 'greaterThan', maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true },
+    { field: 'pass', headerName: 'PASS', width: 90, filter: 'agNumberColumnFilter', floatingFilter: true, filterParams: { defaultOption: 'greaterThan', maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true },
     {
       field: 'yield_rate',
       headerName: 'YIELD',
-      width: 90, filter: 'agNumberColumnFilter', floatingFilter: true, filterParams: { filterOptions: ['greaterThan'], maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true, cellRenderer: YieldRenderer,
+      width: 90, filter: 'agNumberColumnFilter', floatingFilter: true, filterParams: { defaultOption: 'greaterThan', maxNumConditions: 1, suppressAndOrCondition: true }, suppressMenu: true, cellRenderer: YieldRenderer,
       cellStyle: (p: any) => {
         const details = p.data?.syl?.details || [];
         const isYieldOver = details.some((d: any) => d.direction === 'gte' || (d.bins && (d.bins.includes(1) || d.bins.includes(2))));

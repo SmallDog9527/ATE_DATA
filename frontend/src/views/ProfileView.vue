@@ -819,7 +819,7 @@
                       <RouterLink v-if="item.lot_id_created" :to="`/lot/${item.lot_id_created}`" class="btn-sm" style="text-decoration:none;padding:2px 8px;font-size:11px;" target="_blank">
                         查看 Lot#{{ item.lot_id_created }}
                       </RouterLink>
-                      <span v-else-if="item.status === 'success'" style="color:#94a3b8;font-size:12px;">已跳过/Del</span>
+                      <span v-else-if="item.status === 'skipped'" style="color:#94a3b8;font-size:12px;">已跳过/Del</span>
                       <span v-else style="color:#94a3b8;font-size:12px;">—</span>
                     </td>
                   </tr>
@@ -2617,7 +2617,7 @@ async function fetchOsatMappings() {
     const res = await api.get('/osat-mappings')
     osatMappings.value = res.data.map((r: any) => ({ ...r, _editing: null }))
   } catch (e: any) {
-    alert("加载 OSAT 映射失败：" + (e.response?.data?.detail || e.message))
+    console.warn('加载 OSAT 映射失败：', e)
   }
 }
 

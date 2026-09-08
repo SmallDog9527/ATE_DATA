@@ -82,6 +82,7 @@ def get_ft_yield_overview(
         filters = [
             Lot.data_type == "FT_Yield",
             Lot.status != "deleted",
+            ~Lot.program.ilike("%_QA%"),
         ]
 
         if range_type == "month":
@@ -100,6 +101,7 @@ def get_ft_yield_overview(
                 .filter(
                     Lot.data_type == "FT_Yield",
                     Lot.status != "deleted",
+                    ~Lot.program.ilike("%_QA%"),
                 )
             )
             # All users can query recent lot list
@@ -124,7 +126,7 @@ def get_ft_yield_overview(
             q = db.query(func.max(Lot.id)).filter(*filters)
             if extra_filter is not None:
                 q = q.filter(extra_filter)
-            return q.group_by(Lot.lot_id, Lot.wafer_id, Lot.temperature, Lot.program).subquery()
+            return q.group_by(Lot.lot_id, Lot.wafer_id).subquery()
 
         pname_filter = Lot.product_name.ilike(f"%{product_name}%") if product_name else None
 
@@ -709,13 +711,13 @@ def _ft_yield_scope_query(
 ):
     """Build the filtered, de-duplicated MP-Yield scope query (no ordering)."""
     from app.models.lot import DataSource
-    query = db.query(Lot).filter(Lot.data_type == 'FT_Yield', Lot.status != 'deleted')
+    query = db.query(Lot).filter(Lot.data_type == 'FT_Yield', Lot.status != 'deleted', ~Lot.program.ilike('%_QA%'))
 
     from sqlalchemy import select
     latest_wafer_run_ids = (
         db.query(func.max(Lot.id))
-        .filter(Lot.data_type == 'FT_Yield', Lot.status != 'deleted')
-        .group_by(Lot.lot_id, Lot.wafer_id, Lot.temperature, Lot.program)
+        .filter(Lot.data_type == 'FT_Yield', Lot.status != 'deleted', ~Lot.program.ilike("%_QA%"))
+        .group_by(Lot.lot_id, Lot.wafer_id)
         .subquery()
     )
     query = query.filter(Lot.id.in_(select(latest_wafer_run_ids.c[0])))
@@ -761,6 +763,7 @@ def _ft_yield_scope_query(
                 .filter(
                     Lot.data_type == "FT_Yield",
                     Lot.status != "deleted",
+                    ~Lot.program.ilike("%_QA%"),
                 )
             )
             if product_name:
