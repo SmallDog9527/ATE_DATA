@@ -459,48 +459,56 @@ def download_ftp_log_raw_file(
         }
         return StreamingResponse(mem_buf, media_type="application/zip", headers=headers)
 
-    # 3. Retrieve directly from remote FTP/SFTP server
+        # 3. Retrieve directly from remote FTP/SFTP server
     osat = db.query(OsatConfig).filter(OsatConfig.id == log.osat_id).first()
     if not osat:
         raise HTTPException(status_code=400, detail="OSAT configuration not found")
         
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    temp_target_path = os.path.join(DOWNLOAD_DIR, f"temp_{log_id}_{filename}")
-    
-    conn = None
-    try:
-        if (osat.protocol or "").upper() == "SFTP":
-            conn = _make_sftp(osat)
-        else:
-            conn = _make_ftp(osat)
-            
-        with open(temp_target_path, "wb") as f_out:
-            conn.retrbinary(f"RETR {log.remote_path}", f_out.write)
-            
-        if not os.path.exists(temp_target_path) or os.path.getsize(temp_target_path) == 0:
-            raise Exception("Remote file is empty or unreachable (0 bytes)")
-            
-        encoded_name = quote(filename)
-        headers = {
-            "Content-Disposition": f"attachment; filename=\"{encoded_name}\"; filename*=UTF-8''{encoded_name}"
-        }
-        return FileResponse(temp_target_path, filename=filename, headers=headers)
-    except Exception as e:
-        if os.path.exists(temp_target_path):
+    encoded_name = quote(filename)
+    headers = {
+        "Content-Disposition": f"attachment; filename=\"{encoded_name}\"; filename*=UTF-8''{encoded_name}"
+    }
+
+    import queue
+    import threading
+
+    def stream_ftp(osat_config, remote_path):
+        q = queue.Queue(maxsize=20)
+        def worker():
+            conn = None
             try:
-                os.remove(temp_target_path)
-            except Exception:
-                pass
-        raise HTTPException(status_code=500, detail=f"Failed to download raw file from FTP: {e}")
-    finally:
-        if conn:
-            try:
-                conn.quit()
-            except Exception:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+                if (osat_config.protocol or "").upper() == "SFTP":
+                    conn = _make_sftp(osat_config)
+                else:
+                    conn = _make_ftp(osat_config)
+                def callback(chunk):
+                    q.put(chunk)
+                conn.retrbinary(f"RETR {remote_path}", callback)
+                q.put(None)
+            except Exception as ex:
+                q.put(ex)
+            finally:
+                if conn:
+                    try:
+                        conn.quit()
+                    except Exception:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        
+        while True:
+            chunk = q.get()
+            if chunk is None:
+                break
+            if isinstance(chunk, Exception):
+                print(f"[ftp_download] Stream error: {chunk}")
+                break
+            yield chunk
+
+    return StreamingResponse(stream_ftp(osat, log.remote_path), media_type="application/octet-stream", headers=headers)
 
 
 @router.post("/ftp-logs/retry-all-failed")

@@ -461,12 +461,12 @@ def get_parse_workers_count() -> int:
         is_weekday = now.weekday() < 5
         is_work_hours = 9 <= now.hour < 19
         if is_weekday and is_work_hours:
-            return 16
+            return 4
         else:
-            return 24
+            return 4
     except Exception as e:
         print("[concurrency] Failed to calculate dynamic parse workers count: " + str(e))
-        return 16                # 并发解析线程数
+        return 4                # 并发解析线程数
 
 
 def get_new_files(db, osat_id: int, all_remote_paths: list) -> list:
@@ -1758,7 +1758,7 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
             if '_' in csv_filename:
                 parts = csv_filename.split('_', 1)
                 if parts[0].isdigit() and int(parts[0]) == log_id:
-                    save_name = parts[1]
+                    save_name = csv_filename  # Changed to prevent parallel collision
                 else:
                     save_name = csv_filename
             else:
