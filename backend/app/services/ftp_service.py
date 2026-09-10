@@ -22,6 +22,17 @@ FTP 自动抓取服务：连接测试、目录扫描、CSV/ZIP/GZ 下载解析�
 import os
 import io
 import ftplib
+
+import threading
+_osat_ftp_semaphores = {}
+_osat_ftp_semaphores_lock = threading.Lock()
+
+def _get_osat_semaphore(osat_id: int):
+    with _osat_ftp_semaphores_lock:
+        if osat_id not in _osat_ftp_semaphores:
+            _osat_ftp_semaphores[osat_id] = threading.Semaphore(3)  # limit to 3 concurrent downloads per OSAT
+        return _osat_ftp_semaphores[osat_id]
+
 import ssl
 import tempfile
 import traceback
@@ -1399,22 +1410,38 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
             raise Exception(f"Download directory /tmp/FTP/download size ({total_size / (1024**3):.1f}GB) exceeds 50GB limit, download suspended until size drops below 5GB")
 
         local_file = os.path.join(DOWNLOAD_DIR, f"{log_id}_{filename}")
-        ftp = _make_ftp(osat)
         db.close()
         
-        file_size = 0
+        sem = _get_osat_semaphore(osat_id)
+        if not sem.acquire(timeout=900):  # Wait up to 15 mins for an available slot
+            raise Exception("Timeout waiting for available FTP connection slot")
+            
         try:
-            ftp.sendcmd('TYPE I')
-            file_size = ftp.size(remote_path) or 0
-            if file_size > 50 * 1024 * 1024 * 1024:
-                raise Exception(f"Remote file size {file_size} exceeds 50GB limit, download aborted")
-            with open(local_file, 'wb') as f:
-                ftp.retrbinary(f'RETR {remote_path}', f.write)
-        finally:
+            # Re-fetch osat in a short-lived session to avoid DetachedInstanceError
+            temp_db = SessionLocal()
+            fresh_osat = temp_db.query(OsatConfig).filter(OsatConfig.id == osat_id).first()
+            ftp = _make_ftp(fresh_osat)
+            temp_db.close()
+            
+            file_size = 0
             try:
-                ftp.quit()
-            except Exception:
-                pass
+                ftp.sendcmd('TYPE I')
+                file_size = ftp.size(remote_path) or 0
+                if file_size > 50 * 1024 * 1024 * 1024:
+                    raise Exception(f"Remote file size {file_size} exceeds 50GB limit, download aborted")
+                with open(local_file, 'wb') as f:
+                    ftp.retrbinary(f'RETR {remote_path}', f.write)
+            finally:
+                try:
+                    ftp.quit()
+                except Exception:
+                    pass
+                try:
+                    ftp.close()
+                except Exception:
+                    pass
+        finally:
+            sem.release()
 
         # Reopen DB session
         db = SessionLocal()
