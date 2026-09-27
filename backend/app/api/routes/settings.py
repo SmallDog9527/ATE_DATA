@@ -341,6 +341,9 @@ def retry_failed_ftp_log(
     if os.path.exists(EXTRACTED_DIR):
         for name in os.listdir(EXTRACTED_DIR):
             if name.startswith(prefix):
+                sub_name = name[len(prefix):].lower()
+                if sub_name.startswith(('~$', '$$$', '~', '._', '.')) or 'shortname' in sub_name or sub_name.endswith(('.tmp', '.bak', '.swp')):
+                    continue
                 fpath = os.path.join(EXTRACTED_DIR, name)
                 # Verify physical existence and non-zero size before using cache
                 if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
@@ -599,6 +602,9 @@ def process_existing_local_files(
                                     z.extractall(tmp)
                                 for root, _, files_in_tmp in os.walk(tmp):
                                     for f in files_in_tmp:
+                                        f_lower = f.lower()
+                                        if f_lower.startswith(('~$', '$$$', '~', '._', '.')) or 'shortname' in f_lower or f_lower.endswith(('.tmp', '.bak', '.swp')):
+                                            continue
                                         dest = os.path.join(EXTRACTED_DIR, f"{log_id}_{f}")
                                         shutil.copy2(os.path.join(root, f), dest)
                                 shutil.rmtree(tmp, ignore_errors=True)
@@ -627,6 +633,13 @@ def process_existing_local_files(
             if '_' in name:
                 parts = name.split('_', 1)
                 if parts[0].isdigit():
+                    sub_name = parts[1].lower()
+                    if sub_name.startswith(('~$', '$$$', '~', '._', '.')) or 'shortname' in sub_name or sub_name.endswith(('.tmp', '.bak', '.swp')):
+                        try:
+                            os.remove(filepath)
+                        except Exception:
+                            pass
+                        continue
                     log_id = int(parts[0])
                     extracted_files.setdefault(log_id, []).append(filepath)
 

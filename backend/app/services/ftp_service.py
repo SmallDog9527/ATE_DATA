@@ -753,6 +753,8 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
             for root, _, files in os.walk(extract_dir):
                 for f in files:
                     flower = f.lower()
+                    if flower.startswith(('~$', '$$$', '~', '._', '.')) or 'shortname' in flower or flower.endswith(('.tmp', '.bak', '.swp')):
+                        continue
                     if (flower.endswith('.csv') or (flower.endswith('.txt') and 'ets' in flower)
                             or flower.endswith('.xls') or flower.endswith('.xlsx')):
                         csv_files_to_process.append(os.path.join(root, f))
@@ -1476,6 +1478,13 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
         def is_processable_file(fname: str) -> bool:
             name_lower = fname.lower()
             import re
+            # Ignore Office/OS temporary, lock, hidden, and cache files
+            if name_lower.startswith(('~$', '$$$', '~', '._', '.')):
+                return False
+            if 'shortname' in name_lower:
+                return False
+            if name_lower.endswith(('.tmp', '.bak', '.swp')):
+                return False
             if name_lower.endswith('sum.csv'):
                 return False
             if name_lower.endswith(('.mdb', '.std', '.txt')):
@@ -1901,7 +1910,10 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                     except Exception as db_ex:
                         print(f"[ftp_parse] Failed to write xls failure log: {db_ex}")
                     traceback.print_exc()
-                    raise ex
+                    if len(csv_files_to_process) == 1:
+                        raise ex
+                    else:
+                        print(f"[ftp_parse] Warning: XLS file '{save_name}' failed to parse, continuing with remaining files: {ex}")
                 db.close()
                 continue
 
@@ -2216,7 +2228,10 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                     db_ext.close()
                 except Exception as db_ex:
                     print(f"[ftp_parse] Failed to write csv failure log: {db_ex}")
-                raise ex
+                if len(csv_files_to_process) == 1:
+                    raise ex
+                else:
+                    print(f"[ftp_parse] Warning: CSV file '{save_name}' failed to parse, continuing with remaining files: {ex}")
             finally:
                 try:
                     db.close()
@@ -2231,6 +2246,9 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                     os.remove(fp)
                 except Exception as ex:
                     print(f"[ftp_parse] Failed to remove {fp}: {ex}")
+
+        if not parsed_successfully:
+            raise Exception("None of the files in the archive could be parsed successfully")
 
         # Mark record as success
         db = SessionLocal()
