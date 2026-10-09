@@ -1,0 +1,17 @@
+[
+  {
+    "item_name": "SBU2_IOFF_OUT2GND",
+    "ll_new": null,
+    "ul_new": 190
+  },
+  {
+    "item_name": "SCL_VIH",
+    "ll_new": null,
+    "ul_new": 0.75
+  },
+  {
+    "item_name": "SDA_VIH",
+    "ll_new": null,
+    "ul_new": 0.75
+  }
+]

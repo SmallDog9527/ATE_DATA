@@ -2407,39 +2407,52 @@ def get_retest_analysis(
             "no_change": fb == lb,
         })
 
-    # 总计统计
+    # Calculate direction totals
     directions = [get_direction(d['first_bin'], d['last_bin']) for d in retest_details]
+    fail_to_pass = directions.count("fail_pass")
+    pass_to_fail = directions.count("pass_fail")
+    fail_to_fail = directions.count("fail_fail")
+    pass_to_pass = directions.count("pass_pass")
+    fail_to_fail_change = sum(1 for d in retest_details if get_direction(d['first_bin'], d['last_bin']) == "fail_fail" and d['first_bin'] != d['last_bin'])
+    fail_to_fail_same = sum(1 for d in retest_details if get_direction(d['first_bin'], d['last_bin']) == "fail_fail" and d['first_bin'] == d['last_bin'])
+
     totals = {
         "total_retest_dies": len(retest_details),
-        "fail_to_pass": directions.count("fail_pass"),
-        "pass_to_fail": directions.count("pass_fail"),
-        "fail_to_fail": directions.count("fail_fail"),
-        "pass_to_pass": directions.count("pass_pass"),
+        "fail_to_pass": fail_to_pass,
+        "pass_to_fail": pass_to_fail,
+        "fail_to_fail": fail_to_fail,
+        "fail_to_fail_change": fail_to_fail_change,
+        "fail_to_fail_same": fail_to_fail_same,
+        "pass_to_pass": pass_to_pass,
     }
 
     return {
         "has_retest": True,
-        "details": retest_details[:500],  # 最多返回500条明细
+        "details": retest_details,
         "summary": summary,
         "totals": totals,
     }
 
 
 def _get_pass_bins(lot_id: int, db) -> list:
-    """从bin_summary推断pass bins"""
+    """Infer pass bins from bin_summary, defaulting to [1, 2]."""
     from app.models.bin_summary import BinSummary
     from sqlalchemy import and_
     bins = db.query(BinSummary).filter(
         and_(BinSummary.lot_id == lot_id,
-             BinSummary.site == 0,
-             BinSummary.data_range == 'final')
+             BinSummary.site == 0)
     ).order_by(BinSummary.count.desc()).all()
-    if not bins:
-        return [1, 2]
-    # 数量最多的bin通常是pass bin，取占比超过50%的
-    total = sum(b.count for b in bins)
-    pass_bins = [b.bin_number for b in bins if b.count / total > 0.3]
-    return pass_bins if pass_bins else [bins[0].bin_number]
+    # Default standard pass bins are 1 and 2
+    pass_bins = {1, 2}
+    if bins:
+        total = sum(b.count for b in bins)
+        if total > 0:
+            for b in bins:
+                if b.count / total > 0.3:
+                    pass_bins.add(b.bin_number)
+                if b.bin_name and 'pass' in b.bin_name.lower():
+                    pass_bins.add(b.bin_number)
+    return sorted(list(pass_bins))
 
 
 @router.get("/lot/{lot_id}/param_data")

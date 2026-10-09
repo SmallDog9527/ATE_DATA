@@ -379,7 +379,7 @@ def _extract_meta(header_lines: list[str]) -> dict[str, Optional[str]]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _find_col_header_row(header_lines: list[str]) -> Optional[int]:
-    """在表头区中找列头行（综合匹配关键字与列密度加权择优）"""
+    """Find column header row by matching key column aliases and density."""
     all_aliases = {a.upper() for aliases in COL_ALIASES.values()
                    for a in aliases}
     best_row_idx = None
@@ -388,6 +388,8 @@ def _find_col_header_row(header_lines: list[str]) -> Optional[int]:
     for i in range(len(header_lines) - 1, -1, -1):
         line = header_lines[i]
         cols = [c.strip() for c in line.strip().split(',')]
+        if _is_data_row(cols):
+            continue
         cols_upper = [c.upper() for c in cols]
         matched_aliases = sum(1 for c in cols_upper if c in all_aliases)
         non_empty = sum(1 for c in cols if c)
@@ -555,13 +557,48 @@ def parse_acco(filepath: str, tester: str) -> ParsedData:
         result.error = f"文件读取失败: {e}"
         return result
 
-    # ── 1. 列密度定位数据起始行 ───────────────────────────────────
-    data_start_row = _locate_data_start(raw_lines)
-    if data_start_row >= len(raw_lines):
-        result.error = "未找到有效数据行"
-        return result
+    # ── 1. Locate column header row and data start row ─────────────────
+    col_header_idx = _find_col_header_row(raw_lines[:250])
+    
+    if col_header_idx is not None:
+        col_header_raw_idx = col_header_idx
+        header_lines = raw_lines[:col_header_raw_idx]
 
-    header_lines = raw_lines[:data_start_row]
+        # Scan downwards from header to locate the actual data start row
+        data_start_row = None
+        for r in range(col_header_raw_idx + 1, min(col_header_raw_idx + 35, len(raw_lines))):
+            line = raw_lines[r].strip()
+            if not line:
+                continue
+            cols = line.split(',')
+            c0 = cols[0].strip().upper().strip('"')
+            # Check limit row keywords
+            is_limit = any(c0 in [kw.upper() for kw in kws] for kws in LIMIT_ROW_KEYS.values())
+            if not is_limit:
+                for p in cols[1:6]:
+                    if p.upper().strip('"') in ('USL', 'LSL', 'HLIMIT', 'LLIMIT', 'UNIT', 'UNITS', 'LIMITU', 'LIMITL', 'UPPER LIMIT', 'LOWER LIMIT'):
+                        is_limit = True
+                        break
+            if is_limit:
+                continue
+            if _is_data_row(cols):
+                data_start_row = r
+                break
+
+        if data_start_row is None:
+            data_start_row = _locate_data_start(raw_lines)
+    else:
+        # Fallback to legacy density locator if anchor matching did not find header
+        data_start_row = _locate_data_start(raw_lines)
+        if data_start_row >= len(raw_lines):
+            result.error = "No valid data rows found"
+            return result
+        header_lines = raw_lines[:data_start_row]
+        col_header_idx = _find_col_header_row(header_lines)
+        if col_header_idx is None:
+            result.error = "Column header row not found"
+            return result
+        col_header_raw_idx = raw_lines.index(header_lines[col_header_idx])
 
     # ── 2. 元数据提取 ─────────────────────────────────────────────
     meta = _extract_meta(header_lines)
@@ -614,14 +651,9 @@ def parse_acco(filepath: str, tester: str) -> ParsedData:
                 'hard_bin': None, # hard_bin is not reliably present in all formats
             }
 
-    # ── 3. 列头行识别与列名标准化 ─────────────────────────────────
-    col_header_idx = _find_col_header_row(header_lines)
-    if col_header_idx is None:
-        result.error = "未找到列头行（含 SITE/SITE_NUM/Site # 等关键字）"
-        return result
-
+    # ── 3. Column header identification and normalization ───────────────
     col_header_clean = [c.strip()
-                        for c in header_lines[col_header_idx].strip().split(',')]
+                        for c in raw_lines[col_header_raw_idx].strip().split(',')]
 
     # Check if row above has parameter names (like VG34 / split format)
     unit_row_extracted = None
@@ -679,9 +711,7 @@ def parse_acco(filepath: str, tester: str) -> ParsedData:
     key_cols       = [c for c in [site_col, bin_col, x_col, y_col] if c is not None]
     data_start_col = max(key_cols) + 1
 
-    # ── 4. 限值行识别 ─────────────────────────────────────────────
-    # 先在列头行和数据行之间找（标准 ACCO 格式）
-    col_header_raw_idx = raw_lines.index(header_lines[col_header_idx])
+    # ── 4. Limit rows extraction ─────────────────────────────────────────
     between_lines = [
         ln for ln in raw_lines[col_header_raw_idx + 1: data_start_row]
         if any(c.strip() for c in ln.split(','))

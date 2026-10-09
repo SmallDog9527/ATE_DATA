@@ -1,0 +1,32 @@
+[
+  {
+    "item_name": "LKG_AMR_DNH",
+    "ll_new": null,
+    "ul_new": 3
+  },
+  {
+    "item_name": "LKG_AMR_DN",
+    "ll_new": null,
+    "ul_new": 190
+  },
+  {
+    "item_name": "LKG_AMR_SBU1H",
+    "ll_new": null,
+    "ul_new": 3
+  },
+  {
+    "item_name": "LKG_AMR_SBU1",
+    "ll_new": null,
+    "ul_new": 190
+  },
+  {
+    "item_name": "LKG_AMR_DP",
+    "ll_new": null,
+    "ul_new": 190
+  },
+  {
+    "item_name": "SBU1_IOFF_OUT2GND",
+    "ll_new": null,
+    "ul_new": 160
+  }
+]

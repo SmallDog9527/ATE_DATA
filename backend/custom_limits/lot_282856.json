@@ -1,0 +1,87 @@
+[
+  {
+    "item_name": "LKG_AMR_DNH",
+    "ll_new": null,
+    "ul_new": 3
+  },
+  {
+    "item_name": "LKG_AMR_DN",
+    "ll_new": null,
+    "ul_new": 190
+  },
+  {
+    "item_name": "LKG_AMR_SBU1H",
+    "ll_new": null,
+    "ul_new": 3
+  },
+  {
+    "item_name": "LKG_AMR_SBU1",
+    "ll_new": null,
+    "ul_new": 190
+  },
+  {
+    "item_name": "LKG_AMR_DPH",
+    "ll_new": null,
+    "ul_new": 3
+  },
+  {
+    "item_name": "LKG_AMR_DP",
+    "ll_new": null,
+    "ul_new": 190
+  },
+  {
+    "item_name": "LKG_AMR_SBU2H",
+    "ll_new": null,
+    "ul_new": 3
+  },
+  {
+    "item_name": "DP_IOFF_OUT2GND",
+    "ll_new": 110,
+    "ul_new": 160
+  },
+  {
+    "item_name": "DN_IOFF_OUT2GND",
+    "ll_new": 110,
+    "ul_new": 160
+  },
+  {
+    "item_name": "SBU1_IOFF_OUT2GND",
+    "ll_new": 110,
+    "ul_new": 160
+  },
+  {
+    "item_name": "SBU2_IOFF_OUT2GND",
+    "ll_new": 110,
+    "ul_new": 160
+  },
+  {
+    "item_name": "UVLO_R",
+    "ll_new": 1.95,
+    "ul_new": 2.05
+  },
+  {
+    "item_name": "UVLO_F",
+    "ll_new": 1.85,
+    "ul_new": 1.95
+  },
+  {
+    "item_name": "UVLO_HYS",
+    "ll_new": 0.05,
+    "ul_new": 0.15
+  },
+  {
+    "item_name": "VCC_DETOK_F",
+    "ll_new": 2.25,
+    "ul_new": 2.45
+  },
+  {
+    "item_name": "VCC_DETOK_R",
+    "ll_new": 2.38,
+    "ul_new": 2.48
+  },
+  {
+    "item_name": "VCC_DETOK_HYS",
+    "ll_new": -0.05,
+    "ul_new": 0.05
+  }
+]

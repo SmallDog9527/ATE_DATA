@@ -142,18 +142,30 @@
       <!-- 左：Bin Map -->
       <div class="map-section" v-show="hasCoords">
         <div class="section-title">Bin Map</div>
+        <div v-if="isTransferFilterActive" class="transfer-map-banner">
+          <div class="transfer-map-info">
+            <span class="transfer-badge">转移高亮</span>
+            <span>
+              <template v-if="detailFilterFirst !== null && detailFilterFirst !== ''">首次 <b>Bin{{ detailFilterFirst }}</b></template>
+              <template v-if="(detailFilterFirst !== null && detailFilterFirst !== '') && (detailFilterLast !== null && detailFilterLast !== '')"> → </template>
+              <template v-if="detailFilterLast !== null && detailFilterLast !== ''">末次 <b>Bin{{ detailFilterLast }}</b></template>
+              <span class="transfer-count">（共 {{ filteredRetestDetails.length }} 颗，颜色按末次Bin显示）</span>
+            </span>
+          </div>
+          <button class="clear-transfer-btn" @click="clearDetailFilter" title="退出转移高亮，返回全图">✕ 退出转移视图</button>
+        </div>
         <div class="map-with-legend" style="position:relative">
           <canvas ref="binMapCanvas" width="800" height="800"
             style="width:800px;height:800px;border:1px solid #eee;flex-shrink:0"></canvas>
           <div ref="binMapTooltipEl" class="bin-tooltip" style="display:none"></div>
           <div class="bin-legend">
-            <div :class="['bin-icon', { selected: selectedBin === null }]"
-              @click="selectedBin = null; renderBinMap()">
+            <div :class="['bin-icon', { selected: selectedBin === null && !isTransferFilterActive }]"
+              @click="clearDetailFilter(); selectedBin = null; renderBinMap()">
               <span class="bin-dot" style="background:#aaa"></span>
               <span>ALL</span>
             </div>
             <div v-for="b in failBins" :key="b.bin_number"
-              :class="['bin-icon', { selected: selectedBin === b.bin_number }]"
+              :class="['bin-icon', { selected: selectedBin === b.bin_number && !isTransferFilterActive }]"
               @click="toggleBinHighlight(b.bin_number)">
               <span class="bin-dot" :style="{ background: getBinColor(b.bin_number) }"></span>
               <span>Bin{{ b.bin_number }}({{ b.all_site_count }})</span>
@@ -187,7 +199,8 @@
         <div class="retest-totals">
           <span class="total-item pass">✅ Fail→Pass: {{ retestData.totals.fail_to_pass }}个</span>
           <span class="total-item fail">❌ Pass→Fail: {{ retestData.totals.pass_to_fail }}个</span>
-          <span class="total-item change">🔄 Fail→Fail(换Bin): {{ retestData.totals.fail_to_fail }}个</span>
+          <span class="total-item change">🔄 Fail→Fail(换Bin): {{ retestData.totals.fail_to_fail_change ?? retestData.totals.fail_to_fail }}个</span>
+          <span class="total-item same" v-if="retestData.totals.fail_to_fail_same != null">➖ Fail不变: {{ retestData.totals.fail_to_fail_same }}个</span>
           <span class="total-item same">➖ Pass→Pass: {{ retestData.totals.pass_to_pass }}个</span>
           <span class="total-item">总复测Die: {{ retestData.totals.total_retest_dies }}个</span>
         </div>
@@ -195,7 +208,13 @@
         <!-- 转移汇总表 -->
         <div class="retest-tables">
           <div class="retest-table-wrap">
-            <div class="table-title">Bin转移汇总</div>
+            <div class="table-title">
+              <span>Bin转移汇总</span>
+              <span v-if="(summaryFilterFrom != null && summaryFilterFrom !== '') || (summaryFilterTo != null && summaryFilterTo !== '')" class="filter-tip">
+                (已筛选: {{ filteredRetestSummary.length }}/{{ sortedRetestSummary.length }})
+                <a href="javascript:;" class="clear-link" @click="clearSummaryFilter">重置</a>
+              </span>
+            </div>
             <table class="retest-table">
               <thead>
                 <tr>
@@ -210,14 +229,58 @@
                   </th>
                   <th>状态</th>
                 </tr>
+                <tr class="filter-row">
+                  <th>
+                    <input
+                      type="number"
+                      v-model="summaryFilterFrom"
+                      placeholder="筛选Bin"
+                      class="retest-input-filter"
+                      @click.stop
+                    />
+                  </th>
+                  <th>
+                    <input
+                      type="number"
+                      v-model="summaryFilterTo"
+                      placeholder="筛选Bin"
+                      class="retest-input-filter"
+                      @click.stop
+                    />
+                  </th>
+                  <th></th>
+                  <th>
+                    <button
+                      v-if="(summaryFilterFrom != null && summaryFilterFrom !== '') || (summaryFilterTo != null && summaryFilterTo !== '')"
+                      class="mini-clear-btn"
+                      @click.stop="clearSummaryFilter"
+                      title="清空筛选"
+                    >清空</button>
+                  </th>
+                </tr>
               </thead>
               <tbody>
-                <tr v-for="s in sortedRetestSummary" :key="`${s.from_bin}-${s.to_bin}`"
-                  :class="directionClass(s.direction, s.no_change)">
+                <tr v-if="filteredRetestSummary.length === 0">
+                  <td colspan="4" style="color: #999; padding: 12px;">无匹配的Bin转移数据</td>
+                </tr>
+                <tr v-else v-for="s in filteredRetestSummary" :key="`${s.from_bin}-${s.to_bin}`"
+                  :class="[directionClass(s.direction, s.no_change), { 'row-selected': isTransferSelected(s) }]">
                   <td>Bin{{ s.from_bin }}</td>
                   <td>Bin{{ s.to_bin }}</td>
                   <td>{{ s.count }}</td>
-                  <td>{{ directionLabel(s.direction, s.no_change) }}</td>
+                  <td>
+                    <div class="status-cell">
+                      <span>{{ directionLabel(s.direction, s.no_change) }}</span>
+                      <button
+                        class="filter-detail-btn"
+                        :class="{ active: isTransferSelected(s) }"
+                        @click.stop="filterDetailsBySummary(s)"
+                        :title="isTransferSelected(s) ? '点击取消明细筛选' : '在右侧明细中仅显示此Bin转移'"
+                      >
+                        {{ isTransferSelected(s) ? '✓ 已筛选' : '查看明细' }}
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -225,14 +288,58 @@
 
           <!-- 逐坐标明细表 -->
           <div class="retest-table-wrap">
-            <div class="table-title">逐坐标明细（最多500条）</div>
+            <div class="table-title">
+              <span>逐坐标明细（共 {{ filteredRetestDetails.length }} 条）</span>
+              <span v-if="(detailFilterFirst != null && detailFilterFirst !== '') || (detailFilterLast != null && detailFilterLast !== '')" class="filter-tip">
+                (已筛选
+                <template v-if="detailFilterFirst != null && detailFilterFirst !== ''">首次: Bin{{ detailFilterFirst }}</template>
+                <template v-if="detailFilterLast != null && detailFilterLast !== ''"> 末次: Bin{{ detailFilterLast }}</template>)
+                <a href="javascript:;" class="clear-link" @click="clearDetailFilter">显示全部</a>
+              </span>
+            </div>
             <div style="max-height:300px;overflow-y:auto">
               <table class="retest-table">
                 <thead>
-                  <tr><th>X</th><th>Y</th><th>首次Site</th><th>首次Bin</th><th>末次Site</th><th>末次Bin</th><th>复测次数</th><th>Site变化</th></tr>
+                  <tr>
+                    <th>X</th><th>Y</th><th>首次Site</th><th>首次Bin</th><th>末次Site</th><th>末次Bin</th><th>复测次数</th><th>Site变化</th>
+                  </tr>
+                  <tr class="filter-row">
+                    <th></th><th></th><th></th>
+                    <th>
+                      <input
+                        type="number"
+                        v-model="detailFilterFirst"
+                        placeholder="筛选Bin"
+                        class="retest-input-filter"
+                        @click.stop
+                      />
+                    </th>
+                    <th></th>
+                    <th>
+                      <input
+                        type="number"
+                        v-model="detailFilterLast"
+                        placeholder="筛选Bin"
+                        class="retest-input-filter"
+                        @click.stop
+                      />
+                    </th>
+                    <th></th>
+                    <th>
+                      <button
+                        v-if="(detailFilterFirst != null && detailFilterFirst !== '') || (detailFilterLast != null && detailFilterLast !== '')"
+                        class="mini-clear-btn"
+                        @click.stop="clearDetailFilter"
+                        title="清空明细筛选"
+                      >清空</button>
+                    </th>
+                  </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="d in retestData.details" :key="`${d.x}-${d.y}`"
+                  <tr v-if="filteredRetestDetails.length === 0">
+                    <td colspan="8" style="color: #999; padding: 12px;">无匹配的坐标明细</td>
+                  </tr>
+                  <tr v-else v-for="d in filteredRetestDetails" :key="`${d.x}-${d.y}`"
                     :class="directionClass(getDirection(d.first_bin, d.last_bin), d.first_bin === d.last_bin)">
                     <td>{{ d.x }}</td>
                     <td>{{ d.y }}</td>
@@ -322,7 +429,18 @@ const binDetailCanvas = ref<HTMLCanvasElement>()
 let failBinChart: echarts.ECharts | null = null
 
 // Bin Map hover state
-let binMapDies: { px: number; py: number; width: number; height: number; x: number; y: number; bin: number; site: number }[] = []
+let binMapDies: {
+  px: number
+  py: number
+  width: number
+  height: number
+  x: number
+  y: number
+  bin: number
+  site: number
+  transferInfo?: any
+  isBackground?: boolean
+}[] = []
 
 const lotInfo = ref<any>(null)
 const binData = ref<any>({ bins: [], sites: [], all_sites: [] })
@@ -567,6 +685,84 @@ function toggleRetestSort(key: 'from_bin' | 'count') {
   }
 }
 
+// ── 复测分析筛选与联动 ──────────────────────────────────
+const summaryFilterFrom = ref<number | string | null>(null)
+const summaryFilterTo = ref<number | string | null>(null)
+
+const detailFilterFirst = ref<number | string | null>(null)
+const detailFilterLast = ref<number | string | null>(null)
+
+const filteredRetestSummary = computed(() => {
+  let list = sortedRetestSummary.value
+  if (summaryFilterFrom.value !== null && summaryFilterFrom.value !== '') {
+    const fromVal = Number(summaryFilterFrom.value)
+    list = list.filter(s => s.from_bin === fromVal)
+  }
+  if (summaryFilterTo.value !== null && summaryFilterTo.value !== '') {
+    const toVal = Number(summaryFilterTo.value)
+    list = list.filter(s => s.to_bin === toVal)
+  }
+  return list
+})
+
+const filteredRetestDetails = computed(() => {
+  if (!retestData.value?.details) return []
+  let list = retestData.value.details
+  if (detailFilterFirst.value !== null && detailFilterFirst.value !== '') {
+    const firstVal = Number(detailFilterFirst.value)
+    list = list.filter((d: any) => d.first_bin === firstVal)
+  }
+  if (detailFilterLast.value !== null && detailFilterLast.value !== '') {
+    const lastVal = Number(detailFilterLast.value)
+    list = list.filter((d: any) => d.last_bin === lastVal)
+  }
+  return list
+})
+
+function isTransferSelected(s: { from_bin: number; to_bin: number }): boolean {
+  return (
+    detailFilterFirst.value !== null &&
+    detailFilterFirst.value !== '' &&
+    Number(detailFilterFirst.value) === s.from_bin &&
+    detailFilterLast.value !== null &&
+    detailFilterLast.value !== '' &&
+    Number(detailFilterLast.value) === s.to_bin
+  )
+}
+
+const isTransferFilterActive = computed(() => {
+  return (
+    (detailFilterFirst.value !== null && detailFilterFirst.value !== '') ||
+    (detailFilterLast.value !== null && detailFilterLast.value !== '')
+  )
+})
+
+function filterDetailsBySummary(s: { from_bin: number; to_bin: number }) {
+  if (isTransferSelected(s)) {
+    detailFilterFirst.value = null
+    detailFilterLast.value = null
+  } else {
+    detailFilterFirst.value = s.from_bin
+    detailFilterLast.value = s.to_bin
+    nextTick(() => {
+      const mapEl = binMapCanvas.value
+      if (mapEl) {
+        mapEl.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    })
+  }
+}
+
+function clearDetailFilter() {
+  detailFilterFirst.value = null
+  detailFilterLast.value = null
+}
+
+function clearSummaryFilter() {
+  summaryFilterFrom.value = null
+  summaryFilterTo.value = null
+}
+
 async function fetchLotInfo() {
   lotInfo.value = await api.get(`/analysis/lot/${lotId.value}/info`)
   options.value.rotate = loadMapRotate()
@@ -643,6 +839,10 @@ watch(retestExpanded, async (val) => {
   }
 })
 
+watch([detailFilterFirst, detailFilterLast], () => {
+  renderBinMap()
+})
+
 // ── Bin Map ───────────────────────────────────────────
 function renderBinMap() {
   const canvas = binMapCanvas.value
@@ -667,7 +867,15 @@ function renderBinMap() {
     ;(canvas as any)._binMapBound = true
   }
 
-  drawBinMap(canvas, data, selectedBin.value)
+  if (isTransferFilterActive.value) {
+    const transferMap = new Map<string, any>()
+    for (const item of filteredRetestDetails.value) {
+      transferMap.set(`${item.x},${item.y}`, item)
+    }
+    drawBinMap(canvas, data, null, undefined, transferMap)
+  } else {
+    drawBinMap(canvas, data, selectedBin.value)
+  }
 }
 
 function applyRotation(x: number, y: number, minX: number, maxX: number, minY: number, maxY: number) {
@@ -679,7 +887,13 @@ function applyRotation(x: number, y: number, minX: number, maxX: number, minY: n
   }
 }
 
-function drawBinMap(canvas: HTMLCanvasElement, data: any[], highlightBin: number | null, singleBin?: number) {
+function drawBinMap(
+  canvas: HTMLCanvasElement,
+  data: any[],
+  highlightBin: number | null,
+  singleBin?: number,
+  transferMap?: Map<string, any>
+) {
   const ctx = canvas.getContext('2d')
   if (!ctx || !data.length) return
 
@@ -779,7 +993,21 @@ function drawBinMap(canvas: HTMLCanvasElement, data: any[], highlightBin: number
     const py = offsetY + (d.ry - rMinY) * dieH
 
     let color = ''
-    if (highlightBin !== null) {
+    let isTransferDie = false
+    let currentDieTransferInfo: any = null
+
+    if (transferMap && transferMap.size > 0) {
+      currentDieTransferInfo = transferMap.get(`${d.x},${d.y}`)
+      if (currentDieTransferInfo) {
+        isTransferDie = true
+        // 坐标Bin按末次Bin来显示
+        color = getBinColor(currentDieTransferInfo.last_bin)
+      } else if (isEdge(d.rx, d.ry)) {
+        color = 'rgba(180, 190, 205, 0.45)'
+      } else {
+        color = 'rgba(235, 238, 245, 0.55)'
+      }
+    } else if (highlightBin !== null) {
       if (d.bin === highlightBin) color = getBinColor(d.bin)
       else if (isEdge(d.rx, d.ry)) color = 'rgba(200,200,200,0.15)'
       else return
@@ -797,7 +1025,12 @@ function drawBinMap(canvas: HTMLCanvasElement, data: any[], highlightBin: number
     const drawH = Math.max(0.5, dieH - 0.2)
     ctx.fillRect(px, py, drawW, drawH)
 
-    if (d.retest && options.value.data_range !== 'original') {
+    if (isTransferDie) {
+      // 给转移 Die 叠加深色边框高亮
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)'
+      ctx.lineWidth = Math.max(1, Math.min(drawW, drawH) * 0.15)
+      ctx.strokeRect(px, py, drawW, drawH)
+    } else if (!transferMap && d.retest && options.value.data_range !== 'original') {
       ctx.fillStyle = 'rgba(0,0,0,0.25)'
       const cx = px + drawW / 2, cy = py + drawH / 2
       const arm = Math.min(drawW, drawH) * 0.35
@@ -807,7 +1040,18 @@ function drawBinMap(canvas: HTMLCanvasElement, data: any[], highlightBin: number
     }
 
     // 记录位置用于hover检测
-    binMapDies.push({ px, py, width: dieW, height: dieH, x: d.x, y: d.y, bin: d.bin, site: d.site })
+    binMapDies.push({
+      px,
+      py,
+      width: dieW,
+      height: dieH,
+      x: d.x,
+      y: d.y,
+      bin: isTransferDie ? currentDieTransferInfo.last_bin : d.bin,
+      site: isTransferDie ? (currentDieTransferInfo.last_site ?? d.site) : d.site,
+      transferInfo: currentDieTransferInfo,
+      isBackground: Boolean(transferMap && transferMap.size > 0 && !isTransferDie)
+    })
   })
 
   // 坐标标注
@@ -851,7 +1095,21 @@ function onBinMapMouseMove(evt: MouseEvent) {
   }
 
   if (found) {
-    tooltipEl.innerHTML = `<div>X: ${found.x}, Y: ${found.y}</div><div>Bin: ${found.bin}</div><div>Site: ${found.site}</div>`
+    if (found.transferInfo) {
+      tooltipEl.innerHTML = `
+        <div style="font-weight:600;margin-bottom:4px;color:#40a9ff;border-bottom:1px solid rgba(255,255,255,0.25);padding-bottom:3px">
+          📍 转移坐标 (${found.x}, ${found.y})
+        </div>
+        <div style="margin:2px 0"><b>末次Bin:</b> Bin${found.transferInfo.last_bin} (Site ${found.transferInfo.last_site})</div>
+        <div style="margin:2px 0"><b>首次Bin:</b> Bin${found.transferInfo.first_bin} (Site ${found.transferInfo.first_site})</div>
+        <div style="margin:2px 0"><b>复测次数:</b> ${found.transferInfo.retest_count}</div>
+        <div style="margin:2px 0"><b>Site切换:</b> ${found.transferInfo.site_changed ? '是' : '否'}</div>
+      `
+    } else if (found.isBackground) {
+      tooltipEl.innerHTML = `<div>X: ${found.x}, Y: ${found.y}</div><div style="color:#aaa;font-size:11px;">(非当前高亮转移Die)</div>`
+    } else {
+      tooltipEl.innerHTML = `<div>X: ${found.x}, Y: ${found.y}</div><div>Bin: ${found.bin}</div><div>Site: ${found.site}</div>`
+    }
     tooltipEl.style.display = 'block'
     tooltipEl.style.left = (evt.offsetX + 14) + 'px'
     tooltipEl.style.top = (evt.offsetY + 14) + 'px'
@@ -1026,6 +1284,9 @@ function renderFailBinChart() {
 }
 
 function toggleBinHighlight(binNum: number) {
+  if (isTransferFilterActive.value) {
+    clearDetailFilter()
+  }
   selectedBin.value = selectedBin.value === binNum ? null : binNum
   renderBinMap()
 }
@@ -1592,6 +1853,93 @@ border: 1px solid #f0f0f0;
 .row-change { background: #fff7e6; }
 .row-same { color: #999; }
 
+.filter-tip {
+  font-size: 11px;
+  font-weight: normal;
+  color: #1890ff;
+  margin-left: 8px;
+}
+
+.clear-link {
+  color: #ff4d4f;
+  margin-left: 4px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.filter-row th {
+  background: #fafafa;
+  padding: 3px 4px !important;
+}
+
+.retest-input-filter {
+  width: 100%;
+  max-width: 65px;
+  padding: 2px 4px;
+  font-size: 11px;
+  border: 1px solid #d9d9d9;
+  border-radius: 3px;
+  text-align: center;
+  box-sizing: border-box;
+  background: #fff;
+}
+.retest-input-filter:focus {
+  outline: none;
+  border-color: #40a9ff;
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+}
+
+.status-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.filter-detail-btn {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid #91d5ff;
+  background: #e6f7ff;
+  color: #1890ff;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+.filter-detail-btn:hover {
+  background: #1890ff;
+  color: #fff;
+  border-color: #1890ff;
+}
+.filter-detail-btn.active {
+  background: #1890ff;
+  color: #fff;
+  font-weight: 600;
+  border-color: #096dd9;
+}
+
+.row-selected {
+  outline: 2px solid #1890ff;
+  outline-offset: -2px;
+  background-color: #e6f7ff !important;
+}
+
+.mini-clear-btn {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid #d9d9d9;
+  background: #f5f5f5;
+  color: #666;
+  cursor: pointer;
+}
+.mini-clear-btn:hover {
+  background: #ff4d4f;
+  color: white;
+  border-color: #ff4d4f;
+}
+
 /* Bin详情弹窗 */
 .modal-overlay {
   position: fixed;
@@ -1658,5 +2006,59 @@ border: 1px solid #f0f0f0;
   background: #bae7ff;
   color: rgba(255, 255, 255, 0.7);
   cursor: not-allowed;
+}
+
+.transfer-map-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #e6f7ff;
+  border: 1px solid #91d5ff;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: #0050b3;
+  width: 800px;
+  box-sizing: border-box;
+}
+
+.transfer-map-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.transfer-badge {
+  background: #1890ff;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.transfer-count {
+  color: #555;
+  font-size: 12px;
+}
+
+.clear-transfer-btn {
+  background: #fff;
+  border: 1px solid #91d5ff;
+  color: #1890ff;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.clear-transfer-btn:hover {
+  background: #1890ff;
+  color: #fff;
+  border-color: #1890ff;
 }
 </style>
