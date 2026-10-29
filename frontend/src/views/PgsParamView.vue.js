@@ -1072,7 +1072,7 @@ const paramCppFunctionNames = computed(() => {
 });
 function parseDutFunctionName(text) {
     const trimmed = text.trim();
-    if (!trimmed.startsWith('DUT_API'))
+    if (!trimmed.startsWith('DUT_API') && !trimmed.startsWith('ETS_PRGFLOW_FUNC'))
         return null;
     const beforeParen = trimmed.split('(')[0]?.trim();
     if (!beforeParen)

@@ -44,7 +44,7 @@ from app.models.program_data_snapshot import ProgramDataSnapshot
 from app.models.program_change_extra import ProgramChangeExtra
 from app.models.test_item import TestItem
 from app.models.user import User
-from app.services.pgs_parser import parse_pgs, _version_sort_key
+from app.services.pgs_parser import parse_pgs, parse_pds, _version_sort_key
 
 router = APIRouter(prefix="/programs", tags=["programs"])
 
@@ -902,6 +902,11 @@ def _cached_pgs_path(filename: str) -> str:
     return os.path.join(_extract_cache_dir(filename), f"{base}.pgs")
 
 
+def _cached_pds_path(filename: str) -> str:
+    base = _archive_base_name(filename)
+    return os.path.join(_extract_cache_dir(filename), f"{base}.pds")
+
+
 def _cached_cpp_path(filename: str) -> str:
     return os.path.join(_extract_cache_dir(filename), "source", "test.cpp")
 
@@ -912,57 +917,197 @@ def _write_cached_file(path: str, raw_bytes: bytes) -> None:
         fp.write(raw_bytes)
 
 
-def _cache_program_files(path: str, filename: str) -> dict:
-    cached: dict = {}
-
-    ext = os.path.splitext(os.path.basename(filename))[1].lower()
-    is_t2k = False
-
+def _archive_member_names(path: str, ext: str) -> list[str]:
+    ext = ext.lower()
     if ext == ".zip":
         try:
             with zipfile.ZipFile(path, "r") as zf:
-                names = [info.filename.lower() for info in zf.infolist() if not info.is_dir()]
-                has_pgs = any(name.endswith(".pgs") for name in names)
-                has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
-                if not has_pgs and has_t2k:
-                    is_t2k = True
+                return [info.filename.lower() for info in zf.infolist() if not info.is_dir()]
         except Exception:
-            pass
-    elif ext == ".rar":
+            return []
+    if ext == ".rar":
         try:
             import rarfile
             with rarfile.RarFile(path, "r") as rf:
-                names = [info.filename.lower() for info in rf.infolist() if not info.isdir()]
-                has_pgs = any(name.endswith(".pgs") for name in names)
-                has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
-                if not has_pgs and has_t2k:
-                    is_t2k = True
+                return [info.filename.lower() for info in rf.infolist() if not info.isdir()]
         except Exception:
             try:
                 with tempfile.TemporaryDirectory() as tmpdir:
                     _extract_with_unar(path, tmpdir, ext)
-                    files = _walk_extracted_files(tmpdir)
-                    names = [item[0].lower() for item in files]
-                    has_pgs = any(name.endswith(".pgs") for name in names)
-                    has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
-                    if not has_pgs and has_t2k:
-                        is_t2k = True
+                    return [item[0].lower() for item in _walk_extracted_files(tmpdir)]
             except Exception:
-                pass
-    elif ext == ".7z":
+                return []
+    if ext == ".7z":
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 _extract_with_unar(path, tmpdir, ext)
-                files = _walk_extracted_files(tmpdir)
-                names = [item[0].lower() for item in files]
-                has_pgs = any(name.endswith(".pgs") for name in names)
-                has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
-                if not has_pgs and has_t2k:
-                    is_t2k = True
+                return [item[0].lower() for item in _walk_extracted_files(tmpdir)]
         except Exception:
-            pass
+            return []
+    return []
 
-    if is_t2k:
+
+def _detect_archive_program_type(path: str, ext: str, tester: Optional[str] = None) -> str:
+    names = _archive_member_names(path, ext)
+    has_pgs = any(name.endswith(".pgs") for name in names)
+    has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
+    has_pds = any(name.endswith(".pds") for name in names)
+
+    if tester == "T2K" or (not has_pgs and has_t2k):
+        return "t2k"
+    if not has_pgs and not has_t2k and has_pds:
+        return "ets"
+    return "pgs"
+
+
+def _read_pds_from_zip(path: str, archive_base: str) -> tuple[bytes, str]:
+    target = f"{archive_base}.pds".lower()
+    with zipfile.ZipFile(path, "r") as zf:
+        exact_first_layer = [
+            info for info in zf.infolist()
+            if not info.is_dir()
+            and _is_first_layer_member(info.filename)
+            and PurePosixPath(info.filename.replace("\\", "/")).name.lower() == target
+        ]
+        exact_recursive = [
+            info for info in zf.infolist()
+            if not info.is_dir()
+            and PurePosixPath(info.filename.replace("\\", "/")).name.lower() == target
+        ]
+        all_pds = [
+            info for info in zf.infolist()
+            if not info.is_dir()
+            and PurePosixPath(info.filename.replace("\\", "/")).name.lower().endswith(".pds")
+        ]
+        candidates = exact_first_layer or exact_recursive or all_pds
+        if not candidates:
+            raise ValueError(f"Archive does not contain {archive_base}.pds")
+        candidates.sort(key=lambda info: len(PurePosixPath(info.filename.replace("\\", "/")).parts))
+        picked = candidates[0]
+        return zf.read(picked), PurePosixPath(picked.filename.replace("\\", "/")).name
+
+
+def _read_pds_from_rar(path: str, archive_base: str) -> tuple[bytes, str]:
+    try:
+        import rarfile
+    except ImportError as exc:
+        raise ValueError("Server is missing the rarfile dependency and cannot parse .rar files") from exc
+
+    target = f"{archive_base}.pds".lower()
+    with rarfile.RarFile(path, "r") as rf:
+        exact_first_layer = [
+            info for info in rf.infolist()
+            if not info.isdir()
+            and _is_first_layer_member(info.filename)
+            and PurePosixPath(info.filename.replace("\\", "/")).name.lower() == target
+        ]
+        exact_recursive = [
+            info for info in rf.infolist()
+            if not info.isdir()
+            and PurePosixPath(info.filename.replace("\\", "/")).name.lower() == target
+        ]
+        all_pds = [
+            info for info in rf.infolist()
+            if not info.isdir()
+            and PurePosixPath(info.filename.replace("\\", "/")).name.lower().endswith(".pds")
+        ]
+        candidates = exact_first_layer or exact_recursive or all_pds
+        if not candidates:
+            raise ValueError(f"Archive does not contain {archive_base}.pds")
+        candidates.sort(key=lambda info: len(PurePosixPath(info.filename.replace("\\", "/")).parts))
+        picked = candidates[0]
+        return rf.read(picked), PurePosixPath(picked.filename.replace("\\", "/")).name
+
+
+def _read_pds_from_unar_archive(path: str, archive_base: str, ext: str) -> tuple[bytes, str]:
+    target = f"{archive_base}.pds".lower()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = _extract_with_unar(path, tmpdir, ext)
+        files = _walk_extracted_files(tmpdir)
+
+        exact_first_layer = [
+            item for item in files
+            if _is_first_layer_member(item[0])
+            and PurePosixPath(item[0]).name.lower() == target
+        ]
+        exact_recursive = [
+            item for item in files
+            if PurePosixPath(item[0]).name.lower() == target
+        ]
+        all_pds = [
+            item for item in files
+            if PurePosixPath(item[0]).name.lower().endswith(".pds")
+        ]
+        candidates = exact_first_layer or exact_recursive or all_pds
+        if not candidates:
+            if result.returncode != 0:
+                msg = result.stderr.decode("utf-8", errors="ignore").strip()
+                raise ValueError(f"Failed to extract {ext}: {msg or 'unar failed'}")
+            raise ValueError(f"Archive does not contain {archive_base}.pds")
+
+        candidates.sort(key=lambda item: len(PurePosixPath(item[0]).parts))
+        picked_rel, picked_path = candidates[0]
+        with open(picked_path, "rb") as fp:
+            return fp.read(), PurePosixPath(picked_rel).name
+
+
+def _read_pds_from_archive(path: str, original_filename: str) -> tuple[bytes, str]:
+    archive_base, ext = os.path.splitext(os.path.basename(original_filename))
+    ext = ext.lower()
+    if ext == ".zip":
+        return _read_pds_from_zip(path, archive_base)
+    if ext == ".rar":
+        return _read_pds_from_rar(path, archive_base)
+    if ext == ".7z":
+        return _read_pds_from_unar_archive(path, archive_base, ext)
+    raise ValueError("Only .zip/.rar/.7z archives are supported")
+
+
+def _read_ets_cpp_from_archive(path: str, original_filename: str) -> tuple[bytes, str]:
+    ext = os.path.splitext(os.path.basename(original_filename))[1].lower()
+    cpp_items: list[tuple[str, bytes]] = []
+
+    if ext == ".zip":
+        with zipfile.ZipFile(path, "r") as zf:
+            infos = [
+                info for info in zf.infolist()
+                if not info.is_dir() and info.filename.lower().endswith(".cpp")
+            ]
+            infos.sort(key=lambda info: PurePosixPath(info.filename.replace("\\", "/")).name.lower())
+            for info in infos:
+                cpp_items.append((info.filename.replace("\\", "/"), zf.read(info)))
+    elif ext in {".rar", ".7z"}:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _extract_with_unar(path, tmpdir, ext)
+            files = [
+                (rel, full_path) for rel, full_path in _walk_extracted_files(tmpdir)
+                if rel.lower().endswith(".cpp")
+            ]
+            files.sort(key=lambda item: PurePosixPath(item[0]).name.lower())
+            for rel, full_path in files:
+                with open(full_path, "rb") as fp:
+                    cpp_items.append((rel, fp.read()))
+
+    if not cpp_items:
+        raise ValueError("Archive does not contain any .cpp files")
+
+    if len(cpp_items) == 1:
+        return cpp_items[0][1], cpp_items[0][0]
+
+    combined_parts: list[str] = []
+    for rel, raw in cpp_items:
+        text = _decode_pgs_bytes(raw)
+        combined_parts.append(f"// ===== File: {rel} =====\n{text}")
+    return "\n\n".join(combined_parts).encode("utf-8"), cpp_items[0][0]
+
+
+def _cache_program_files(path: str, filename: str) -> dict:
+    cached: dict = {}
+
+    ext = os.path.splitext(os.path.basename(filename))[1].lower()
+    prog_type = _detect_archive_program_type(path, ext)
+
+    if prog_type == "t2k":
         dest_dir = _extract_cache_dir(filename)
         if not os.path.exists(dest_dir):
             os.makedirs(dest_dir, exist_ok=True)
@@ -995,6 +1140,23 @@ def _cache_program_files(path: str, filename: str) -> dict:
                 cached["cpp_archive_path"] = os.path.relpath(picked_cpp, dest_dir).replace("\\", "/")
             else:
                 cached["cpp_error"] = "No main cpp file found"
+        except Exception as exc:
+            cached["cpp_error"] = str(exc)
+        return cached
+
+    if prog_type == "ets":
+        pds_bytes, pds_filename = _read_pds_from_archive(path, filename)
+        pds_path = _cached_pds_path(filename)
+        _write_cached_file(pds_path, pds_bytes)
+        cached["pds_path"] = pds_path
+        cached["pds_filename"] = pds_filename
+
+        try:
+            cpp_bytes, cpp_archive_path = _read_ets_cpp_from_archive(path, filename)
+            cpp_path = _cached_cpp_path(filename)
+            _write_cached_file(cpp_path, cpp_bytes)
+            cached["cpp_path"] = cpp_path
+            cached["cpp_archive_path"] = cpp_archive_path
         except Exception as exc:
             cached["cpp_error"] = str(exc)
         return cached
@@ -1407,59 +1569,15 @@ async def upload_pgs(
 
     try:
         saved_filename = os.path.basename(save_path)
-        is_t2k = (tester == "T2K")
-        if not is_t2k:
-            if ext == ".zip":
-                try:
-                    with zipfile.ZipFile(save_path, "r") as zf:
-                        names = [info.filename.lower() for info in zf.infolist() if not info.is_dir()]
-                        has_pgs = any(name.endswith(".pgs") for name in names)
-                        has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
-                        if not has_pgs and has_t2k:
-                            is_t2k = True
-                except Exception:
-                    pass
-            elif ext == ".rar":
-                try:
-                    import rarfile
-                    with rarfile.RarFile(save_path, "r") as rf:
-                        names = [info.filename.lower() for info in rf.infolist() if not info.isdir()]
-                        has_pgs = any(name.endswith(".pgs") for name in names)
-                        has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
-                        if not has_pgs and has_t2k:
-                            is_t2k = True
-                except Exception:
-                    try:
-                        with tempfile.TemporaryDirectory() as tmpdir:
-                            _extract_with_unar(save_path, tmpdir, ext)
-                            files = _walk_extracted_files(tmpdir)
-                            names = [item[0].lower() for item in files]
-                            has_pgs = any(name.endswith(".pgs") for name in names)
-                            has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
-                            if not has_pgs and has_t2k:
-                                is_t2k = True
-                    except Exception:
-                        pass
-            elif ext == ".7z":
-                try:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        _extract_with_unar(save_path, tmpdir, ext)
-                        files = _walk_extracted_files(tmpdir)
-                        names = [item[0].lower() for item in files]
-                        has_pgs = any(name.endswith(".pgs") for name in names)
-                        has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
-                        if not has_pgs and has_t2k:
-                            is_t2k = True
-                except Exception:
-                    pass
+        prog_type = _detect_archive_program_type(save_path, ext, tester)
 
-        if is_t2k:
+        if prog_type == "t2k":
             from app.services.parsers.t2k_parser import parse_t2k_folder
             dest_dir = _extract_cache_dir(saved_filename)
             if os.path.exists(dest_dir):
                 shutil.rmtree(dest_dir)
             os.makedirs(dest_dir, exist_ok=True)
-            
+
             if ext == ".zip":
                 with zipfile.ZipFile(save_path, "r") as zf:
                     zf.extractall(dest_dir)
@@ -1478,11 +1596,11 @@ async def upload_pgs(
                     raise ValueError("Failed to extract 7Z archive")
             else:
                 raise ValueError(f"Unsupported archive extension: {ext}")
-            
+
             result = parse_t2k_folder(dest_dir)
             program_version = result.get("program_version")
             pgs_version = None
-            
+
             from app.services.parsers.t2k_parser import find_t2k_main_cpp, _collect_program_files
             _, _, all_cpps = _collect_program_files(dest_dir)
             picked_cpp = find_t2k_main_cpp(all_cpps)
@@ -1490,6 +1608,13 @@ async def upload_pgs(
                 cpp_dest_path = _cached_cpp_path(saved_filename)
                 os.makedirs(os.path.dirname(cpp_dest_path), exist_ok=True)
                 shutil.copy2(picked_cpp, cpp_dest_path)
+        elif prog_type == "ets":
+            cached = _cache_program_files(save_path, saved_filename)
+            with open(cached["pds_path"], "rb") as fp:
+                text = _decode_pgs_bytes(fp.read())
+            result = parse_pds(text, cached["pds_filename"])
+            pgs_version = result.get("pgs_version")
+            program_version = result.get("program_version")
         else:
             cached = _cache_program_files(save_path, saved_filename)
             with open(cached["pgs_path"], "rb") as fp:
@@ -2359,52 +2484,9 @@ def reparse_pgs_upload(rec_id: int):
         ext = os.path.splitext(saved_filename)[1].lower()
         product_name = rec.product_name
 
-        is_t2k = False
-        if ext == ".zip":
-            try:
-                with zipfile.ZipFile(save_path, "r") as zf:
-                    names = [info.filename.lower() for info in zf.infolist() if not info.is_dir()]
-                    has_pgs = any(name.endswith(".pgs") for name in names)
-                    has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
-                    if not has_pgs and has_t2k:
-                        is_t2k = True
-            except Exception:
-                pass
-        elif ext == ".rar":
-            try:
-                import rarfile
-                with rarfile.RarFile(save_path, "r") as rf:
-                    names = [info.filename.lower() for info in rf.infolist() if not info.isdir()]
-                    has_pgs = any(name.endswith(".pgs") for name in names)
-                    has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
-                    if not has_pgs and has_t2k:
-                        is_t2k = True
-            except Exception:
-                try:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        _extract_with_unar(save_path, tmpdir, ext)
-                        files = _walk_extracted_files(tmpdir)
-                        names = [item[0].lower() for item in files]
-                        has_pgs = any(name.endswith(".pgs") for name in names)
-                        has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
-                        if not has_pgs and has_t2k:
-                            is_t2k = True
-                except Exception:
-                    pass
-        elif ext == ".7z":
-            try:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    _extract_with_unar(save_path, tmpdir, ext)
-                    files = _walk_extracted_files(tmpdir)
-                    names = [item[0].lower() for item in files]
-                    has_pgs = any(name.endswith(".pgs") for name in names)
-                    has_t2k = any(name.endswith(".ls") or name.endswith(".bdefs") for name in names)
-                    if not has_pgs and has_t2k:
-                        is_t2k = True
-            except Exception:
-                pass
+        prog_type = _detect_archive_program_type(save_path, ext)
 
-        if is_t2k:
+        if prog_type == "t2k":
             from app.services.parsers.t2k_parser import parse_t2k_folder
             dest_dir = _extract_cache_dir(saved_filename)
             if os.path.exists(dest_dir):
@@ -2441,6 +2523,13 @@ def reparse_pgs_upload(rec_id: int):
                 cpp_dest_path = _cached_cpp_path(saved_filename)
                 os.makedirs(os.path.dirname(cpp_dest_path), exist_ok=True)
                 shutil.copy2(picked_cpp, cpp_dest_path)
+        elif prog_type == "ets":
+            cached = _cache_program_files(save_path, saved_filename)
+            with open(cached["pds_path"], "rb") as fp:
+                text = _decode_pgs_bytes(fp.read())
+            result = parse_pds(text, cached["pds_filename"])
+            pgs_version = result.get("pgs_version")
+            program_version = result.get("program_version")
         else:
             cached = _cache_program_files(save_path, saved_filename)
             with open(cached["pgs_path"], "rb") as fp:

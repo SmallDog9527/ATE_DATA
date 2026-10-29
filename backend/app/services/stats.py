@@ -272,6 +272,23 @@ def calc_hist_x_range(
     return {"x_min": x_min, "x_max": x_max, "ticks": ticks}
 
 
+def compute_final_die_count(parsed: Optional[ParsedData]) -> Optional[int]:
+    """Compute final deduplicated die_count matching save_stats_to_db logic."""
+    if parsed is None or parsed.error or parsed.data is None:
+        return None
+    df = parsed.data
+    if 'X_COORD' in df.columns and 'Y_COORD' in df.columns:
+        has_coords = (
+            df['X_COORD'].notna().any() and
+            ((df['X_COORD'] != 0) | (df['Y_COORD'] != 0)).any()
+        )
+    else:
+        has_coords = False
+    if has_coords:
+        return int(len(df.drop_duplicates(subset=['X_COORD', 'Y_COORD'], keep='last')))
+    return int(len(df))
+
+
 def save_stats_to_db(
     lot: Lot,
     parsed: ParsedData,

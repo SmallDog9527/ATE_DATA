@@ -3,7 +3,32 @@ import openpyxl
 import pandas as pd
 from sqlalchemy.orm import Session
 
-def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, osat_name: str = "Chipmore") -> list:
+def _canonical_osat_name(raw_name: str) -> str:
+    """Normalize an OSAT name to its canonical display form."""
+    if not raw_name:
+        return "Chipmore"
+    s = str(raw_name).strip()
+    if "_" in s:
+        s = s.split("_")[0].strip()
+    mapping = {
+        "chipmore": "Chipmore",
+        "htks": "HTKS",
+        "ksht": "HTKS",
+        "htjs": "HTKS",
+        "lbs": "LBS",
+        "ucd": "UCD",
+        "cmc": "CMC",
+    }
+    return mapping.get(s.lower(), s)
+
+
+def parse_and_save_xls_summary(
+    filepath: str,
+    db: Session,
+    user_id: int = None,
+    osat_name: str = "Chipmore",
+    from_ftp: bool = False,
+) -> list:
     """
     Unified entry point for parsing XLS/XLSX summary reports.
     Dispatches parsing requests to the correct OSAT parser based on the factory name,
@@ -177,24 +202,30 @@ def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, 
             print("[xls_summary_parser] Auto-detected UCD via filename")
             name = "ucd"
 
-    print(f"[xls_summary_parser] Routing summary report parse for OSAT: {name!r} (original: {osat_name!r})")
-    
+    preserve_ftp_osat = bool(from_ftp or (user_id is None and osat_name))
+    ftp_osat_label = _canonical_osat_name(osat_name)
+    print(
+        f"[xls_summary_parser] Routing summary report parse with parser={name!r}, "
+        f"caller_osat={osat_name!r}, preserve_ftp_osat={preserve_ftp_osat}"
+    )
+
     # Try to detect FT reports first
     try:
-        import pandas as pd
         xl = pd.ExcelFile(filepath)
         if 'FT' in xl.sheet_names and 'Probe by wafer' in xl.sheet_names:
-            print(f"[xls_summary_parser] Detected both 'Probe by wafer' and 'FT' sheets. Calling both UCD CP and FT parsers.")
+            target_osat = ftp_osat_label if preserve_ftp_osat else "UCD"
+            print(f"[xls_summary_parser] Detected both 'Probe by wafer' and 'FT' sheets. Calling UCD CP/FT parsers with osat_name={target_osat!r}.")
             from app.services.parsers.ucd_summary_parser import parse_and_save_ucd_summary
             from app.services.parsers.ucd_ft_parser import parse_and_save_ucd_ft
-            lots1 = parse_and_save_ucd_summary(filepath, db, user_id, osat_name="UCD")
-            lots2 = parse_and_save_ucd_ft(filepath, db, user_id, osat_name="UCD")
+            lots1 = parse_and_save_ucd_summary(filepath, db, user_id, osat_name=target_osat)
+            lots2 = parse_and_save_ucd_ft(filepath, db, user_id, osat_name=target_osat)
             return lots1 + lots2
         elif 'FT' in xl.sheet_names:
-            print(f"[xls_summary_parser] Detected 'FT' sheet, routing to UCD FT parser")
+            target_osat = ftp_osat_label if preserve_ftp_osat else "UCD"
+            print(f"[xls_summary_parser] Detected 'FT' sheet, routing to UCD FT parser with osat_name={target_osat!r}")
             from app.services.parsers.ucd_ft_parser import parse_and_save_ucd_ft
-            return parse_and_save_ucd_ft(filepath, db, user_id, osat_name="UCD")
-            
+            return parse_and_save_ucd_ft(filepath, db, user_id, osat_name=target_osat)
+
         df_head = pd.read_excel(filepath, nrows=10, header=None)
         has_cmc_ft = False
         for r in range(df_head.shape[0]):
@@ -203,27 +234,31 @@ def parse_and_save_xls_summary(filepath: str, db: Session, user_id: int = None, 
                 has_cmc_ft = True
                 break
         if has_cmc_ft:
-            print(f"[xls_summary_parser] Detected '温度' column, routing to CMC FT parser")
+            target_osat = ftp_osat_label if preserve_ftp_osat else "CMC"
+            print(f"[xls_summary_parser] Detected CMC FT header columns, routing to CMC FT parser with osat_name={target_osat!r}")
             from app.services.parsers.cmc_ft_parser import parse_and_save_cmc_ft
-            return parse_and_save_cmc_ft(filepath, db, user_id, osat_name="CMC")
+            return parse_and_save_cmc_ft(filepath, db, user_id, osat_name=target_osat)
     except Exception as e:
         print(f"[xls_summary_parser] Error during FT detection: {e}")
 
-    
     if name == "ksht":
         from app.services.parsers.ksht_summary_parser import parse_and_save_ksht_summary
-        return parse_and_save_ksht_summary(filepath, db, user_id, osat_name="HTKS")
+        target_osat = ftp_osat_label if preserve_ftp_osat else "HTKS"
+        return parse_and_save_ksht_summary(filepath, db, user_id, osat_name=target_osat)
     elif name == "lbs":
         from app.services.parsers.lbs_summary_parser import parse_and_save_lbs_summary
-        return parse_and_save_lbs_summary(filepath, db, user_id, osat_name="LBS")
+        target_osat = ftp_osat_label if preserve_ftp_osat else "LBS"
+        return parse_and_save_lbs_summary(filepath, db, user_id, osat_name=target_osat)
     elif name == "ucd":
         from app.services.parsers.ucd_summary_parser import parse_and_save_ucd_summary
-        return parse_and_save_ucd_summary(filepath, db, user_id, osat_name="UCD")
+        target_osat = ftp_osat_label if preserve_ftp_osat else "UCD"
+        return parse_and_save_ucd_summary(filepath, db, user_id, osat_name=target_osat)
     elif name in ("chipmore", "Chipmore") or not name:
         from app.services.parsers.chipmore_summary_parser import parse_and_save_chipmore_summary
-        return parse_and_save_chipmore_summary(filepath, db, user_id, osat_name="Chipmore")
+        target_osat = ftp_osat_label if preserve_ftp_osat else "Chipmore"
+        return parse_and_save_chipmore_summary(filepath, db, user_id, osat_name=target_osat)
     else:
         print(f"[xls_summary_parser] Warning: Unknown OSAT {osat_name!r}. Falling back to Chipmore parser.")
         from app.services.parsers.chipmore_summary_parser import parse_and_save_chipmore_summary
-        fallback_osat_name = "Chipmore" if str(osat_name).strip().lower() == "chipmore" else osat_name
-        return parse_and_save_chipmore_summary(filepath, db, user_id, fallback_osat_name)
+        target_osat = _canonical_osat_name(osat_name)
+        return parse_and_save_chipmore_summary(filepath, db, user_id, osat_name=target_osat)

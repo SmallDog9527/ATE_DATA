@@ -185,6 +185,22 @@ def update_osat(
     db.commit()
     db.refresh(osat)
 
+    # Mark residual pending/scanned logs as ignored when disabling an OSAT
+    if was_enabled and not body.enabled:
+        try:
+            residual_logs = db.query(FtpUploadLog).filter(
+                FtpUploadLog.osat_id == osat_id,
+                FtpUploadLog.status.in_(['scanned', 'pending'])
+            ).all()
+            for r_log in residual_logs:
+                r_log.status = 'ignored'
+                r_log.error_msg = 'Skipped because OSAT was disabled'
+            if residual_logs:
+                db.commit()
+                print(f"[osat_config] Marked {len(residual_logs)} residual logs as ignored for disabled OSAT id={osat_id}")
+        except Exception as e:
+            print(f"[osat_config] Failed to clean residual logs for disabled OSAT id={osat_id}: {e}")
+
     # Automatically trigger immediate FTP scan and fetch task when re-enabling an OSAT
     if body.enabled and not was_enabled:
         try:
@@ -240,7 +256,8 @@ def run_osat_now(
     osat = db.query(OsatConfig).filter(OsatConfig.id == osat_id).first()
     if not osat:
         raise HTTPException(status_code=404, detail="OSAT 不存在")
-
+    if not osat.enabled:
+        raise HTTPException(status_code=400, detail=f"OSAT '{osat.name}' is disabled and cannot be triggered")
     from app.tasks.ftp_scheduler import trigger_osat_now
     trigger_osat_now(osat_id)
     return {"message": f"OSAT '{osat.name}' 抓取任务已在后台启动"}
@@ -334,6 +351,10 @@ def retry_failed_ftp_log(
         
     if log.status != 'failed':
         raise HTTPException(status_code=400, detail="Only failed logs can be retried")
+
+    osat = db.query(OsatConfig).filter(OsatConfig.id == log.osat_id).first()
+    if not osat or not osat.enabled:
+        raise HTTPException(status_code=400, detail="Cannot retry logs for a disabled OSAT")
         
     EXTRACTED_DIR = "/tmp/FTP/extracted"
     prefix = f"{log_id}_"
@@ -526,7 +547,16 @@ def retry_all_failed_ftp_logs(
     from app.services.ftp_service import run_osat_fetch
     from app.tasks.ftp_scheduler import _executor
 
-    failed_logs = db.query(FtpUploadLog).filter(FtpUploadLog.status == 'failed').all()
+    enabled_osat_ids = {
+        o.id for o in db.query(OsatConfig).filter(OsatConfig.enabled == True).all()
+    }
+    if not enabled_osat_ids:
+        return {"message": "No enabled OSATs available to retry", "count": 0}
+
+    failed_logs = db.query(FtpUploadLog).filter(
+        FtpUploadLog.status == 'failed',
+        FtpUploadLog.osat_id.in_(enabled_osat_ids)
+    ).all()
     if not failed_logs:
         return {"message": "No failed logs found to retry", "count": 0}
 
@@ -685,6 +715,18 @@ def process_existing_local_files(
         else:
             log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
             if log:
+                osat_cfg = db.query(OsatConfig).filter(OsatConfig.id == log.osat_id).first()
+                if not osat_cfg or not osat_cfg.enabled:
+                    log.status = 'ignored'
+                    log.error_msg = 'Skipped because OSAT was disabled'
+                    db.commit()
+                    for fp in files:
+                        try:
+                            os.remove(fp)
+                        except Exception:
+                            pass
+                    cleaned_count += 1
+                    continue
                 log.status = 'pending'
                 log.error_msg = None
                 db.commit()
@@ -730,8 +772,13 @@ def reset_failed_logs(
         .group_by(FtpUploadLog.remote_path)
         .having(func.count(FtpUploadLog.id) >= _MAX_FAIL_RETRIES)
     )
+    enabled_osat_ids = {
+        o.id for o in db.query(OsatConfig).filter(OsatConfig.enabled == True).all()
+    }
     if osat_id:
         stuck_query = stuck_query.filter(FtpUploadLog.osat_id == osat_id)
+    else:
+        stuck_query = stuck_query.filter(FtpUploadLog.osat_id.in_(enabled_osat_ids))
     if remote_path:
         stuck_query = stuck_query.filter(FtpUploadLog.remote_path == remote_path)
 
@@ -796,8 +843,13 @@ def get_failed_summary(
         .group_by(FtpUploadLog.osat_id, FtpUploadLog.remote_path, FtpUploadLog.filename)
         .having(func.count(FtpUploadLog.id) >= _MAX_FAIL_RETRIES)
     )
+    enabled_osat_ids = {
+        o.id for o in db.query(OsatConfig).filter(OsatConfig.enabled == True).all()
+    }
     if osat_id:
         fail_query = fail_query.filter(FtpUploadLog.osat_id == osat_id)
+    else:
+        fail_query = fail_query.filter(FtpUploadLog.osat_id.in_(enabled_osat_ids))
 
     rows = fail_query.order_by(func.count(FtpUploadLog.id).desc()).all()
 

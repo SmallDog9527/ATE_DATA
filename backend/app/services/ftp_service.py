@@ -20,6 +20,7 @@ FTP 自动抓取服务：连接测试、目录扫描、CSV/ZIP/GZ 下载解析�
 支持 .csv / .txt / .zip / .gz 文件；.gz 解压后仅处理其中的 CSV 和 TXT 格式。
 """
 import os
+import time
 import io
 import ftplib
 
@@ -460,7 +461,7 @@ def scan_ftp_files(osat, scan_type: str = 'both') -> List[str]:
 # Maximum failed retries allowed for a single file (files exceeding this limit will be skipped)
 _MAX_FAIL_RETRIES = 3
 PROCESSING_TIMEOUT_MINUTES = 30   # Records stuck in processing for more than this many minutes are marked as failed
-_DOWNLOAD_WORKERS = 8            # Number of concurrent FTP download threads
+_DOWNLOAD_WORKERS = 3            # Number of concurrent FTP download threads (matched to Semaphore limit)
 _PARSE_WORKERS = 5
 
 def get_parse_workers_count() -> int:
@@ -571,15 +572,33 @@ def _reset_stuck_processing_logs(db) -> int:
         FtpUploadLog.uploaded_at < func.now() - timedelta(minutes=PROCESSING_TIMEOUT_MINUTES)
     ).all()
 
-    count = len(stuck)
+    DOWNLOAD_DIR = "/tmp/FTP/download"
+    now_ts = time.time()
+    stuck_to_reset = []
     for log in stuck:
+        if log.status == 'downing':
+            local_file = os.path.join(DOWNLOAD_DIR, f"{log.id}_{log.filename}")
+            if os.path.exists(local_file):
+                try:
+                    if now_ts - os.path.getmtime(local_file) < 600:
+                        continue
+                except Exception:
+                    pass
+            _lock_key = (log.osat_id, log.remote_path)
+            with _file_in_progress_lock:
+                if _lock_key in _file_in_progress:
+                    continue
+        stuck_to_reset.append(log)
+
+    count = len(stuck_to_reset)
+    for log in stuck_to_reset:
         log.status = 'failed'
         log.error_msg = (
             f'Processing timeout (not completed within {PROCESSING_TIMEOUT_MINUTES} minutes, automatically marked as failed)'
         )
         print(f"[ftp_fetch] ⏰ Timeout reset: {log.filename} "
               f"(id={log.id}, started={log.uploaded_at})")
-    if stuck:
+    if stuck_to_reset:
         try:
             db.commit()
         except Exception as commit_ex:
@@ -840,7 +859,9 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
             if csv_filename.lower().endswith(('.xls', '.xlsx')):
                 try:
                     from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
-                    created_lots = parse_and_save_xls_summary(save_path, db, None, osat_name=effective_osat_name)
+                    created_lots = parse_and_save_xls_summary(
+                        save_path, db, None, osat_name=effective_osat_name, from_ftp=True
+                    )
                     
                     # FTP XLS/XLSX Summary compression in _do_download
                     zip_path = save_path + ".zip"
@@ -848,17 +869,19 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                         zf.write(save_path, save_name)
                     
-                    if os.path.exists(zip_path) and os.path.getsize(zip_path) > 0:
-                        if os.path.exists(save_path):
-                            os.remove(save_path)
-                        active_lots = db.query(Lot).filter(Lot.filename == save_name).all()
-                        for lot in active_lots:
-                            lot.storage_path = zip_path
-                            db.add(lot)
-                        db.commit()
+                    compressed_ok = os.path.exists(zip_path) and os.path.getsize(zip_path) > 0
+                    if compressed_ok and os.path.exists(save_path):
+                        os.remove(save_path)
 
                     active_lots = db.query(Lot).filter(Lot.filename == save_name).all()
+                    for lot in active_lots:
+                        if compressed_ok:
+                            lot.storage_path = zip_path
+                        lot.osat_name = effective_osat_name
+                        lot.ftp_path = remote_path
+                        db.add(lot)
                     if active_lots:
+                        db.commit()
                         last_lot_id = active_lots[-1].id
                 except Exception as ex:
                     traceback.print_exc()
@@ -980,6 +1003,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                         os.remove(save_path)
                     continue
 
+                from app.services.stats import compute_final_die_count
                 meta = {} if meta_result.error else {
                     'program': meta_result.program,
                     'lot_id': meta_result.lot_id,
@@ -989,6 +1013,7 @@ def process_one_file(db, osat, remote_path: str, admin_user_id: int) -> dict:
                     'beginning_time': meta_result.beginning_time,
                     'ending_time': meta_result.ending_time,
                     'test_date': meta_result.test_date,
+                    'die_count': compute_final_die_count(meta_result),
                 }
             except Exception:
                 meta = {}
@@ -1341,6 +1366,14 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
         osat = db.query(OsatConfig).filter(OsatConfig.id == osat_id).first()
         if not osat:
             raise Exception(f"OSAT id={osat_id} does not exist")
+        if not osat.enabled:
+            print(f"[ftp_dl] OSAT={osat.name} (id={osat_id}) is disabled, skipping download for {filename}")
+            log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+            if log and log.status != 'success':
+                log.status = 'ignored'
+                log.error_msg = 'Skipped because OSAT was disabled'
+                db.commit()
+            return None
         effective_osat_name = osat.name.split('_')[0] if osat.name and '_' in osat.name else osat.name
 
         # Prevent concurrent scan race conditions
@@ -1363,13 +1396,14 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
                 db.commit()
             return None
 
-        # Update status to downing
+        # Keep status as pending while waiting in queue, do not mark as downing prematurely
         log = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
-        if log:
+        if log and log.status != 'success':
             from datetime import timezone
-            log.status = 'downing'
-            log.uploaded_at = datetime.now(timezone.utc)
-            db.commit()
+            if log.status != 'pending':
+                log.status = 'pending'
+                log.uploaded_at = datetime.now(timezone.utc)
+                db.commit()
 
         # Initialize directories
         DOWNLOAD_DIR = "/tmp/FTP/download"
@@ -1415,10 +1449,33 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
         db.close()
         
         sem = _get_osat_semaphore(osat_id)
-        if not sem.acquire(timeout=900):  # Wait up to 15 mins for an available slot
-            raise Exception("Timeout waiting for available FTP connection slot")
+        if not sem.acquire(timeout=600):  # Wait up to 10 mins for an available slot
+            print(f"[ftp_dl] OSAT id={osat_id} connection slots busy, re-queuing {filename}")
+            reset_db = SessionLocal()
+            try:
+                log_rec = reset_db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+                if log_rec and log_rec.status not in ('success', 'processing'):
+                    log_rec.status = 'pending'
+                    log_rec.error_msg = None
+                    reset_db.commit()
+            finally:
+                reset_db.close()
+            return None
             
         try:
+            # Mark status as downing ONLY after successfully acquiring FTP connection slot
+            dl_db = SessionLocal()
+            try:
+                log_rec = dl_db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+                if log_rec:
+                    from datetime import timezone
+                    log_rec.status = 'downing'
+                    log_rec.error_msg = None
+                    log_rec.uploaded_at = datetime.now(timezone.utc)
+                    dl_db.commit()
+            finally:
+                dl_db.close()
+
             # Re-fetch osat in a short-lived session to avoid DetachedInstanceError
             temp_db = SessionLocal()
             fresh_osat = temp_db.query(OsatConfig).filter(OsatConfig.id == osat_id).first()
@@ -1431,8 +1488,22 @@ def _do_download(log_id: int, osat_id: int, remote_path: str, admin_user_id: int
                 file_size = ftp.size(remote_path) or 0
                 if file_size > 50 * 1024 * 1024 * 1024:
                     raise Exception(f"Remote file size {file_size} exceeds 50GB limit, download aborted")
+                
+                last_hb_time = [time.time()]
+                def write_chunk(chunk):
+                    f.write(chunk)
+                    now_chunk = time.time()
+                    if now_chunk - last_hb_time[0] >= 30:
+                        last_hb_time[0] = now_chunk
+                        with _osat_in_progress_lock:
+                            _osat_in_progress[osat_id] = now_chunk
+                        try:
+                            os.utime(local_file, None)
+                        except Exception:
+                            pass
+
                 with open(local_file, 'wb') as f:
-                    ftp.retrbinary(f'RETR {remote_path}', f.write)
+                    ftp.retrbinary(f'RETR {remote_path}', write_chunk)
             finally:
                 try:
                     ftp.quit()
@@ -1762,6 +1833,21 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
     filename = os.path.basename(remote_path)
     try:
         osat = db.query(OsatConfig).filter(OsatConfig.id == osat_id).first()
+        if osat and not osat.enabled:
+            print(f"[ftp_parse] OSAT={osat.name} (id={osat_id}) is disabled, skipping parse for {filename}")
+            log_rec = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
+            if log_rec and log_rec.status != 'success':
+                log_rec.status = 'ignored'
+                log_rec.error_msg = 'Skipped because OSAT was disabled'
+                db.commit()
+            db.close()
+            for fp in (csv_files_to_process or []):
+                if fp and os.path.exists(fp):
+                    try:
+                        os.remove(fp)
+                    except Exception:
+                        pass
+            return {"ok": False, "skipped": True}
         effective_osat_name = osat.name.split('_')[0] if osat and osat.name and '_' in osat.name else (osat.name if osat else "Unknown")
         log_rec = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
         if log_rec:
@@ -1785,6 +1871,8 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
             return False
 
         last_lot_id = None
+        created_lot_count = 0
+        skipped_dup_lot_id = None
         parsed_successfully = []
 
         for csv_filepath in csv_files_to_process:
@@ -1815,6 +1903,7 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
             if existing_processed_lot:
                 print(f"[ftp_parse] File '{save_name}' already exists in Lot DB as processed, skipping and deleting from extracted")
                 last_lot_id = existing_processed_lot.id
+                skipped_dup_lot_id = existing_processed_lot.id
                 db.close()
                 parsed_successfully.append(csv_filepath)
                 try:
@@ -1860,7 +1949,9 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
             if save_name.lower().endswith(('.xls', '.xlsx')):
                 try:
                     from app.services.parsers.xls_summary_parser import parse_and_save_xls_summary
-                    created_lots = parse_and_save_xls_summary(save_path, db, None, osat_name=effective_osat_name)
+                    created_lots = parse_and_save_xls_summary(
+                        save_path, db, None, osat_name=effective_osat_name, from_ftp=True
+                    )
                     
                     # FTP XLS/XLSX Summary compression
                     zip_path = save_path + ".zip"
@@ -1868,18 +1959,21 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                         zf.write(save_path, save_name)
                     
-                    if os.path.exists(zip_path) and os.path.getsize(zip_path) > 0:
-                        if os.path.exists(save_path):
-                            os.remove(save_path)
-                        active_lots = db.query(Lot).filter(Lot.filename == save_name).all()
-                        for lot in active_lots:
-                            lot.storage_path = zip_path
-                            db.add(lot)
-                        db.commit()
+                    compressed_ok = os.path.exists(zip_path) and os.path.getsize(zip_path) > 0
+                    if compressed_ok and os.path.exists(save_path):
+                        os.remove(save_path)
 
                     active_lots = db.query(Lot).filter(Lot.filename == save_name).all()
+                    for lot in active_lots:
+                        if compressed_ok:
+                            lot.storage_path = zip_path
+                        lot.osat_name = effective_osat_name
+                        lot.ftp_path = remote_path
+                        db.add(lot)
                     if active_lots:
+                        db.commit()
                         last_lot_id = active_lots[-1].id
+                    created_lot_count += 1
                     parsed_successfully.append(csv_filepath)
                     try:
                         from app.models.ftp_extracted_file import FtpExtractedFile
@@ -2073,6 +2167,7 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                     raise ex
 
                 last_lot_id = lot.id
+                created_lot_count += 1
                 db.close()
                 parsed_successfully.append(csv_filepath)
                 
@@ -2121,6 +2216,13 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
             except Exception:
                 meta = {}
 
+            detected_dtype = _detect_osat_data_type(osat, save_name, meta.get('test_stage'))
+            final_data_type = meta.get('test_stage') or detected_dtype
+            if meta.get('program'):
+                prog_base = os.path.splitext(str(meta['program']).upper())[0]
+                if prog_base.endswith('_QA'):
+                    final_data_type = 'QA'
+
             lot = Lot(
                 filename=save_name,
                 storage_path=save_path,
@@ -2137,7 +2239,7 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                 lot_id=meta.get('lot_id'),
                 wafer_id=meta.get('wafer_id'),
                 handler=meta.get('handler'),
-                data_type=_detect_osat_data_type(osat, save_name, meta.get('test_stage')),
+                data_type=final_data_type,
                 ftp_path=remote_path,
             )
 
@@ -2154,6 +2256,61 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
                         except Exception:
                             pass
 
+            parsed_die_count = meta.get('die_count')
+            has_qa_tag = 'QA' in os.path.splitext(os.path.basename(save_name))[0].upper()
+            # Deduplicate raw test data when test_date, ending_time, data_type, and die_count all match an existing processed FTP lot
+            if (
+                lot.test_date is not None
+                and lot.ending_time is not None
+                and parsed_die_count is not None
+                and final_data_type
+                and final_data_type not in ('CP_Yield', 'FT_Yield', 'MP_Yield', 'Summary', 'CP_LOT')
+            ):
+                dup_query = db.query(Lot).filter(
+                    Lot.data_source == 'ftp',
+                    Lot.status == 'processed',
+                    Lot.test_date == lot.test_date,
+                    Lot.ending_time == lot.ending_time,
+                    Lot.data_type == final_data_type,
+                    Lot.die_count == parsed_die_count,
+                )
+                if has_qa_tag:
+                    dup_query = dup_query.filter(Lot.filename.ilike('%qa%'))
+                else:
+                    dup_query = dup_query.filter(~Lot.filename.ilike('%qa%'))
+                dup_lot = dup_query.order_by(Lot.id.asc()).first()
+                if dup_lot:
+                    print(
+                        f"[ftp_parse] Duplicate data skipped for '{save_name}': "
+                        f"matches existing Lot id={dup_lot.id} "
+                        f"(test_date={lot.test_date}, ending_time={lot.ending_time}, "
+                        f"data_type={final_data_type}, die_count={parsed_die_count})"
+                    )
+                    if os.path.exists(save_path):
+                        try:
+                            os.remove(save_path)
+                        except Exception:
+                            pass
+                    last_lot_id = dup_lot.id
+                    skipped_dup_lot_id = dup_lot.id
+                    db.close()
+                    parsed_successfully.append(csv_filepath)
+                    try:
+                        from app.models.ftp_extracted_file import FtpExtractedFile
+                        db_ext = SessionLocal()
+                        ext_file = FtpExtractedFile(
+                            ftp_log_id=log_id,
+                            filename=save_name,
+                            status='skipped',
+                            error_msg=f"Duplicate data skipped (matches Lot #{dup_lot.id} on test_date, ending_time, data_type, die_count)"
+                        )
+                        db_ext.add(ext_file)
+                        db_ext.commit()
+                        db_ext.close()
+                    except Exception as db_ex:
+                        print(f"[ftp_parse] Failed to write duplicate skip log: {db_ex}")
+                    continue
+
             db.add(lot)
             db.commit()
             db.refresh(lot)
@@ -2162,6 +2319,70 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
             from app.api.routes.lots import _parse_and_save
             try:
                 _parse_and_save(lot_id, save_path, db)
+                # Post-parse race check in case a concurrent worker finished an identical lot simultaneously
+                db.refresh(lot)
+                if (
+                    lot.test_date is not None
+                    and lot.ending_time is not None
+                    and lot.die_count is not None
+                    and lot.data_type
+                    and lot.data_type not in ('CP_Yield', 'FT_Yield', 'MP_Yield', 'Summary', 'CP_LOT')
+                ):
+                    race_query = db.query(Lot).filter(
+                        Lot.id < lot_id,
+                        Lot.data_source == 'ftp',
+                        Lot.status == 'processed',
+                        Lot.test_date == lot.test_date,
+                        Lot.ending_time == lot.ending_time,
+                        Lot.data_type == lot.data_type,
+                        Lot.die_count == lot.die_count,
+                    )
+                    if has_qa_tag:
+                        race_query = race_query.filter(Lot.filename.ilike('%qa%'))
+                    else:
+                        race_query = race_query.filter(~Lot.filename.ilike('%qa%'))
+                    race_dup = race_query.order_by(Lot.id.asc()).first()
+                    if race_dup:
+                        print(
+                            f"[ftp_parse] Concurrent duplicate resolved for '{save_name}': "
+                            f"removing newly created Lot id={lot_id} in favor of Lot id={race_dup.id}"
+                        )
+                        from app.models.bin_summary import BinSummary
+                        from app.models.test_item import TestItem
+                        db.query(BinSummary).filter(BinSummary.lot_id == lot_id).delete(synchronize_session=False)
+                        db.query(TestItem).filter(TestItem.lot_id == lot_id).delete(synchronize_session=False)
+                        if lot.parquet_path and os.path.exists(lot.parquet_path):
+                            try:
+                                os.remove(lot.parquet_path)
+                            except Exception:
+                                pass
+                        if os.path.exists(save_path):
+                            try:
+                                os.remove(save_path)
+                            except Exception:
+                                pass
+                        db.delete(lot)
+                        db.commit()
+                        last_lot_id = race_dup.id
+                        skipped_dup_lot_id = race_dup.id
+                        parsed_successfully.append(csv_filepath)
+                        try:
+                            from app.models.ftp_extracted_file import FtpExtractedFile
+                            db_ext = SessionLocal()
+                            ext_file = FtpExtractedFile(
+                                ftp_log_id=log_id,
+                                filename=save_name,
+                                status='skipped',
+                                error_msg=f"Duplicate data skipped (matches Lot #{race_dup.id} on test_date, ending_time, data_type, die_count)"
+                            )
+                            db_ext.add(ext_file)
+                            db_ext.commit()
+                            db_ext.close()
+                        except Exception as db_ex:
+                            print(f"[ftp_parse] Failed to write race duplicate skip log: {db_ex}")
+                        continue
+
+                created_lot_count += 1
                 parsed_successfully.append(csv_filepath)
 
                 # Immediately mark log_rec status as success after DB commit
@@ -2250,13 +2471,18 @@ def _do_parse_internal(log_id: int, osat_id: int, remote_path: str,
         if not parsed_successfully:
             raise Exception("None of the files in the archive could be parsed successfully")
 
-        # Mark record as success
+        # Mark record as success (or skipped if all extracted files were duplicate data)
         db = SessionLocal()
         try:
             log_rec = db.query(FtpUploadLog).filter(FtpUploadLog.id == log_id).first()
             if log_rec:
-                log_rec.status = 'success'
-                log_rec.lot_id_created = last_lot_id
+                if created_lot_count == 0 and skipped_dup_lot_id is not None:
+                    log_rec.status = 'skipped'
+                    log_rec.lot_id_created = skipped_dup_lot_id
+                    log_rec.error_msg = f"Duplicate data skipped (matches Lot #{skipped_dup_lot_id} on test_date, ending_time, data_type, die_count)"
+                else:
+                    log_rec.status = 'success'
+                    log_rec.lot_id_created = last_lot_id
                 log_rec.uploaded_at = datetime.now(timezone.utc)
                 
                 try:
@@ -2569,6 +2795,9 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
         if not osat:
             print(f"[ftp_fetch] OSAT id={osat_id} does not exist")
             return
+        if not osat.enabled:
+            print(f"[ftp_fetch] OSAT={osat.name} (id={osat_id}) is disabled, skipping fetch")
+            return
 
         # Get the first admin user as the uploader
         admin = db.query(User).filter(User.role == 'admin').first()
@@ -2633,17 +2862,8 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
 
         need_scan = save_snapshot or (existing_snapshot is None) or snapshot_empty
 
-        # Prepare executors for concurrency
+        # Prepare executors for concurrency (matched to Semaphore capacity of 3)
         download_workers = _DOWNLOAD_WORKERS
-        try:
-            from app.tasks.ftp_scheduler import is_in_window
-            if is_in_window(osat.schedule_start, osat.schedule_end):
-                if download_workers < 5:
-                    download_workers = 8
-                    print(f"[ftp_fetch] During FTP fetch window, download workers increased to {download_workers}")
-        except Exception as ex:
-            print(f"[ftp_fetch] Error checking fetch window for dynamic workers adjustment: {ex}")
-
         download_pool = ThreadPoolExecutor(max_workers=download_workers, thread_name_prefix="ftp_dl")
         workers_count = get_parse_workers_count()
         print("[ftp_fetch] Initialized parse pool with " + str(workers_count) + " workers dynamically based on working hours.")
@@ -2709,6 +2929,9 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                             if "0 bytes" in str(e) or "empty" in str(e).lower():
                                 log_rec.status = 'skipped'
                                 log_rec.error_msg = 'Remote file is empty (0 bytes)'
+                            elif "slot busy" in str(e).lower() or "connection slot" in str(e).lower():
+                                log_rec.status = 'pending'
+                                log_rec.error_msg = None
                             else:
                                 log_rec.status = 'failed'
                                 log_rec.error_msg = f"[Download Failed] {str(e)[:250]}"
@@ -2838,13 +3061,41 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
         else:
             print(f"[ftp_fetch] Summary FTP directory scan skipped (already scanned today)")
 
-        # Summary loop: process until there are no scanned/pending/processing Summary files left
+        # Summary loop: process until there are no scanned/pending/processing Summary files left (skip during fast snapshot scan)
         max_batch_size = 100
-        summary_iter = 0
-        max_summary_iters = 20
-        while summary_iter < max_summary_iters:
-            summary_iter += 1
-            scanned_summary = [
+        summary_to_process = []
+        if not save_snapshot:
+            summary_iter = 0
+            max_summary_iters = 20
+            while summary_iter < max_summary_iters:
+                summary_iter += 1
+                scanned_summary = [
+                    row.remote_path
+                    for row in db.query(FtpUploadLog.remote_path)
+                    .filter(
+                        FtpUploadLog.osat_id == osat_id,
+                        FtpUploadLog.status.in_(['scanned', 'pending', 'processing'])
+                    ).all()
+                ]
+                scanned_summary = [p for p in scanned_summary if is_summary_file_path(p)]
+                
+                retryable_failed_paths = get_retryable_failed_paths()
+                retryable_summary = [p for p in retryable_failed_paths if is_summary_file_path(p)]
+                
+                summary_to_process = list(set(scanned_summary + retryable_summary))
+                if not summary_to_process:
+                    print(f"[ftp_fetch] Summary files fully processed in {summary_iter - 1} iterations.")
+                    break
+                    
+                batch = summary_to_process[:max_batch_size]
+                print(f"[ftp_fetch] [Summary Loop] Iteration {summary_iter}: processing {len(batch)} of {len(summary_to_process)} Summary files...")
+                process_batch(batch, f"Summary (Iter {summary_iter})")
+                db.commit()
+            else:
+                print(f"[ftp_fetch] Summary loop reached max iterations ({max_summary_iters})")
+
+            # Check if there are any remaining scanned/pending/processing summary files
+            remaining_summaries = [
                 row.remote_path
                 for row in db.query(FtpUploadLog.remote_path)
                 .filter(
@@ -2852,36 +3103,15 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
                     FtpUploadLog.status.in_(['scanned', 'pending', 'processing'])
                 ).all()
             ]
-            scanned_summary = [p for p in scanned_summary if is_summary_file_path(p)]
-            
-            retryable_failed_paths = get_retryable_failed_paths()
-            retryable_summary = [p for p in retryable_failed_paths if is_summary_file_path(p)]
-            
-            summary_to_process = list(set(scanned_summary + retryable_summary))
-            if not summary_to_process:
-                print(f"[ftp_fetch] Summary files fully processed in {summary_iter - 1} iterations.")
-                break
-                
-            batch = summary_to_process[:max_batch_size]
-            print(f"[ftp_fetch] [Summary Loop] Iteration {summary_iter}: processing {len(batch)} of {len(summary_to_process)} Summary files...")
-            process_batch(batch, f"Summary (Iter {summary_iter})")
-            db.commit()
-        else:
-            print(f"[ftp_fetch] Summary loop reached max iterations ({max_summary_iters})")
-
-        # Check if there are any remaining scanned/pending/processing summary files
-        remaining_summaries = [
-            row.remote_path
-            for row in db.query(FtpUploadLog.remote_path)
-            .filter(
-                FtpUploadLog.osat_id == osat_id,
-                FtpUploadLog.status.in_(['scanned', 'pending', 'processing'])
-            ).all()
-        ]
-        remaining_summaries = [p for p in remaining_summaries if is_summary_file_path(p)]
-        if remaining_summaries:
-            print(f"[ftp_fetch] Aborting Stage 2 because there are still {len(remaining_summaries)} Summary files in scanned/pending/processing status")
-            return
+            remaining_summaries = [p for p in remaining_summaries if is_summary_file_path(p)]
+            if remaining_summaries:
+                try:
+                    download_pool.shutdown(wait=False)
+                    parse_pool.shutdown(wait=False)
+                except Exception:
+                    pass
+                print(f"[ftp_fetch] Aborting Stage 2 because there are still {len(remaining_summaries)} Summary files in scanned/pending/processing status")
+                return
 
         # ── STAGE 2: Scan and Process Data (only after Summary is fully completed) ──
         all_data_paths = []
@@ -2947,8 +3177,13 @@ def run_osat_fetch(osat_id: int, save_snapshot: bool = False):
             _save_scan_snapshot(db, osat_id, combined_paths)
             print(f"[ftp_fetch] Fast snapshot probe completed for OSAT id={osat_id}, saved snapshot immediately!")
 
-        # If save_snapshot was explicitly requested (manual fast snapshot scan), return immediately after directory probe!
+        # If save_snapshot was explicitly requested (fast snapshot scan), shut down pools and return immediately after directory probe
         if save_snapshot:
+            try:
+                download_pool.shutdown(wait=False)
+                parse_pool.shutdown(wait=False)
+            except Exception:
+                pass
             print(f"[ftp_fetch] Fast snapshot probe finished for OSAT id={osat_id}, returning immediately without waiting for download/parse loop!")
             return
 

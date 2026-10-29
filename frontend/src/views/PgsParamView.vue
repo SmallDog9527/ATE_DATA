@@ -2210,7 +2210,7 @@ const paramCppFunctionNames = computed(() => {
 
 function parseDutFunctionName(text: string): string | null {
   const trimmed = text.trim()
-  if (!trimmed.startsWith('DUT_API')) return null
+  if (!trimmed.startsWith('DUT_API') && !trimmed.startsWith('ETS_PRGFLOW_FUNC')) return null
   const beforeParen = trimmed.split('(')[0]?.trim()
   if (!beforeParen) return null
   const parts = beforeParen.split(/\s+/)

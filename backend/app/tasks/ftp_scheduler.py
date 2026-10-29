@@ -100,11 +100,18 @@ def send_daily_failure_report_job():
             FtpUploadLog.status == 'failed'
         ).group_by(FtpUploadLog.remote_path).subquery()
 
+        enabled_osat_ids = {
+            o.id for o in db.query(OsatConfig).filter(OsatConfig.enabled == True).all()
+        }
+
         failed_logs = db.query(FtpUploadLog).join(
             subq, FtpUploadLog.id == subq.c.max_id
         ).all()
 
-        failed_logs = [log for log in failed_logs if log.remote_path not in success_path_set]
+        failed_logs = [
+            log for log in failed_logs
+            if log.osat_id in enabled_osat_ids and log.remote_path not in success_path_set
+        ]
 
         # 2. 如果没有任何失败记录，直接静默退出
         if not failed_logs:
@@ -569,7 +576,7 @@ def daily_ftp_scan_snapshot_job():
     max_id_before = db.query(func.max(FtpUploadLog.id)).scalar() or 0
 
     try:
-        configs = db.query(OsatConfig).all()  # Scan ALL OSATs (including disabled) for daily directory sync
+        configs = db.query(OsatConfig).filter(OsatConfig.enabled == True).order_by(OsatConfig.id.asc()).all()  # Scan only enabled OSATs for daily directory sync
         futures = []
         for o in configs:
             futures.append(_executor.submit(run_osat_fetch, o.id, True))

@@ -142,21 +142,28 @@ def get_ft_yield_overview(
 
         lot_ids = [lot.id for lot in lots]
 
-        # Fetch bin summaries (site=0 = all-site)
-        bins = (
-            db.query(BinSummary)
-            .filter(BinSummary.lot_id.in_(lot_ids), BinSummary.site == 0)
-            .all()
-        )
+        # Fetch non-zero fail bin summaries (site=0 = all-site, excluding bin 1 PASS)
         bin_map: dict = {}
-        for b in bins:
-            bin_map.setdefault(b.lot_id, {})[b.bin_number] = b.count
+        for idx_start in range(0, len(lot_ids), 10000):
+            chunk_lids = lot_ids[idx_start:idx_start + 10000]
+            bin_rows = (
+                db.query(BinSummary.lot_id, BinSummary.bin_number, BinSummary.count)
+                .filter(
+                    BinSummary.lot_id.in_(chunk_lids),
+                    BinSummary.site == 0,
+                    BinSummary.bin_number != 1,
+                    BinSummary.count > 0,
+                )
+                .all()
+            )
+            for b_lot_id, b_num, b_cnt in bin_rows:
+                bin_map.setdefault(b_lot_id, {})[b_num] = b_cnt
 
         # ── Grouping by (product_name, osat_name) ─────────────────────────────
         group_lots: dict = defaultdict(list)
         for lot in lots:
             pname = lot.product_name or "(unknown)"
-            osat = lot.osat_name or "chipmore"
+            osat = ("Chipmore" if not lot.osat_name or lot.osat_name.lower() == "chipmore" else ("HTKS" if lot.osat_name.lower() in ("ksht", "htks", "htjs") else ("LBS" if lot.osat_name.lower() == "lbs" else lot.osat_name)))
             temp = lot.temperature or "-"
             prog = lot.program or "-"
             group_lots[(pname, osat, temp, prog)].append(lot)
@@ -249,7 +256,7 @@ def get_ft_yield_overview(
         # ── OSAT aggregation ─────────────────────────────────────────────────
         osat_bin1_totals = defaultdict(int)
         for lot in lots:
-            osat = lot.osat_name or "chipmore"
+            osat = ("Chipmore" if not lot.osat_name or lot.osat_name.lower() == "chipmore" else ("HTKS" if lot.osat_name.lower() in ("ksht", "htks", "htjs") else ("LBS" if lot.osat_name.lower() == "lbs" else lot.osat_name)))
             osat_bin1_totals[osat] += lot.pass_count or 0
 
         osats = [
@@ -456,7 +463,7 @@ def get_ft_yield_list(
 
             item = {
                 "id": lot.id,
-                "osat_name": lot.osat_name or "chipmore",
+                "osat_name": ("Chipmore" if not lot.osat_name or lot.osat_name.lower() == "chipmore" else ("HTKS" if lot.osat_name.lower() in ("ksht", "htks", "htjs") else ("LBS" if lot.osat_name.lower() == "lbs" else lot.osat_name))),
                 "test_start": test_start_str,
                 "test_date": test_date_str,
                 "duration_h": duration_h,
@@ -669,7 +676,7 @@ def export_ft_yield_excel(
                 syl_res = _judge_lot_syl(lot, bins, sess, fixed_session_id=syl_session_id) if sess else None
                 syl_details = (syl_res.get("details") or []) if (syl_res and syl_res.get("over")) else []
                 row = {
-                    "osat_name": lot.osat_name or "chipmore",
+                    "osat_name": ("Chipmore" if not lot.osat_name or lot.osat_name.lower() == "chipmore" else ("HTKS" if lot.osat_name.lower() in ("ksht", "htks", "htjs") else ("LBS" if lot.osat_name.lower() == "lbs" else lot.osat_name))),
                     "package": lot.package or "",
                     "temperature": lot.temperature or "",
                     "product_name": lot.product_name or "",

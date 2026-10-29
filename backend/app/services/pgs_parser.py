@@ -130,7 +130,7 @@ def _extract_version_from_filename(filename: str) -> Optional[str]:
     """使用文件名（去除扩展名）作为程序版本标识，如 'HL5083ACP00_204KM_A00_V08.pgs' → 'HL5083ACP00_204KM_A00_V08'"""
     if not filename:
         return None
-    if filename.lower().endswith('.pgs'):
+    if filename.lower().endswith(('.pgs', '.pds')):
         return filename[:-4]
     return filename
 
@@ -971,3 +971,260 @@ def parse_pgs(content: str, filename: str = '') -> dict:
     result['pgs_version'] = version
     result['program_version'] = program_version
     return result
+
+
+# -----------------------------------------
+# ETS PDS Parser
+# -----------------------------------------
+
+_PDS_RESERVED_SECTIONS = {
+    'datasheet preferences',
+    'documentation block',
+    'binning block',
+    'datasheet variable map',
+    'test order',
+}
+
+_PDS_DEFAULT_VARS = [
+    'TestNmbr',
+    'SubTestNmbr',
+    'DLogDesc',
+    'LoLim',
+    'HiLim',
+    'DFormat',
+    'Units',
+    'LoFBin',
+    'HiFBin',
+]
+
+
+def _parse_pds_int(value: str) -> Optional[int]:
+    text = str(value or '').strip().strip('"')
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _merge_pds_bins(left, right):
+    if left == right:
+        return left
+    if left in (None, ''):
+        return right
+    if right in (None, ''):
+        return left
+    return f'{left}/{right}'
+
+
+def parse_pds(content: str, filename: str = '') -> dict:
+    """
+    Parse an ETS .pds (Product DataSheet) file into the standard program structure:
+      {
+        "pgs_version": None,
+        "program_version": "HL5097WL01_103D0_E00_V03",
+        "start_function_num": 1,
+        "params": [...],
+        "summary": [...],
+      }
+    """
+    lines = content.splitlines()
+    sections: dict[str, list[str]] = {}
+    section_order: list[str] = []
+    cur_section: Optional[str] = None
+
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith('[') and stripped.endswith(']') and len(stripped) > 2:
+            cur_section = stripped[1:-1].strip()
+            if cur_section not in sections:
+                sections[cur_section] = []
+                section_order.append(cur_section)
+            continue
+        if cur_section is not None:
+            sections[cur_section].append(stripped)
+
+    sec_by_lower = {k.lower(): k for k in section_order}
+
+    # 1. Documentation Block
+    doc_meta: dict[str, str] = {}
+    doc_key = sec_by_lower.get('documentation block')
+    if doc_key:
+        for line in sections[doc_key]:
+            if '=' in line:
+                k, v = line.split('=', 1)
+                doc_meta[k.strip().upper()] = v.strip()
+
+    # 2. Binning Block
+    bin_map: dict[int, dict] = {}
+    summary_out: list[dict] = []
+    seen_summary_bins: set[int] = set()
+    bin_key = sec_by_lower.get('binning block')
+    if bin_key:
+        for line in sections[bin_key]:
+            try:
+                parts = _split_csv_fields(line)
+            except Exception:
+                continue
+            if len(parts) < 4:
+                continue
+            sw_bin = _parse_pds_int(parts[0])
+            hw_bin = _parse_pds_int(parts[1])
+            bin_type = parts[2].strip().strip('"')
+            bin_name = parts[3].strip().strip('"')
+            if sw_bin is None:
+                continue
+            if hw_bin is None:
+                hw_bin = sw_bin
+            bin_map[sw_bin] = {
+                'sw_bin': sw_bin,
+                'hw_bin': hw_bin,
+                'bin_type': bin_type,
+                'bin_name': bin_name,
+            }
+            if sw_bin not in seen_summary_bins:
+                seen_summary_bins.add(sw_bin)
+                summary_out.append({
+                    'sw_bin': sw_bin,
+                    'hw_bin': hw_bin,
+                    'bin_name': bin_name,
+                })
+
+    summary_out.sort(key=lambda r: r['sw_bin'] if isinstance(r.get('sw_bin'), int) else 999999)
+
+    # 3. Datasheet Variable Map
+    var_names: list[str] = []
+    varmap_key = sec_by_lower.get('datasheet variable map')
+    if varmap_key:
+        for line in sections[varmap_key]:
+            try:
+                parts = _split_csv_fields(line)
+            except Exception:
+                continue
+            if len(parts) >= 2 and parts[1].strip():
+                var_names.append(parts[1].strip().strip('"'))
+    if not var_names:
+        var_names = list(_PDS_DEFAULT_VARS)
+
+    # 4. Test Order
+    ordered_test_sections: list[str] = []
+    disabled_sections: set[str] = set()
+    order_key = sec_by_lower.get('test order')
+    if order_key:
+        for line in sections[order_key]:
+            if '=' not in line:
+                continue
+            sec_name, rest = line.split('=', 1)
+            sec_name = sec_name.strip()
+            try:
+                parts = _split_csv_fields(rest)
+                flag = _parse_pds_int(parts[0]) if parts else 1
+            except Exception:
+                flag = 1
+            if flag == 0:
+                disabled_sections.add(sec_name.lower())
+            else:
+                actual_sec = sec_by_lower.get(sec_name.lower())
+                if actual_sec and actual_sec not in ordered_test_sections:
+                    ordered_test_sections.append(actual_sec)
+
+    for sec_name in section_order:
+        low = sec_name.lower()
+        if low in _PDS_RESERVED_SECTIONS or low in disabled_sections:
+            continue
+        if sec_name not in ordered_test_sections:
+            ordered_test_sections.append(sec_name)
+
+    # 5. Parse Test Sections
+    params_out: list[dict] = []
+    row_no = 1
+
+    for sec_name in ordered_test_sections:
+        sec_lines = sections.get(sec_name, [])
+        func_name = sec_name
+        for line in sec_lines:
+            if line.lower().startswith('function') and '=' in line:
+                _, rhs = line.split('=', 1)
+                if rhs.strip():
+                    func_name = rhs.strip()
+                break
+
+        for line in sec_lines:
+            if line.lower().startswith('function') and '=' in line:
+                continue
+            try:
+                parts = _split_csv_fields(line)
+            except Exception:
+                continue
+            if len(parts) < 2:
+                continue
+
+            col_map = {}
+            for idx, vname in enumerate(var_names):
+                val_idx = idx + 1
+                col_map[vname] = parts[val_idx].strip() if val_idx < len(parts) else ''
+
+            dlog_desc = col_map.get('DLogDesc', '').strip().strip('"')
+            if not dlog_desc:
+                continue
+
+            test_nmbr = _parse_pds_int(col_map.get('TestNmbr', ''))
+            lower = _parse_float(col_map.get('LoLim', ''))
+            upper = _parse_float(col_map.get('HiLim', ''))
+            if _should_skip_no_limit_param(dlog_desc, lower, upper):
+                continue
+
+            fmt = col_map.get('DFormat', '').strip().strip('"')
+            unit = col_map.get('Units', '').strip().strip('"')
+            lo_fbin = _parse_pds_int(col_map.get('LoFBin', ''))
+            hi_fbin = _parse_pds_int(col_map.get('HiFBin', ''))
+
+            lo_hw = bin_map[lo_fbin]['hw_bin'] if lo_fbin in bin_map else lo_fbin
+            hi_hw = bin_map[hi_fbin]['hw_bin'] if hi_fbin in bin_map else hi_fbin
+            lo_desc = bin_map[lo_fbin]['bin_name'] if lo_fbin in bin_map else ''
+            hi_desc = bin_map[hi_fbin]['bin_name'] if hi_fbin in bin_map else ''
+
+            sw_bin = _merge_pds_bins(lo_fbin, hi_fbin)
+            hw_bin = _merge_pds_bins(lo_hw, hi_hw)
+            desc = _merge_pds_bins(lo_desc, hi_desc) or ''
+
+            params_out.append({
+                'row_no': row_no,
+                'test_no': test_nmbr if test_nmbr is not None else row_no,
+                'function': func_name,
+                'param': dlog_desc,
+                'symbol': dlog_desc,
+                'min': lower,
+                'max': upper,
+                'unit': unit,
+                'format': fmt,
+                'subunit': '',
+                'description': desc,
+                'sw_bin': sw_bin,
+                'hw_bin': hw_bin,
+                'qa_min': None,
+                'qa_max': None,
+                'qa_sw_bin': None,
+                'is_qa': False,
+            })
+            row_no += 1
+
+    if not params_out and not summary_out:
+        raise ValueError("Failed to parse PDS file: no valid test parameters or binning blocks found")
+
+    program_version = (
+        _extract_version_from_filename(filename)
+        or doc_meta.get('PRODUCT')
+        or _extract_version_from_filename(doc_meta.get('DATA SHEET', ''))
+    )
+
+    return {
+        'params': params_out,
+        'summary': summary_out,
+        'start_function_num': 1,
+        'pgs_version': None,
+        'program_version': program_version,
+    }
